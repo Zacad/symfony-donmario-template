@@ -1,0 +1,12 @@
+doctrine_migrations:
+    migrations_paths:
+        'App\Module\TaskTracking\Resources\migrations': '%kernel.project_dir%/src/Module/TaskTracking/Resources/migrations'
+    enable_profiler: false
+    em: default
+    transactional: true
+    all_or_nothing: false
+    storage:
+        table_storage:
+            table_name: doctrine_migration_versions
+    services:
+        'Doctrine\Migrations\Version\Comparator': 'App\Platform\Persistence\TimestampComparator'

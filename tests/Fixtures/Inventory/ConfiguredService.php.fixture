@@ -1,0 +1,21 @@
+<?php
+
+declare(strict_types=1);
+
+namespace App\Module\Inventorying\Infrastructure;
+
+use App\Tests\Fixtures\Inventory\ServiceProbe;
+use Symfony\Component\DependencyInjection\Attribute\AutoconfigureTag;
+
+#[AutoconfigureTag('inventory.fixture')]
+final readonly class ConfiguredService implements ServiceProbe
+{
+    public function __construct(private Dependency $dependency, private string $label = 'constructor-default')
+    {
+    }
+
+    public function value(): string
+    {
+        return $this->dependency->format($this->label);
+    }
+}

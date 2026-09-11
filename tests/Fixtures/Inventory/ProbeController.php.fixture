@@ -1,0 +1,22 @@
+<?php
+
+declare(strict_types=1);
+
+namespace App\Module\Inventorying\UI\Http;
+
+use App\Module\Inventorying\Infrastructure\ConfiguredService;
+use Symfony\Component\HttpFoundation\Response;
+use Symfony\Component\HttpKernel\Attribute\AsController;
+
+#[AsController]
+final readonly class ProbeController
+{
+    public function __construct(private ConfiguredService $service)
+    {
+    }
+
+    public function __invoke(): Response
+    {
+        return new Response($this->service->value());
+    }
+}

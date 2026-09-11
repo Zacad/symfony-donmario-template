@@ -1,0 +1,15 @@
+<?php
+
+declare(strict_types=1);
+
+namespace App\Module\Inventorying\UI\Console;
+
+use App\Tests\Fixtures\Inventory\ServiceProbe;
+
+final class ProbeCommand implements ServiceProbe
+{
+    public function value(): string
+    {
+        return 'console-adapter';
+    }
+}

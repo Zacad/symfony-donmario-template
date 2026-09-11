@@ -1,0 +1,35 @@
+# Docker Compose >= 2.24.4. Explicit replacement is important for isolation.
+services:
+  app: &test_app
+    image: ${RUNTIME_IMAGE}
+    read_only: true
+    environment:
+      APP_ENV: test
+      APP_DEBUG: '0'
+      DEFAULT_URI: http://app:8080
+      E2E_BASE_URL: http://app:8080
+    ports: !reset []
+    volumes: !override
+      - runtime:/app/var
+    tmpfs:
+      - /tmp
+      - /home/app:uid=${LOCAL_UID},gid=${LOCAL_GID},mode=700
+  runner:
+    <<: *test_app
+    init: true
+    environment:
+      APP_ENV: test
+      APP_DEBUG: '0'
+      APP_SECRET: ${APP_SECRET}
+      DATABASE_URL: postgresql://app:${APP_DATABASE_PASSWORD}@database:5432/app_test?serverVersion=18&charset=utf8
+      DEFAULT_URI: http://app:8080
+      E2E_BASE_URL: http://app:8080
+    volumes: !override
+      - runner:/app/var
+    command: ['php', 'vendor/bin/phpunit']
+    healthcheck:
+      disable: true
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+volumes:
+  runner:

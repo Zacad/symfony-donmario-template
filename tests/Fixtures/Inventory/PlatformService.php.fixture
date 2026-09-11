@@ -1,0 +1,15 @@
+<?php
+
+declare(strict_types=1);
+
+namespace App\Platform\InventoryFixture;
+
+use App\Tests\Fixtures\Inventory\ServiceProbe;
+
+final class PlatformService implements ServiceProbe
+{
+    public function value(): string
+    {
+        return 'platform';
+    }
+}

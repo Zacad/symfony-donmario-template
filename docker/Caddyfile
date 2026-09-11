@@ -1,0 +1,12 @@
+{
+    admin off
+    auto_https off
+    persist_config off
+    frankenphp
+}
+
+:8080 {
+    root * /app/public
+    encode zstd gzip
+    php_server
+}

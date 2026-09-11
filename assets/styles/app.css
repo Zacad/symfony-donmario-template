@@ -1,0 +1,15 @@
+:root {
+    color-scheme: light dark;
+    font-family: system-ui, sans-serif;
+    line-height: 1.6;
+}
+
+main {
+    max-width: 48rem;
+    margin: 5rem auto;
+    padding: 0 1.5rem;
+}
+
+a {
+    color: light-dark(#2159a7, #91bdff);
+}

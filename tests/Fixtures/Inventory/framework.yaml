@@ -1,0 +1,4 @@
+framework:
+    secret: inventory-fixture
+    http_method_override: false
+    handle_all_throwables: true

@@ -1,0 +1,27 @@
+/var/
+/vendor/
+/.idea/
+/.env.local
+/.env.*.local
+/.env.local.php
+/auth.json
+*.pem
+*.key
+/config/secrets/prod/prod.decrypt.private.php
+/public/bundles/
+/config/reference.php
+
+###> symfony/asset-mapper ###
+/public/assets/
+/assets/vendor/
+###< symfony/asset-mapper ###
+
+###> friendsofphp/php-cs-fixer ###
+/.php-cs-fixer.php
+/.php-cs-fixer.cache
+###< friendsofphp/php-cs-fixer ###
+
+###> phpunit/phpunit ###
+/phpunit.xml
+/.phpunit.cache/
+###< phpunit/phpunit ###

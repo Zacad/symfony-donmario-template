@@ -1,0 +1,58 @@
+services:
+  app:
+    image: ${RUNTIME_IMAGE:-donmario-dev:local}
+    init: true
+    # libpq's connection timeout does not cover libc DNS resolution. A stopped
+    # Compose service disappears from Docker DNS; bound resolver retries too.
+    dns_opt: ['timeout:1', 'attempts:1']
+    environment:
+      APP_ENV: dev
+      APP_DEBUG: '1'
+      APP_SECRET: ${APP_SECRET:-}
+      DATABASE_URL: postgresql://app:${APP_DATABASE_PASSWORD:-}@database:5432/${APP_DATABASE_NAME:-app}?serverVersion=18&charset=utf8
+      DEFAULT_URI: http://localhost:${APP_PORT:-8080}
+    ports:
+      - '127.0.0.1:${APP_PORT:-8080}:8080'
+    volumes:
+      - .:/app:z
+      # Also masks host var/docker/local.env from app and console containers.
+      - runtime:/app/var
+    depends_on:
+      database:
+        condition: service_healthy
+    healthcheck:
+      test: ['CMD', 'curl', '--fail', '--silent', '--max-time', '4', 'http://localhost:8080/health/ready']
+      interval: 2s
+      timeout: 5s
+      retries: 30
+      start_period: 5s
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+
+  database:
+    image: ${DATABASE_IMAGE:-donmario-database:local}
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_DB: postgres
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-}
+      APP_DATABASE_PASSWORD: ${APP_DATABASE_PASSWORD:-}
+      APP_DATABASE_NAME: ${APP_DATABASE_NAME:-app}
+    volumes:
+      - database:/var/lib/postgresql
+    healthcheck:
+      # The init server uses a Unix socket; TCP waits until all init hooks finish.
+      test: ['CMD', 'pg_isready', '-h', '127.0.0.1', '-U', 'postgres', '-d', 'postgres']
+      interval: 2s
+      timeout: 3s
+      retries: 30
+    stop_grace_period: 30s
+
+volumes:
+  runtime:
+    labels:
+      com.donmario.checkout: ${CHECKOUT_ID:-unknown}
+      com.donmario.environment: ${APP_MODE:-dev}
+  database:
+    labels:
+      com.donmario.checkout: ${CHECKOUT_ID:-unknown}
+      com.donmario.environment: ${APP_MODE:-dev}

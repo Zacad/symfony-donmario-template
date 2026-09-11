@@ -1,0 +1,9 @@
+monolog:
+    channels: [deprecation]
+    handlers:
+        main:
+            type: stream
+            path: php://stderr
+            level: warning
+            formatter: monolog.formatter.json
+            channels: ['!doctrine']

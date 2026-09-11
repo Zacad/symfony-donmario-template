@@ -1,0 +1,23 @@
+<?php
+
+declare(strict_types=1);
+
+namespace {{namespace}};
+
+use Doctrine\DBAL\Schema\Schema;
+use Doctrine\Migrations\AbstractMigration;
+
+final class {{version}} extends AbstractMigration
+{
+    public function isTransactional(): bool
+    {
+        return {{transactional}};
+    }
+
+    public function up(Schema $schema): void
+    {
+        foreach ({{statements}} as $statement) {
+            $this->addSql($statement);
+        }
+    }
+}

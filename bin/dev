@@ -1,0 +1,141 @@
+#!/bin/sh
+set -eu
+umask 077
+
+ROOT=$(CDPATH='' cd -- "$(dirname -- "$0")/.." && pwd -P)
+checksum=$(printf '%s' "$ROOT" | cksum)
+CHECKOUT_ID=dm-${checksum%% *}
+export CHECKOUT_ID
+SETTINGS=$ROOT/var/docker/local.env
+DEV_IMAGE=$CHECKOUT_ID-dev:local
+DATABASE_IMAGE=$CHECKOUT_ID-database:local
+export DATABASE_IMAGE
+LOCK=
+
+fail() { printf '%s\n' "$*" >&2; exit 1; }
+validate_port() {
+    case "$1" in ''|*[!0-9]*) fail 'Port must be numeric.' ;; esac
+    test "$1" = 0 || { test "$1" -ge 1024 && test "$1" -le 65535; } || fail 'Port must be 0 (automatic) or between 1024 and 65535.'
+}
+cleanup_lock() { if [ -n "$LOCK" ]; then rmdir "$LOCK"; fi; }
+trap cleanup_lock EXIT
+trap 'exit 130' INT
+trap 'exit 143' TERM
+
+lock_setup() {
+    mkdir -p "$ROOT/var/docker"
+    if ! mkdir "$ROOT/var/docker/setup.lock" 2>/dev/null; then
+        fail 'Setup/Composer is already running, or a stale setup.lock exists. See README recovery.'
+    fi
+    LOCK=$ROOT/var/docker/setup.lock
+}
+
+build_dev() {
+    docker build --builder default --target dev --build-arg "APP_UID=$(id -u)" --build-arg "APP_GID=$(id -g)" \
+        --tag "$DEV_IMAGE" "$ROOT"
+    docker build --builder default --tag "$DATABASE_IMAGE" "$ROOT/docker/postgres"
+}
+
+load_settings() {
+    # Never execute a settings file or inherit application credentials from the shell.
+    unset PROJECT_ID LOCAL_UID LOCAL_GID APP_MODE APP_PORT APP_SECRET APP_DATABASE_NAME APP_DATABASE_PASSWORD POSTGRES_PASSWORD
+    unset COMPOSE_FILE COMPOSE_PROJECT_NAME COMPOSE_PROFILES COMPOSE_ENV_FILES DATABASE_URL APP_ENV APP_DEBUG
+    test -f "$SETTINGS" || fail 'Local settings missing. Run ./bin/dev setup, or restore var/docker/local.env.'
+    seen=' '
+    while IFS='=' read -r key value; do
+        case "$key" in
+            PROJECT_ID|LOCAL_UID|LOCAL_GID|APP_MODE|APP_PORT|APP_SECRET|APP_DATABASE_NAME|APP_DATABASE_PASSWORD|POSTGRES_PASSWORD) ;;
+            *) fail 'Invalid settings key. See README recovery.' ;;
+        esac
+        case "$value" in ''|*[!a-zA-Z0-9_-]*) fail 'Invalid settings value. See README recovery.' ;; esac
+        case "$seen" in *" $key "*) fail 'Duplicate settings key.' ;; esac
+        seen="$seen$key "
+        export "$key=$value"
+    done < "$SETTINGS"
+    for key in PROJECT_ID LOCAL_UID LOCAL_GID APP_MODE APP_PORT APP_SECRET APP_DATABASE_NAME APP_DATABASE_PASSWORD POSTGRES_PASSWORD; do
+        case "$seen" in *" $key "*) ;; *) fail 'Incomplete settings: restore the original file; credentials will not be regenerated.' ;; esac
+    done
+    test "$LOCAL_UID" = "$(id -u)" && test "$LOCAL_GID" = "$(id -g)" || fail 'Host UID/GID changed. See README volume ownership recovery.'
+    validate_port "$APP_PORT"
+    case "$PROJECT_ID" in dm-*) ;; *) fail 'Invalid project identity.' ;; esac
+    case "$PROJECT_ID" in *[!a-z0-9-]*) fail 'Invalid project identity.' ;; esac
+    test "$APP_MODE:$APP_DATABASE_NAME" = dev:app || fail 'Development commands require development settings.'
+}
+
+compose() {
+    docker compose --project-directory "$ROOT" --env-file "$SETTINGS" \
+        --project-name "$PROJECT_ID" --file "$ROOT/compose.yaml" "$@"
+}
+
+setup() {
+    port=${1:-8080}
+    validate_port "$port"
+    lock_setup
+    if [ ! -f "$SETTINGS" ]; then
+        existing=$(docker volume ls -q --filter "label=com.donmario.checkout=$CHECKOUT_ID" --filter label=com.donmario.environment=dev)
+        test -z "$existing" || fail 'Existing development volumes found without credentials. Restore var/docker/local.env; see README recovery.'
+        build_dev
+        docker run --rm --volume "$ROOT:/workspace:z" --workdir /workspace "$DEV_IMAGE" \
+            php docker/tools/settings.php var/docker/local.env "$CHECKOUT_ID" "$(id -u)" "$(id -g)" dev "$port"
+    else
+        load_settings
+        if [ "$#" -gt 0 ] && [ "$port" != "$APP_PORT" ]; then
+            fail 'To change the existing port, edit APP_PORT in var/docker/local.env and run setup again.'
+        fi
+        build_dev
+    fi
+    load_settings
+    RUNTIME_IMAGE=$DEV_IMAGE
+    export RUNTIME_IMAGE
+    compose run --rm --no-deps app composer install --no-interaction --prefer-dist
+    compose up --detach --wait --wait-timeout 60 database
+    compose run --rm --no-deps app php bin/console doctrine:migrations:migrate --no-interaction
+    compose up --detach --wait --wait-timeout 60 app
+    address=$(compose port app 8080)
+    printf 'Application ready: http://%s\n' "$address"
+}
+
+command=${1:-help}
+if [ "$#" -gt 0 ]; then shift; fi
+case "$command" in
+    help|-h|--help)
+        printf '%s\n' 'Usage: ./bin/dev {setup [port]|up|down|console ...|composer ...|check|test|verify-setup}'
+        exit 0 ;;
+esac
+test "$(uname -s)" = Linux && test "$(uname -m)" = x86_64 || fail 'Verified target: Linux x86_64 with a local Docker daemon.'
+test "$(id -u)" -gt 0 && test "$(id -g)" -gt 0 || fail 'Run as a non-root development user.'
+docker compose version --short >/dev/null
+if [ -n "${DOCKER_CONTEXT:-}" ]; then
+    endpoint=$(docker context inspect "$DOCKER_CONTEXT" --format '{{.Endpoints.docker.Host}}')
+elif [ -n "${DOCKER_HOST:-}" ]; then
+    endpoint=$DOCKER_HOST
+else
+    endpoint=$(docker context inspect --format '{{.Endpoints.docker.Host}}')
+fi
+case "$endpoint" in unix://*) ;; *) fail 'This workflow requires a local Unix-socket Docker daemon.' ;; esac
+# Freeze the validated endpoint for every subprocess, regardless of context changes.
+unset DOCKER_CONTEXT BUILDX_BUILDER
+DOCKER_HOST=$endpoint
+export DOCKER_HOST
+
+case "$command" in
+    setup) setup "$@" ;;
+    test|check)
+        # Separate snapshot and credentials: works even before development setup.
+        export ROOT DEV_IMAGE CHECKOUT_ID
+        exec sh "$ROOT/docker/tools/test.sh" "$command" ;;
+    verify-setup)
+        export ROOT
+        exec sh "$ROOT/docker/tools/verify-setup.sh" ;;
+    up|down|console|composer)
+        load_settings
+        RUNTIME_IMAGE=$DEV_IMAGE
+        export RUNTIME_IMAGE
+        case "$command" in
+            up) compose up --detach --wait --wait-timeout 60 app ;;
+            down) compose down ;;
+            console) compose run --rm --no-deps app php bin/console "$@" ;;
+            composer) lock_setup; compose run --rm --no-deps app composer "$@" ;;
+        esac ;;
+    *) fail "Unknown command: $command" ;;
+esac

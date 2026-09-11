@@ -1,0 +1,15 @@
+<?php
+
+declare(strict_types=1);
+
+namespace App\Module\Inventorying\Domain;
+
+use App\Tests\Fixtures\Inventory\ServiceProbe;
+
+final class Policy implements ServiceProbe
+{
+    public function value(): string
+    {
+        return 'domain-service';
+    }
+}

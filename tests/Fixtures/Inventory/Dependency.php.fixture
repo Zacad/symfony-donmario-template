@@ -1,0 +1,13 @@
+<?php
+
+declare(strict_types=1);
+
+namespace App\Module\Inventorying\Infrastructure;
+
+final class Dependency
+{
+    public function format(string $label): string
+    {
+        return 'dependency:'.$label;
+    }
+}

@@ -1,0 +1,27 @@
+<?php
+
+declare(strict_types=1);
+
+namespace App\Module\Inventorying\Application\Lookup;
+
+use App\Module\Inventorying\Domain\Policy;
+use App\Tests\Fixtures\Inventory\ServiceProbe;
+use Symfony\Component\DependencyInjection\Attribute\AutoconfigureTag;
+
+#[AutoconfigureTag('inventory.handler')]
+final readonly class LookupHandler implements ServiceProbe
+{
+    public function __construct(private Policy $policy)
+    {
+    }
+
+    public function __invoke(LookupQuery $query): LookupResult
+    {
+        return new LookupResult($this->policy->value().':'.$query->label);
+    }
+
+    public function value(): string
+    {
+        return $this(new LookupQuery('input'))->label;
+    }
+}
