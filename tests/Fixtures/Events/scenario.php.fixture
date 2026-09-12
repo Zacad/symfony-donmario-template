@@ -1,0 +1,208 @@
+<?php
+
+declare(strict_types=1);
+
+use App\Module\EventObserving\Application\CreateRequiredTasks\CreateRequiredTasksCommand;
+use App\Module\EventObserving\Application\EmitEvents\EmitEventsCommand;
+use App\Module\EventObserving\Application\GetObservation\GetObservationQuery;
+use App\Module\EventObserving\Application\GetObservation\GetObservationResult;
+use App\Module\TaskTracking\Application\CreateTask\CreateTaskCommand;
+use App\Module\TaskTracking\Application\CreateTask\TaskCreatedEvent;
+use App\Module\TaskTracking\Application\GetTask\GetTaskQuery;
+use App\Module\TaskTracking\Application\GetTask\GetTaskResult;
+use Doctrine\DBAL\DriverManager;
+use Doctrine\DBAL\Exception\CommitFailedRollbackOnly;
+use Doctrine\ORM\Event\PostFlushEventArgs;
+use Doctrine\ORM\Events;
+use PHPUnit\Framework\Assert;
+use Symfony\Component\Uid\Uuid;
+
+$kernel = require __DIR__.'/bootstrap.php';
+$kernel->boot();
+$container = $kernel->getContainer();
+$commands = $container->get('test.events.commands');
+$queries = $container->get('test.events.queries');
+$tasks = $container->get('test.events.tasks');
+$observations = $container->get('test.events.observations');
+$manager = $container->get('doctrine.orm.default_entity_manager');
+$connection = $manager->getConnection();
+$observer = DriverManager::getConnection($connection->getParams());
+Assert::assertSame('app_test', $observer->fetchOne('SELECT current_database()'));
+Assert::assertSame('app', $observer->fetchOne('SELECT current_user'));
+$managerIdentity = spl_object_id($manager);
+$scenario = trim(file_get_contents(__DIR__.'/scenario.txt'));
+$prefix = $argv[1];
+$failed = false;
+$expectedCount = 6;
+$trigger = false;
+$lifecycleListener = null;
+$lifecycleEventManager = null;
+
+try {
+    if (in_array($scenario, ['postflush-recording', 'postflush-command'], true)) {
+        $recorder = $container->get('test.events.recorder');
+        $rejection = null;
+        $callbackCompleted = false;
+        $lifecycleListener = new class(function (PostFlushEventArgs $event) use ($scenario, $recorder, $commands, $manager, $connection, $observer, $prefix, &$rejection, &$callbackCompleted): void {
+            Assert::assertSame($manager, $event->getObjectManager());
+            Assert::assertSame(1, $connection->getTransactionNestingLevel());
+            Assert::assertFalse($connection->isRollbackOnly());
+            Assert::assertSame(1, $connection->fetchOne('SELECT count(*) FROM task_tracking_task WHERE title = ?', [$prefix.'postflush']));
+            Assert::assertSame(0, $observer->fetchOne('SELECT count(*) FROM task_tracking_task WHERE title LIKE ?', [$prefix.'%']));
+            Assert::assertSame(0, $observer->fetchOne('SELECT count(*) FROM event_observing_observation'));
+            try {
+                if ('postflush-recording' === $scenario) {
+                    $recorder->record(new TaskCreatedEvent(Uuid::v7()));
+                } else {
+                    $commands->dispatch(new CreateTaskCommand($prefix.'forbidden-callback'));
+                }
+            } catch (\LogicException $failure) {
+                // Deliberately swallow the boundary rejection during ORM's final,
+                // implicit flush, AFTER the middleware's assertHealthy returned.
+                $rejection = $failure;
+            }
+            Assert::assertInstanceOf(\LogicException::class, $rejection);
+            Assert::assertStringContainsString('cqrs.phase:', $rejection->getMessage());
+            Assert::assertTrue($connection->isRollbackOnly());
+            $callbackCompleted = true;
+        }) {
+            public bool $enabled = true;
+            public int $calls = 0;
+
+            public function __construct(private readonly \Closure $callback)
+            {
+            }
+
+            public function postFlush(PostFlushEventArgs $event): void
+            {
+                ++$this->calls;
+                if ($this->enabled) {
+                    ($this->callback)($event);
+                }
+            }
+        };
+        $lifecycleEventManager = $manager->getEventManager();
+        $lifecycleEventManager->addEventListener([Events::postFlush], $lifecycleListener);
+        $rootFailure = null;
+        try {
+            // No test flush: wrapInTransaction invokes ORM's implicit final flush.
+            $commands->dispatch(new CreateTaskCommand($prefix.'postflush'));
+        } catch (\Throwable $failure) {
+            $rootFailure = $failure;
+        }
+        Assert::assertTrue($callbackCompleted, 'The callback must catch its own rejection and return normally.');
+        Assert::assertSame(1, $lifecycleListener->calls);
+        Assert::assertInstanceOf(CommitFailedRollbackOnly::class, $rootFailure, 'DBAL must reject the outer commit even though the postFlush callback swallowed the rejection.');
+        Assert::assertFalse($connection->isTransactionActive());
+        Assert::assertSame(0, $observer->fetchOne('SELECT count(*) FROM task_tracking_task WHERE title LIKE ?', [$prefix.'%']));
+        Assert::assertSame(0, $observer->fetchOne('SELECT count(*) FROM event_observing_observation'));
+        $proof = array_map(static fn (string $line): array => json_decode($line, true, flags: JSON_THROW_ON_ERROR), array_filter(explode("\n", file_get_contents(__DIR__.'/probe.jsonl'))));
+        Assert::assertSame(['producer-add'], array_column($proof, 'kind'), 'Neither the forbidden command nor any event listener may execute.');
+
+        // Reinitialize only by using the SAME lazy manager after production root
+        // cleanup. Register the now-disabled probe on its actual EventManager;
+        // do not reset Doctrine, rebuild a kernel, or replace any held service.
+        $lifecycleListener->enabled = false;
+        $lifecycleEventManager->removeEventListener([Events::postFlush], $lifecycleListener);
+        $lifecycleEventManager = $manager->getEventManager();
+        $lifecycleEventManager->addEventListener([Events::postFlush], $lifecycleListener);
+    } elseif (in_array($scenario, ['root-rollback', 'nested-query', 'commit-failure', 'required-success'], true)) {
+        if ('commit-failure' === $scenario) {
+            // A real server-side failure during COMMIT, after ORM's final flush.
+            $observer->executeStatement("CREATE FUNCTION public.event_verification_failure() RETURNS trigger LANGUAGE plpgsql AS 'BEGIN RAISE EXCEPTION ''EVENT_PRIVATE_FAILURE_CANARY''; RETURN NEW; END'");
+            $trigger = true;
+            $observer->executeStatement('CREATE CONSTRAINT TRIGGER event_verification_failure AFTER INSERT ON task_tracking_task DEFERRABLE INITIALLY DEFERRED FOR EACH ROW EXECUTE FUNCTION public.event_verification_failure()');
+        }
+        try {
+            $result = $commands->dispatch(new CreateRequiredTasksCommand($prefix.'required'));
+            Assert::assertInstanceOf(Uuid::class, $result);
+        } catch (\Throwable $failure) {
+            $failed = true;
+            if ('required-success' === $scenario) {
+                throw $failure;
+            }
+        } finally {
+            if ($trigger) {
+                $observer->executeStatement('DROP TRIGGER IF EXISTS event_verification_failure ON task_tracking_task');
+                $observer->executeStatement('DROP FUNCTION public.event_verification_failure()');
+                $trigger = false;
+            }
+        }
+        Assert::assertSame('required-success' !== $scenario, $failed, 'The required root outcome must match the configured fault.');
+        Assert::assertSame($failed ? 0 : 2, $observer->fetchOne('SELECT count(*) FROM task_tracking_task WHERE title LIKE ?', [$prefix.'%']));
+        Assert::assertSame($failed ? 0 : 12, $observer->fetchOne('SELECT count(*) FROM event_observing_observation'));
+        $proof = array_map(static fn (string $line): array => json_decode($line, true, flags: JSON_THROW_ON_ERROR), array_filter(explode("\n", file_get_contents(__DIR__.'/probe.jsonl'))));
+        $adds = array_values(array_filter($proof, static fn (array $row): bool => 'producer-add' === $row['kind']));
+        Assert::assertCount(2, $adds);
+        Assert::assertSame($adds[0]['transaction'], $adds[1]['transaction'], 'Explicit required commands share one PostgreSQL transaction.');
+        Assert::assertSame([0, 0], array_column($adds, 'committedRows'));
+        if ($failed) {
+            Assert::assertSame(['producer-add', 'producer-add'], array_column($proof, 'kind'), 'Rolled-back/commit-failed commands must emit nothing.');
+        } else {
+            Assert::assertSame(['producer-add', 'producer-add'], array_slice(array_column($proof, 'kind'), 0, 2), 'Delivery starts only after both required handlers finish.');
+            $entries = array_values(array_filter($proof, static fn (array $row): bool => 'producer-query' === $row['kind']));
+            Assert::assertCount(2, $entries);
+            Assert::assertSame([1, 1], array_column($entries, 'committedRows'));
+            Assert::assertSame([0, 0], array_column($entries, 'depth'));
+            Assert::assertSame([0, 0], array_column($entries, 'managed'));
+            $writes = array_values(array_filter($proof, static fn (array $row): bool => 'observation' === $row['kind']));
+            Assert::assertCount(13, array_unique([$adds[0]['transaction'], ...array_column($writes, 'transaction')]));
+        }
+    } elseif (in_array($scenario, ['fifo', 'budget', 'buffer', 'zero-budget'], true)) {
+        $id = Uuid::v7();
+        $commands->dispatch(new EmitEventsCommand($id));
+        $chainCount = match ($scenario) {
+            'fifo' => 3,
+            'zero-budget' => 1,
+            default => 100,
+        };
+        Assert::assertSame(1 + $chainCount, $observer->fetchOne('SELECT count(*) FROM event_observing_observation WHERE task_id = ?', [$id->toRfc4122()]));
+        $proof = array_map(static fn (string $line): array => json_decode($line, true, flags: JSON_THROW_ON_ERROR), array_filter(explode("\n", file_get_contents(__DIR__.'/probe.jsonl'))));
+        Assert::assertSame(['seed', ...array_map(static fn (int $position): string => 'chain-'.$position, range(1, $chainCount))], array_column($proof, 'label'), 'Queue draining must be bounded FIFO, including committed child events.');
+        Assert::assertCount(1 + $chainCount, array_unique(array_column($proof, 'transaction')));
+        Assert::assertSame([1], array_values(array_unique(array_column($proof, 'depth'))));
+        $depths = array_column(array_slice($proof, 1), 'stackDepth');
+        Assert::assertLessThan(10, max($depths) - min($depths), 'A replenishing chain must not recurse through event delivery.');
+    } else {
+        $id = $commands->dispatch(new CreateTaskCommand($prefix.'initial'));
+        Assert::assertInstanceOf(Uuid::class, $id);
+        $expectedCount = in_array($scenario, ['listener-failure', 'multiple-failure', 'constructor-failure'], true) ? 4 : 6;
+        Assert::assertSame($expectedCount, $observer->fetchOne('SELECT count(*) FROM event_observing_observation WHERE task_id = ?', [$id->toRfc4122()]));
+    }
+
+    // Keep all references across failure and budget exhaustion; no kernel reboot,
+    // replacement facade, repository lookup or explicit ORM reset is permitted.
+    Assert::assertFalse($connection->isTransactionActive());
+    Assert::assertTrue($manager->isOpen());
+    $id = $commands->dispatch(new CreateTaskCommand($prefix.'recovered'));
+    Assert::assertInstanceOf(Uuid::class, $id);
+    Assert::assertSame($managerIdentity, spl_object_id($manager));
+    Assert::assertFalse($connection->isTransactionActive());
+    Assert::assertSame($prefix.'recovered', $tasks->find($id)?->title());
+    Assert::assertSame($expectedCount, $observations->count($id));
+    $result = $queries->ask(new GetTaskQuery($id->toRfc4122()));
+    Assert::assertInstanceOf(GetTaskResult::class, $result);
+    Assert::assertSame($prefix.'recovered', $result->title);
+    $result = $queries->ask(new GetObservationQuery($id));
+    Assert::assertInstanceOf(GetObservationResult::class, $result);
+    Assert::assertSame($expectedCount, $result->count);
+    Assert::assertSame($expectedCount, $observer->fetchOne('SELECT count(*) FROM event_observing_observation WHERE task_id = ?', [$id->toRfc4122()]));
+    Assert::assertTrue($manager->isOpen());
+    Assert::assertFalse($connection->isTransactionActive());
+    if (null !== $lifecycleListener) {
+        Assert::assertGreaterThan(1, $lifecycleListener->calls, 'The recovered manager must still execute real ORM lifecycle callbacks.');
+        Assert::assertSame(1, $observer->fetchOne('SELECT count(*) FROM task_tracking_task WHERE title LIKE ?', [$prefix.'%']), 'Only the recovered producer may commit.');
+        Assert::assertSame(6, $observer->fetchOne('SELECT count(*) FROM event_observing_observation'), 'Only the recovered producer may deliver events; failed-root events cannot leak.');
+    }
+    fwrite(STDOUT, json_encode(['scenario' => $scenario, 'verified' => true, 'recovery' => $id->toRfc4122()], JSON_THROW_ON_ERROR)."\n");
+} finally {
+    if (null !== $lifecycleListener && null !== $lifecycleEventManager) {
+        $lifecycleEventManager->removeEventListener([Events::postFlush], $lifecycleListener);
+    }
+    if ($trigger) {
+        $observer->executeStatement('DROP TRIGGER IF EXISTS event_verification_failure ON task_tracking_task');
+        $observer->executeStatement('DROP FUNCTION IF EXISTS public.event_verification_failure()');
+    }
+    $observer->close();
+    $kernel->shutdown();
+}

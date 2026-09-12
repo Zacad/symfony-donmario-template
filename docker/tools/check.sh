@@ -4,6 +4,7 @@ composer validate --strict
 composer check-platform-reqs
 composer audit
 php bin/console lint:yaml config --parse-tags
+php bin/console lint:yaml src/Module --parse-tags
 php bin/console lint:twig templates
 php bin/console lint:container
 php tools/architecture.php

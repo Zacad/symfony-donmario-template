@@ -1,0 +1,26 @@
+<?php
+
+declare(strict_types=1);
+
+namespace App\Module\EventObserving\Infrastructure\EventListener;
+
+use App\Module\EventObserving\Application\RecordTaskCreation\RecordTaskCreationCommand;
+use App\Module\TaskTracking\Application\CreateTask\TaskCreatedEvent;
+use App\Module\TaskTracking\Application\GetTask\GetTaskQuery;
+use App\Platform\Messaging\CommandBus;
+use App\Platform\Messaging\QueryBus;
+use Symfony\Component\Messenger\Attribute\AsMessageHandler;
+
+#[AsMessageHandler(bus: 'application.event.bus', priority: 30)]
+final readonly class FirstTaskListener
+{
+    public function __construct(private CommandBus $commands, private QueryBus $queries)
+    {
+    }
+
+    public function __invoke(TaskCreatedEvent $event): void
+    {
+        $this->queries->ask(new GetTaskQuery($event->taskId->toRfc4122()));
+        $this->commands->dispatch(new RecordTaskCreationCommand($event->taskId, 'first'));
+    }
+}

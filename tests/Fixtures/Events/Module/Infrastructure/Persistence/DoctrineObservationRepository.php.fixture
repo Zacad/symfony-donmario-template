@@ -1,0 +1,55 @@
+<?php
+
+declare(strict_types=1);
+
+namespace App\Module\EventObserving\Infrastructure\Persistence;
+
+use App\Module\EventObserving\Domain\Observation;
+use App\Module\EventObserving\Domain\ObservationRepository;
+use Doctrine\DBAL\DriverManager;
+use Doctrine\ORM\EntityManagerInterface;
+use Symfony\Component\Uid\Uuid;
+
+/** Verification instrumentation is local to the module's own persistence adapter. */
+final readonly class DoctrineObservationRepository implements ObservationRepository
+{
+    public function __construct(private EntityManagerInterface $manager, private string $scenario, private string $probePath)
+    {
+    }
+
+    public function add(Observation $observation): void
+    {
+        $connection = $this->manager->getConnection();
+        $proof = [
+            'kind' => 'observation',
+            'task' => $observation->taskId()->toRfc4122(),
+            'label' => $observation->label(),
+            'transaction' => $connection->fetchOne('SELECT txid_current()::text'),
+            'depth' => $connection->getTransactionNestingLevel(),
+            'stackDepth' => count(debug_backtrace(DEBUG_BACKTRACE_IGNORE_ARGS)),
+        ];
+        if (in_array($this->scenario, ['listener-failure', 'multiple-failure'], true) && 'middle' === $observation->label()) {
+            // Actual SQL, deliberately without flush/commit: the command boundary
+            // must roll this back, along with its already-recorded child event.
+            $connection->executeStatement('INSERT INTO event_observing_observation (id, task_id, label) VALUES (?, ?, ?)', [
+                $observation->id()->toRfc4122(), $observation->taskId()->toRfc4122(), $observation->label(),
+            ]);
+            $observer = DriverManager::getConnection($connection->getParams());
+            try {
+                $proof['localRows'] = $connection->fetchOne('SELECT count(*) FROM event_observing_observation WHERE id = ?', [$observation->id()->toRfc4122()]);
+                $proof['committedRows'] = $observer->fetchOne('SELECT count(*) FROM event_observing_observation WHERE id = ?', [$observation->id()->toRfc4122()]);
+            } finally {
+                $observer->close();
+            }
+            file_put_contents($this->probePath, json_encode($proof, JSON_THROW_ON_ERROR)."\n", FILE_APPEND | LOCK_EX);
+            throw new \RuntimeException('EVENT_PRIVATE_FAILURE_CANARY');
+        }
+        $this->manager->persist($observation);
+        file_put_contents($this->probePath, json_encode($proof, JSON_THROW_ON_ERROR)."\n", FILE_APPEND | LOCK_EX);
+    }
+
+    public function count(Uuid $taskId): int
+    {
+        return (int) $this->manager->getConnection()->fetchOne('SELECT count(*) FROM event_observing_observation WHERE task_id = ?', [$taskId->toRfc4122()]);
+    }
+}

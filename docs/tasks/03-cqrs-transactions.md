@@ -17,11 +17,22 @@ After implementation, container/PostgreSQL verification and independent review,
 the user **accepted Subtask 3a on 2026-09-11** and requested continuation to the
 separate Subtask 3b design gate.
 
+The user **accepted Subtask 3b on 2026-09-11** after implementation, actual
+container/PostgreSQL/consumer verification, independent reviews and resolution of
+both boundary findings. The user requested a handoff for a fresh session.
+**Current continuation: [Subtask 4](04-synchronous-events.md), including the opt-in
+recording refactor, is implemented, verified, independently reviewed and user-accepted.
+Next is separate Subtask 5 discovery/design, requiring approval before implementation.**
+
+The 3a/3b decisions and evidence below are historical. Subtask 4 supersedes their
+`Contract/Event` direction and extends the two-helper boundary with exact event-category,
+Application recorder and private listener permissions; see current architecture.
+
 | Part | Status |
 | --- | --- |
 | Subtasks 1 and 2 | Accepted |
 | 3a — Application public-data boundary alignment | Accepted by the user on 2026-09-11 after implementation, container/PostgreSQL verification and independent review |
-| 3b — Messenger, validation, shared adapters and transactions | Proposed design below; awaiting user design/implementation approval |
+| 3b — Messenger, validation, shared adapters and transactions | Accepted by the user on 2026-09-11 after implementation, verification and independent review |
 
 ## 3a — approved decisions
 
@@ -40,9 +51,8 @@ src/Module/TaskTracking/
   Resources/config/services.yaml
 ```
 
-The use cases above are the upcoming 3b example. Part 3a establishes the naming,
-data/dependency/service rules through executable fixtures; the current business
-module still contains the accepted persistence foundation.
+Part 3a established the naming/data/dependency/service rules through executable
+fixtures. The use cases above were subsequently implemented in 3b.
 
 - Public Application data has the exact path
   `Application/<UseCase>/<Name>{Command,Query,Result}.php`, with descriptive
@@ -61,10 +71,10 @@ module still contains the accepted persistence foundation.
 - Public data is excluded from Symfony services; neighboring handlers remain
   private/autowired/autoconfigured services. Explicit or inline DTO definitions are
   rejected. Application data exclusions are scoped so console commands remain services.
-- A result DTO is optional. The 3b proposal uses `CreateTaskCommand -> Uuid` and
+- A result DTO is optional. The 3b implementation uses `CreateTaskCommand -> Uuid` and
   `GetTaskQuery -> GetTaskResult|null`. Results are independent of HTTP/CLI formatting.
-- Framework/Platform exceptions for bus integration will be designed in 3b. Existing
-  direct Platform/module service boundaries still apply.
+- Framework/Platform exceptions for bus integration are recorded separately under
+  3b below; the general direct Platform/module service boundaries still apply.
 
 ### Implementation coverage
 
@@ -153,24 +163,27 @@ fixture coverage. No new security-boundary broadening or request-time database w
 was identified; documented runtime/dynamic-analysis limitations remain explicit.
 
 No implementation changes or further verification were requested. Subsequent
-changes are acceptance/design documentation; runtime code is the verified 3a snapshot.
-**The user accepted 3a on 2026-09-11. Subtask 3b design/implementation approval
-remains separate.**
+changes at that gate were acceptance/design documentation; subsequent 3b runtime
+changes are covered by their separate evidence below.
+**The user accepted 3a on 2026-09-11. Subtask 3b's separate approval, implementation
+and acceptance are recorded below.**
 
-## 3b — proposed design, awaiting approval
+## 3b — approved design and implementation
 
-The user accepted 3a and requested continuation to this design gate. The decisions
-below are a proposal, not permission to implement 3b. Discovery/design documentation
-updates have not installed dependencies or changed runtime code.
+After accepting 3a and creating the requested local checkpoint commit `41b368f`,
+the user said **"proceed"** to the presented 3b design/implementation gate on
+**2026-09-11**. The design below is approved and implemented. Verification and fresh
+independent review are complete, and the user accepted 3b on **2026-09-11**.
 
 ### Discovery and dependency changes
 
-Discovery rechecked the actual locks and Symfony 8.1 APIs. Messenger and Validator
-are absent; Doctrine ORM 3.7.0, DBAL 4.4.4 and Doctrine bridge 8.1.6 are installed.
-The existing Task has a generated UUIDv7 and a 1–200-character, nonblank title
-invariant. Its Domain repository port supplies `add(Task)` and `find(Uuid)`.
+At discovery, the locks and Symfony 8.1 APIs showed Messenger and Validator were
+absent; Doctrine ORM 3.7.0, DBAL 4.4.4 and Doctrine bridge 8.1.6 were already installed.
+The existing Task had a generated UUIDv7 and a 1–200-character, nonblank title
+invariant, with a Domain repository port supplying `add(Task)` and `find(Uuid)`.
 
-Install after approval:
+The approved installation command was subsequently executed successfully, as
+recorded in the implementation evidence below:
 
 ```sh
 ./bin/dev composer require 'symfony/messenger:8.1.*' 'symfony/validator:8.1.*' --no-interaction
@@ -317,7 +330,7 @@ text as terminal/console formatting. Successful CLI operations exit 0.
 
 | Condition | HTTP | CLI |
 | --- | --- | --- |
-| Malformed JSON, wrong/missing/extra fields | 400 | Invalid command input exits 2 |
+| Malformed JSON, wrong/missing/extra fields | 400 | Command-line syntax uses Symfony Console diagnostics |
 | Request body exceeds 4 KiB | 413 | Not an HTTP body concern |
 | Content type other than `application/json` for creation | 415 | Not applicable |
 | Message validation failure | 422 with field/message diagnostics | Exit 2 with safe diagnostics |
@@ -411,5 +424,104 @@ repeat only for changes, failures or unresolved review findings. Then obtain a
 fresh independent subagent review, resolve/reverify findings, and request user
 acceptance before starting the event subtask.
 
-**No 3b implementation or verification has run yet.** The evidence above belongs
-to accepted 3a. This proposal is awaiting explicit design/implementation approval.
+### Implementation and verification evidence
+
+`./bin/dev composer require 'symfony/messenger:8.1.*' 'symfony/validator:8.1.*' --no-interaction`
+exited 0, installing Messenger **8.1.6**, Validator **8.1.6**, Symfony Clock **8.1.0**
+and PSR Clock **1.0.0** without updating existing packages. The Messenger and Validator
+recipes were reviewed; transport examples/DSN were replaced by explicit synchronous
+buses and module-owned validation mappings.
+
+Initial cache compilation caught additional standard framework registrations for
+console/process/HTTP messages. The checker now recognizes those exact framework
+message classes as unreachable by the application DTO policy. Their presence in
+`debug:messenger` does not expose them through the public helpers. Subsequent
+`./bin/dev console cache:clear`, `./bin/dev console debug:messenger` and
+`./bin/dev console debug:validator 'App\Module\TaskTracking\Application\CreateTask\CreateTaskCommand'`
+all exited 0, showing the two correctly bound TaskTracking handlers and all title
+constraints. Native Console argument/option errors retain Symfony's normal syntax
+diagnostics; use-case message validation explicitly returns exit 2.
+
+The first full check found that runtime fixture services require Symfony's dumped
+container build metadata. Those tests now boot actual isolated kernels. The first
+E2E run exposed fixture alias ordering: module YAML had replaced the earlier test
+binding. A verification-only pass now binds the fault adapter after configuration
+and before autowiring, and tests assert the actual adapter identity. The assertions
+also distinguish original nested failures from assertion failures. No fixture
+switch is exposed by ordinary HTTP/CLI adapters.
+
+The shared invocation context is a required, ordinary shared service: non-shared
+replacement would separate failure tracking from the transaction. Its negative
+compilation fixture and helper/middleware reference checks establish this invariant.
+
+Completed on **2026-09-11**, all commands below exited **0**:
+
+| Command | Result / meaningful behavior | Evidence |
+| --- | --- | --- |
+| `./bin/dev setup` | Existing migration current; development app and PostgreSQL healthy | `http://127.0.0.1:8080` |
+| `./bin/dev console cache:clear` | Dev container compiles with standard debug tracing and explicit bus wiring | Console output |
+| `./bin/dev console debug:messenger` | CreateTask on command.bus; GetTask on query.bus | Console output |
+| `./bin/dev console debug:validator 'App\Module\TaskTracking\Application\CreateTask\CreateTaskCommand'` | Charset, NUL, blank and length constraints loaded from module YAML | Console output |
+| `./bin/dev check` | **257 tests, 1084 assertions**; Deptrac **526 allowed, 0 violations, 0 uncovered**; audit, lint, PHPStan max, style and shell contracts pass | `var/test-runs/run-wlm3wYRM/checks.log` |
+| `./bin/dev test` | **51 tests, 681 assertions**, including **20 CQRS tests / 370 assertions** using real HTTP/CLI/PostgreSQL | `var/test-runs/run-ccxmS6wn/` |
+| `TMPDIR=/tmp/opencode ./bin/dev verify-setup` | Fresh consumer setup and repeatability, unchanged credentials/history/ORM marker through restarts and the full isolated E2E suite | `/tmp/opencode/donmario-setup-WVo9gMEV/` |
+
+Rollback tests observe flushed rows on the owning connection while independent
+reads still see none, then verify zero committed rows after failure. Deferred
+PostgreSQL trigger failure establishes commit rollback and generic HTTP/CLI errors.
+Caught nested validation/handler/query failures invalidate outer writes; nested
+success commits together. Held repository/native-lazy manager instances work after
+failure and retain no failed entities. A deliberate native PDO/DBAL desynchronization
+forces transaction-start failure and proves subsequent connection/state recovery.
+
+Query tests prove nested reads preserve parent writes, commands inside queries are
+rejected, and a fixture's scheduled query-side change is discarded without flush
+or later leakage. Production route exclusion, wrong-message/envelope/stamp rejection,
+module YAML metadata, unsafe handler wiring and public facade restrictions are
+exercised against real Symfony containers. Outage input validation remains 422;
+valid writes fail safely, and committed CQRS data survives database recreation.
+
+The pre-review check took about 26 seconds (architecture PHPUnit about 15.5 seconds);
+the CQRS PostgreSQL phase took about 1.9 seconds on this host. These observations
+are not portable guarantees. Initial failed-run evidence is in
+`var/test-runs/run-IHicDp95/` and `var/test-runs/run-iF0u1UuA/`; those runs stopped at
+the fixture failures and are not passing evidence. Failed directories can retain
+private settings and must not be published wholesale.
+
+### Independent 3b review
+
+Fresh read-only reviewers:
+
+- Runtime/transactions/adapters: `ses_f6e5519eeffePIIpfywMFd0SDO` — approved with no
+  actionable runtime findings after inspecting source and actual execution evidence.
+- Compiler/source/DI boundaries: `ses_f6e551798ffeyJ7Izv8zkSGJUf` — identified two
+  statically declared wiring gaps, then re-reviewed and approved both corrections.
+
+Findings and resolutions:
+
+1. **Post-construction wiring could replace a checked Messenger stack.** The
+   standard-definition validator now rejects arbitrary method calls on checked
+   buses, middleware, handler locators and handler descriptors. The sole exception
+   is one ordinary handling-middleware `setLogger` call referencing the standard
+   logger or Messenger logger. Actual compilation fixtures reject second constructor
+   calls on buses, locators and descriptors, while standard dev tracing/logging works.
+2. **A public alias could expose a private handler.** The pass now rejects public
+   handler definitions and public aliases resolving through chains to effective
+   handlers or same-class copies. Fixtures include a direct alias, an alias chain,
+   a public definition and an alias to an untagged handler copy.
+
+Reverification after these compiler-only corrections:
+
+| Command | Result | Evidence |
+| --- | --- | --- |
+| `./bin/dev composer exec -- php-cs-fixer fix --sequential` | Exit 0; fixture imports formatted | Container output |
+| `./bin/dev console cache:clear` | Exit 0; actual development compilation preserves standard tracing/logger wiring | Container output |
+| `./bin/dev check` | Exit 0; **264 tests, 1091 assertions**, Deptrac **534 allowed / 0 violations / 0 uncovered**; audit/lint/PHPStan/style/shell checks pass | `var/test-runs/run-A1hHkzXl/checks.log` |
+
+The boundary reviewer confirmed all findings resolved and requested no additional
+implementation or verification. Runtime service implementations, adapters,
+configuration and dependencies were unchanged by these corrections; the recorded
+**51-test PostgreSQL/E2E run and clean-consumer verification remain applicable**.
+Only documentation was finalized after re-review. No outstanding checks or findings
+remain for 3b. **The user accepted Subtask 3b on 2026-09-11.** Current Subtask 4
+completed verification/review and user acceptance are linked at the top of this record.

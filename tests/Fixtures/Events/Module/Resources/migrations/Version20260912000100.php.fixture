@@ -1,0 +1,26 @@
+<?php
+
+declare(strict_types=1);
+
+namespace App\Module\EventObserving\Resources\migrations;
+
+use Doctrine\DBAL\Schema\Schema;
+use Doctrine\Migrations\AbstractMigration;
+
+final class Version20260912000100 extends AbstractMigration
+{
+    public function getDescription(): string
+    {
+        return 'Disposable event observation data, with opaque task identifiers and no foreign keys.';
+    }
+
+    public function up(Schema $schema): void
+    {
+        $this->addSql('CREATE TABLE public.event_observing_observation (id UUID NOT NULL, task_id UUID NOT NULL, label VARCHAR(40) NOT NULL, PRIMARY KEY (id))');
+    }
+
+    public function down(Schema $schema): void
+    {
+        $this->addSql('DROP TABLE public.event_observing_observation');
+    }
+}

@@ -10,8 +10,9 @@ services:
             - '../../Application/*/*Command.php'
             - '../../Application/*/*Query.php'
             - '../../Application/*/*Result.php'
+            - '../../Application/*/*Event.php'
             - '../../Domain/'
-            - '../../Contract/'
+            - '../../Infrastructure/Event/'
             - '../../Resources/'
 
     App\Module\TaskTracking\Domain\TaskRepository:

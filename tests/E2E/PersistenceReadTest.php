@@ -26,4 +26,14 @@ final class PersistenceReadTest extends RepositoryTestCase
         self::assertSame(200, $response->getStatusCode());
         self::assertSame('OK', $response->getContent());
     }
+
+    public function testHttpQueryReadsCommandDataAfterDatabaseRecovery(): void
+    {
+        $connection = $this->database();
+        $id = new Filesystem()->readFile('var/e2e-cqrs-id');
+        $response = HttpClient::create()->request('GET', 'http://app:8080/_demo/tasks/'.$id, ['max_duration' => 5]);
+        self::assertSame(200, $response->getStatusCode());
+        self::assertSame(['id' => $id, 'title' => 'cqrs-before-recreation'], $response->toArray());
+        self::assertSame(0, $connection->fetchOne('SELECT count(*) FROM task_tracking_task WHERE title = ?', ['outage-must-not-persist']));
+    }
 }

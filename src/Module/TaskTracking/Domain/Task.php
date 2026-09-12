@@ -4,14 +4,19 @@ declare(strict_types=1);
 
 namespace App\Module\TaskTracking\Domain;
 
+use App\Module\TaskTracking\Domain\Event\TaskCreatedEvent;
+use App\Platform\Event\Recording\RecordsDomainEvents;
+use App\Platform\Event\Recording\RecordsDomainEventsTrait;
 use Doctrine\ORM\Mapping as ORM;
 use Symfony\Bridge\Doctrine\Types\UuidType;
 use Symfony\Component\Uid\Uuid;
 
 #[ORM\Entity]
 #[ORM\Table(name: 'task_tracking_task', schema: 'public')]
-class Task
+class Task implements RecordsDomainEvents
 {
+    use RecordsDomainEventsTrait;
+
     #[ORM\Id]
     #[ORM\Column(type: UuidType::NAME)]
     private Uuid $id;
@@ -24,6 +29,7 @@ class Task
             throw new \InvalidArgumentException('Task title must contain between 1 and 200 characters.');
         }
         $this->id = Uuid::v7();
+        $this->recordDomainEvent(new TaskCreatedEvent($this->id));
     }
 
     public function id(): Uuid

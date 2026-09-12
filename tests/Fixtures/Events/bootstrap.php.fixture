@@ -1,0 +1,14 @@
+<?php
+
+declare(strict_types=1);
+
+use App\Tests\Fixtures\Events\EventsKernel;
+use Composer\Autoload\ClassLoader;
+
+$source = '__SOURCE_ROOT__';
+require_once $source.'/vendor/autoload.php';
+$loader = new ClassLoader();
+$loader->addPsr4('App\\Module\\', __DIR__.'/src/Module');
+$loader->register(true);
+
+return new EventsKernel(__DIR__);

@@ -4,8 +4,11 @@ declare(strict_types=1);
 
 namespace App\Tests\E2E;
 
+use App\Module\TaskTracking\Application\CreateTask\CreateTaskCommand;
 use App\Module\TaskTracking\Domain\Task;
 use App\Module\TaskTracking\Infrastructure\Persistence\DoctrineTaskRepository;
+use App\Platform\Event\Recording\RecordsDomainEvents;
+use App\Platform\Messaging\CommandBus;
 use Doctrine\DBAL\Exception;
 use Doctrine\ORM\EntityManagerInterface;
 use Symfony\Component\Filesystem\Filesystem;
@@ -13,6 +16,16 @@ use Symfony\Component\Uid\Uuid;
 
 final class PersistenceCreateTest extends RepositoryTestCase
 {
+    public function testCommandBusCommitsBeforeDatabaseRecreation(): void
+    {
+        $this->database();
+        $commands = self::getContainer()->get(CommandBus::class);
+        self::assertInstanceOf(CommandBus::class, $commands);
+        $id = $commands->dispatch(new CreateTaskCommand('cqrs-before-recreation'));
+        self::assertInstanceOf(Uuid::class, $id);
+        new Filesystem()->dumpFile('var/e2e-cqrs-id', $id->toRfc4122());
+    }
+
     public function testApplicationRoleCommitsAndReloadsAModuleOwnedTask(): void
     {
         $connection = $this->database();
@@ -25,6 +38,9 @@ final class PersistenceCreateTest extends RepositoryTestCase
         self::assertNull($manager->getClassMetadata(Task::class)->customRepositoryClassName);
         self::assertNull($repository->find(Uuid::v7()));
         $task = new Task('committed-before-recreation');
+        self::assertInstanceOf(RecordsDomainEvents::class, $task);
+        self::assertCount(1, $task->releaseEvents());
+        self::assertFalse($manager->getClassMetadata(Task::class)->hasField('recordedDomainEvents'));
         $repository->add($task);
         self::assertFalse($connection->isTransactionActive());
         self::assertSame(0, $connection->fetchOne('SELECT count(*) FROM task_tracking_task WHERE id = ?', [$task->id()->toRfc4122()]), 'add() must not flush or commit.');
@@ -36,6 +52,12 @@ final class PersistenceCreateTest extends RepositoryTestCase
         self::assertNotSame($task, $reloaded);
         self::assertSame($task->id()->toRfc4122(), $reloaded->id()->toRfc4122());
         self::assertSame('committed-before-recreation', $reloaded->title());
+        self::assertSame([], $reloaded->releaseEvents(), 'Hydration neither replays creation nor persists transient recorded facts.');
+        $manager->clear();
+        $reference = $manager->getReference(Task::class, $task->id());
+        self::assertInstanceOf(Task::class, $reference);
+        self::assertSame('committed-before-recreation', $reference->title());
+        self::assertSame([], $reference->releaseEvents(), 'Native-lazy initialization leaves the opt-in buffer empty.');
         (new Filesystem())->dumpFile('var/e2e-task-id', $task->id()->toRfc4122());
     }
 

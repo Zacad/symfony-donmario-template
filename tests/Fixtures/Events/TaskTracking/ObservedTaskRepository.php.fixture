@@ -1,0 +1,58 @@
+<?php
+
+declare(strict_types=1);
+
+namespace App\Module\TaskTracking\Infrastructure\Testing;
+
+use App\Module\TaskTracking\Domain\Task;
+use App\Module\TaskTracking\Domain\TaskRepository;
+use App\Module\TaskTracking\Infrastructure\Persistence\DoctrineTaskRepository;
+use Doctrine\DBAL\DriverManager;
+use Doctrine\ORM\EntityManagerInterface;
+use Symfony\Component\Uid\Uuid;
+
+/** The cross-module listener uses GetTaskQuery; only its owner reads task SQL. */
+final readonly class ObservedTaskRepository implements TaskRepository
+{
+    public function __construct(private DoctrineTaskRepository $inner, private EntityManagerInterface $manager, private string $probePath)
+    {
+    }
+
+    public function add(Task $task): void
+    {
+        $this->inner->add($task);
+        $connection = $this->manager->getConnection();
+        $observer = DriverManager::getConnection($connection->getParams());
+        try {
+            file_put_contents($this->probePath, json_encode([
+                'kind' => 'producer-add',
+                'task' => $task->id()->toRfc4122(),
+                'transaction' => $connection->fetchOne('SELECT txid_current()::text'),
+                'depth' => $connection->getTransactionNestingLevel(),
+                'committedRows' => $observer->fetchOne('SELECT count(*) FROM task_tracking_task WHERE id = ?', [$task->id()->toRfc4122()]),
+            ], JSON_THROW_ON_ERROR)."\n", FILE_APPEND | LOCK_EX);
+        } finally {
+            $observer->close();
+        }
+    }
+
+    public function find(Uuid $id): ?Task
+    {
+        $connection = $this->manager->getConnection();
+        $observer = DriverManager::getConnection($connection->getParams());
+        try {
+            $proof = [
+                'kind' => 'producer-query',
+                'task' => $id->toRfc4122(),
+                'depth' => $connection->getTransactionNestingLevel(),
+                'managed' => $this->manager->getUnitOfWork()->size(),
+                'committedRows' => $observer->fetchOne('SELECT count(*) FROM task_tracking_task WHERE id = ?', [$id->toRfc4122()]),
+            ];
+            file_put_contents($this->probePath, json_encode($proof, JSON_THROW_ON_ERROR)."\n", FILE_APPEND | LOCK_EX);
+        } finally {
+            $observer->close();
+        }
+
+        return $this->inner->find($id);
+    }
+}

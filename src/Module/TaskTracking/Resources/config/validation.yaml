@@ -1,0 +1,15 @@
+App\Module\TaskTracking\Application\CreateTask\CreateTaskCommand:
+    properties:
+        title:
+            - Sequentially:
+                constraints:
+                    - Charset: { encodings: ['UTF-8'], message: 'Title must be valid UTF-8.' }
+                    - Regex: { pattern: '/\x00/', match: false, message: 'Title cannot contain NUL.' }
+                    - NotBlank: { normalizer: trim, message: 'Title must not be blank.' }
+                    - Length: { max: 200, maxMessage: 'Title must contain at most 200 characters.' }
+
+App\Module\TaskTracking\Application\GetTask\GetTaskQuery:
+    properties:
+        id:
+            - NotBlank: { message: 'Task ID must not be blank.' }
+            - Uuid: { message: 'Task ID must be a valid UUID.' }

@@ -1,0 +1,12 @@
+<?php
+
+declare(strict_types=1);
+
+namespace App\Module\EventObserving\Application\CreateRequiredTasks;
+
+final readonly class CreateRequiredTasksCommand
+{
+    public function __construct(public string $title)
+    {
+    }
+}

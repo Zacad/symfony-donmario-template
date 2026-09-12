@@ -1,0 +1,36 @@
+<?php
+
+declare(strict_types=1);
+
+namespace App\Module\EventObserving\Application\EmitEvents;
+
+use App\Module\EventObserving\Domain\Observation;
+use App\Module\EventObserving\Domain\ObservationRepository;
+use App\Platform\Messaging\ApplicationEventRecorder;
+use Symfony\Component\Messenger\Attribute\AsMessageHandler;
+
+#[AsMessageHandler(bus: 'command.bus')]
+final readonly class EmitEventsHandler
+{
+    public function __construct(private ObservationRepository $observations, private ApplicationEventRecorder $events, private string $scenario)
+    {
+    }
+
+    public function __invoke(EmitEventsCommand $command): void
+    {
+        $this->observations->add(new Observation($command->taskId, 'seed'));
+        if ('zero-budget' === $this->scenario) {
+            for ($position = 1; $position <= 99; ++$position) {
+                $this->events->record(new UnobservedEvent($position));
+            }
+        }
+        $count = match ($this->scenario) {
+            'buffer' => 105,
+            'fifo' => 2,
+            default => 1,
+        };
+        for ($position = 1; $position <= $count; ++$position) {
+            $this->events->record(new ChainEvent($command->taskId, $position));
+        }
+    }
+}

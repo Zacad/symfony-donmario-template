@@ -6,8 +6,10 @@ namespace App\Platform\Architecture;
 
 use Symfony\Component\Config\Resource\DirectoryResource;
 use Symfony\Component\Config\Resource\FileResource;
+use Symfony\Component\DependencyInjection\Argument\ArgumentInterface;
 use Symfony\Component\DependencyInjection\Compiler\CompilerPassInterface;
 use Symfony\Component\DependencyInjection\ContainerBuilder;
+use Symfony\Component\DependencyInjection\Definition;
 
 /** Checks module service files before framework passes change controller visibility. */
 final readonly class ModuleInventoryPass implements CompilerPassInterface
@@ -21,6 +23,7 @@ final readonly class ModuleInventoryPass implements CompilerPassInterface
         $resources = array_map(strval(...), $container->getResources());
         $registered = [];
         foreach ($container->getDefinitions() as $definition) {
+            $this->assertNoData($container, $definition);
             if (!$definition->isAbstract() && !$definition->hasTag('container.excluded') && null !== $definition->getClass()) {
                 $name = $container->getParameterBag()->resolveValue($definition->getClass());
                 if (!is_string($name) || !str_starts_with(strtolower(ltrim($name, '\\')), 'app\\module\\')) {
@@ -31,9 +34,6 @@ final readonly class ModuleInventoryPass implements CompilerPassInterface
                 $class = $container->getReflectionClass(ltrim($name, '\\'))?->name;
                 if (null === $class) {
                     continue;
-                }
-                if (ContractTypes::isDataCandidate($class)) {
-                    throw new \LogicException('module.inventory.data: '.$class.' is message/result/event data and must be excluded from service registration.');
                 }
                 $registered[$class] = true;
                 // Includes explicitly registered Domain services, without making
@@ -58,7 +58,7 @@ final readonly class ModuleInventoryPass implements CompilerPassInterface
                     }
                     $class = 'App\\Module\\'.$module.'\\'.str_replace('/', '\\', substr($file->getPathname(), \strlen($root) + 1, -4));
                     $reflection = $container->getReflectionClass($class);
-                    if (null === $reflection || ContractTypes::isPublic($reflection->name) || $reflection->isInterface() || $reflection->isTrait() || $reflection->isAbstract() || $reflection->isEnum()) {
+                    if (null === $reflection || ContractTypes::isPublic($reflection->name) || ContractTypes::isAnyEventData($reflection->name) || $reflection->isSubclassOf('App\\Platform\\Event\\BaseEvent') || $reflection->isInterface() || $reflection->isTrait() || $reflection->isAbstract() || $reflection->isEnum()) {
                         continue;
                     }
                     $config = $root.'/Resources/config/services.yaml';
@@ -69,6 +69,33 @@ final readonly class ModuleInventoryPass implements CompilerPassInterface
                         throw new \LogicException('module.inventory.service: '.$class.' was not registered.');
                     }
                 }
+            }
+        }
+    }
+
+    private function assertNoData(ContainerBuilder $container, mixed $value): void
+    {
+        if ($value instanceof Definition) {
+            if ($value->isAbstract() && $value->hasTag('container.excluded')) {
+                return;
+            }
+            $name = $container->getParameterBag()->resolveValue($value->getClass());
+            if (is_string($name) && str_starts_with(strtolower(ltrim($name, '\\')), 'app\\')) {
+                $reflection = $container->getReflectionClass(ltrim($name, '\\'), false);
+                $class = $reflection->name ?? ltrim($name, '\\');
+                if (ContractTypes::isEventRecordingSupport($class)) {
+                    throw new \LogicException('module.inventory.support: '.$class.' is Domain event recording support and must be excluded from service registration.');
+                }
+                if (ContractTypes::isDataCandidate($class) || true === $reflection?->isSubclassOf('App\\Platform\\Event\\BaseEvent')) {
+                    throw new \LogicException('module.inventory.data: '.$class.' is message/result/event data and must be excluded from service registration.');
+                }
+            }
+            $this->assertNoData($container, [$value->getArguments(), $value->getProperties(), $value->getMethodCalls(), $value->getFactory(), $value->getConfigurator()]);
+        } elseif ($value instanceof ArgumentInterface) {
+            $this->assertNoData($container, $value->getValues());
+        } elseif (is_array($value)) {
+            foreach ($value as $item) {
+                $this->assertNoData($container, $item);
             }
         }
     }

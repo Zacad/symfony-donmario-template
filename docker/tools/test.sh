@@ -100,6 +100,8 @@ else
     step healthy compose run --rm --no-deps runner php vendor/bin/phpunit tests/E2E/HealthyTest.php
     step migration-tests compose run --rm --no-deps runner php vendor/bin/phpunit tests/E2E/MigrationsTest.php
     step persistence-boundaries compose run --rm --no-deps runner php vendor/bin/phpunit tests/E2E/PersistenceBoundariesTest.php
+    step cqrs compose run --rm --no-deps runner php vendor/bin/phpunit tests/E2E/CqrsTest.php
+    step events compose run --rm --no-deps runner php vendor/bin/phpunit tests/E2E/EventsTest.php
     step persistence-create compose run --rm --no-deps runner php vendor/bin/phpunit tests/E2E/PersistenceCreateTest.php
     step stop-database compose stop database
     step database-down compose run --rm --no-deps runner php vendor/bin/phpunit tests/E2E/DatabaseDownTest.php

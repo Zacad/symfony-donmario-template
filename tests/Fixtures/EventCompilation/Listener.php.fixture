@@ -1,0 +1,26 @@
+<?php
+
+declare(strict_types=1);
+
+namespace App\Module\EventCompiling\Infrastructure\EventListener;
+
+use App\Module\TaskTracking\Application\CreateTask\TaskCreatedEvent;
+use App\Platform\Messaging\CommandBus;
+use Symfony\Component\Messenger\Attribute\AsMessageHandler;
+
+#[AsMessageHandler(bus: 'application.event.bus', priority: 10)]
+final readonly class FirstListener
+{
+    public function __construct(private CommandBus $commands)
+    {
+    }
+
+    public function __invoke(TaskCreatedEvent $event): void
+    {
+    }
+
+    public static function create(CommandBus $commands): self
+    {
+        return new self($commands);
+    }
+}

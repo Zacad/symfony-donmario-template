@@ -1,0 +1,12 @@
+<?php
+
+declare(strict_types=1);
+
+namespace App\Module\EventObserving\Application\GetObservation;
+
+final readonly class GetObservationResult
+{
+    public function __construct(public int $count)
+    {
+    }
+}

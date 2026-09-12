@@ -1,0 +1,10 @@
+framework:
+    validation:
+        mapping:
+            paths:
+                - '%kernel.project_dir%/src/Module/TaskTracking/Resources/config/validation.yaml'
+
+when@test:
+    framework:
+        validation:
+            not_compromised_password: false

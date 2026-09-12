@@ -74,6 +74,9 @@ final class SourceRules
                     $errors[] = $this->diagnostic('source.declaration', $path, $declaration, $class, 'duplicate declaration');
                 }
                 $classes[$class] = [$declaration, $path];
+                if (ContractTypes::isOwnEventListener($class)) {
+                    $errors = [...$errors, ...$this->listenerDependencyViolations($class, $declaration, $path, $nodes)];
+                }
                 $owner = ModuleMap::owner($class);
                 if (!$this->hasOwnedLayout($class) || (null !== $owner && !\in_array($owner, $modules, true))) {
                     $errors[] = $this->diagnostic('source.layout', $path, $declaration, $class, 'expected App\\Module\\<ResponsibilityEndingInIng> in an approved module directory, App\\Platform, or App\\Kernel');
@@ -83,9 +86,13 @@ final class SourceRules
                     $errors[] = $this->diagnostic('source.path', $path, $declaration, $class, 'namespace and filename must match exactly (expected '.$expectedPath.')');
                 }
                 $pathClass = 'App\\'.str_replace('/', '\\', substr($path, 4, -4));
+                if (null !== $owner && str_contains($class, '\\EventListener\\')
+                    && !ContractTypes::isOwnEventListener($class) && 1 !== preg_match(ContractTypes::frameworkListenerPattern(), $class)) {
+                    $errors[] = $this->diagnostic('event.listener_path', $path, $declaration, $class, 'listeners require Infrastructure/EventListener/<Name>Listener or Infrastructure/Framework/<Library>/EventListener/<Name>');
+                }
                 if (ContractTypes::isDataCandidate($class) || ContractTypes::isDataCandidate($pathClass)) {
-                    if (!ContractTypes::isPublic($class)) {
-                        $errors[] = $this->diagnostic('contract.path', $path, $declaration, $class, 'public data belongs in Application/<UseCase>/<Name>{Command,Query,Result} or Contract/Event/<Name>');
+                    if (!ContractTypes::isPublic($class) && !ContractTypes::isAnyEventData($class) && !ContractTypes::isEventPrimitive($class)) {
+                        $errors[] = $this->diagnostic('contract.path', $path, $declaration, $class, 'data belongs in Application/<UseCase>/<Name>{Command,Query,Result,Event}, Domain/Event/<Name>Event or Infrastructure/Event/<Name>Event; Contract layouts are forbidden');
                     }
                 }
             }
@@ -93,9 +100,23 @@ final class SourceRules
         if ([] === $classes) {
             $errors[] = 'source.coverage: no named first-party declarations were analysed.';
         }
+        foreach (ContractTypes::eventPrimitives() as $primitive) {
+            if (!isset($classes[$primitive])) {
+                $errors[] = 'event.primitive: '.$primitive.' is a required first-party event primitive.';
+            }
+        }
         foreach ($classes as $class => [$declaration, $path]) {
-            if (ContractTypes::isPublic($class)) {
+            if (ContractTypes::isEventPrimitive($class)) {
+                $parent = 'App\\Platform\\Event\\BaseEvent' === $class ? null : 'App\\Platform\\Event\\BaseEvent';
+                if (!$declaration instanceof Stmt\Class_ || !$declaration->isAbstract() || !$declaration->isReadonly()
+                    || $declaration->isFinal() || $parent !== $declaration->extends?->toString()
+                    || [] !== $declaration->implements || [] !== $declaration->stmts || [] !== $declaration->attrGroups) {
+                    $errors[] = $this->diagnostic('event.primitive', $path, $declaration, $class, 'event primitives must be empty abstract readonly classes with only the exact BaseEvent parent for categories');
+                }
+            } elseif (ContractTypes::isPublic($class) || ContractTypes::isAnyEventData($class)) {
                 $errors = [...$errors, ...$this->contractViolations($class, $declaration, $path, $classes)];
+            } elseif ($this->hasEventAncestor($declaration, $classes)) {
+                $errors[] = $this->diagnostic('contract.path', $path, $declaration, $class, 'event subclasses require an exact category location and direct primitive parent; intermediate bases are forbidden');
             }
         }
         sort($errors);
@@ -111,9 +132,61 @@ final class SourceRules
             || 1 === preg_match('~^App\\\\Platform(?:\\\\'.$part.')+$~D', $class)
             || 1 === preg_match('~^App\\\\Module\\\\'.$part.'ing\\\\(?:'
                 .'(?:Application|Domain|Infrastructure)(?:\\\\'.$part.')+'
-                .'|UI\\\\(?:Http|Api|Console|Event)(?:\\\\'.$part.')+'
-                .'|Resources\\\\migrations\\\\'.$part
-                .'|Contract\\\\Event\\\\'.$part.')$~D', $class);
+                .'|UI\\\\(?:Http|Api|Console)(?:\\\\'.$part.')+'
+                .'|Resources\\\\migrations\\\\'.$part.')$~D', $class);
+    }
+
+    /**
+     * @param array<Node> $nodes
+     *
+     * @return list<string>
+     */
+    private function listenerDependencyViolations(string $class, Stmt\ClassLike $declaration, string $path, array $nodes): array
+    {
+        $errors = [];
+        $finder = new NodeFinder();
+        $imports = [];
+        foreach ($finder->find($nodes, static fn (Node $node): bool => $node instanceof Stmt\Use_ || $node instanceof Stmt\GroupUse) as $use) {
+            if (!$use instanceof Stmt\Use_ && !$use instanceof Stmt\GroupUse) {
+                continue;
+            }
+            foreach ($use->uses as $item) {
+                if (Stmt\Use_::TYPE_NORMAL === ($item->type ?: $use->type)) {
+                    $prefix = $use instanceof Stmt\GroupUse ? $use->prefix->toString().'\\' : '';
+                    $imports[] = new Node\Name\FullyQualified($prefix.$item->name->toString(), $item->name->getAttributes());
+                }
+            }
+        }
+        // Deptrac permits edges within a module's EventListener layer. Inspect
+        // resolved class-name syntax so a listener cannot invoke another listener
+        // directly and bypass Messenger's subscription/priority rules. This does
+        // not interpret strings, dynamic lookups or arbitrary callable bodies.
+        foreach ($finder->findInstanceOf([$declaration, ...$imports], Node::class) as $node) {
+            $references = match (true) {
+                $node instanceof Node\Name\FullyQualified && in_array($node, $imports, true) => [$node],
+                $node instanceof Stmt\Class_ => [$node->extends, ...$node->implements],
+                $node instanceof Stmt\Interface_ => $node->extends,
+                $node instanceof Stmt\Enum_ => $node->implements,
+                $node instanceof Stmt\TraitUse => $node->traits,
+                $node instanceof Node\Attribute => [$node->name],
+                $node instanceof Expr\New_, $node instanceof Expr\StaticCall,
+                $node instanceof Expr\StaticPropertyFetch, $node instanceof Expr\ClassConstFetch,
+                $node instanceof Expr\Instanceof_ => [$node->class],
+                $node instanceof Node\Param, $node instanceof Stmt\Property,
+                $node instanceof Stmt\ClassConst => [$node->type],
+                $node instanceof Node\FunctionLike => [$node->getReturnType()],
+                $node instanceof Stmt\Catch_ => $node->types,
+                default => [],
+            };
+            foreach ($finder->findInstanceOf(array_filter($references), Node\Name::class) as $reference) {
+                $target = $reference->toString();
+                if (0 !== strcasecmp($class, $target) && 1 === preg_match(ContractTypes::listenerPattern().'i', $target)) {
+                    $errors[] = $this->diagnostic('event.listener_dependency', $path, $reference, $class, 'must not depend on listener '.$target.'; invoke use cases through CommandBus/QueryBus and let Messenger deliver events');
+                }
+            }
+        }
+
+        return $errors;
     }
 
     /**
@@ -148,7 +221,7 @@ final class SourceRules
         foreach ((new NodeFinder())->findInstanceOf([$node], Node\Attribute::class) as $attribute) {
             $errors[] = $this->diagnostic('contract.attributes', $path, $attribute, $class, 'attributes are behavior/wiring, not contract data');
         }
-        if ($node instanceof Stmt\Enum_) {
+        if ($node instanceof Stmt\Enum_ && !ContractTypes::isAnyEventData($class)) {
             if (null === $node->scalarType || !\in_array($node->scalarType->name, ['string', 'int'], true) || [] !== $node->implements) {
                 $errors[] = $this->diagnostic('contract.enum', $path, $node, $class, 'expected a string/int backed enum without interfaces');
             }
@@ -175,8 +248,8 @@ final class SourceRules
         if (!$node instanceof Stmt\Class_) {
             return [...$errors, $this->diagnostic('contract.shape', $path, $node, $class, 'expected a final readonly DTO or backed data enum')];
         }
-        if (!$node->isFinal() || !$node->isReadonly() || null !== $node->extends || [] !== $node->implements) {
-            $errors[] = $this->diagnostic('contract.shape', $path, $node, $class, 'DTO must be final readonly without inheritance or interfaces');
+        if (!$node->isFinal() || !$node->isReadonly() || ContractTypes::eventCategory($class) !== $node->extends?->toString() || [] !== $node->implements) {
+            $errors[] = $this->diagnostic('contract.shape', $path, $node, $class, 'DTO must be final readonly without interfaces; only events extend their exact direct category primitive');
         }
         foreach ($node->stmts as $statement) {
             if (!$statement instanceof Stmt\ClassMethod || '__construct' !== $statement->name->toString()) {
@@ -191,7 +264,7 @@ final class SourceRules
                     || $parameter->byRef || $parameter->variadic || [] !== $parameter->hooks) {
                     $errors[] = $this->diagnostic('contract.property', $path, $parameter, $class, 'parameters must be promoted public data properties without references, variadics or hooks');
                 }
-                if (!$this->isDataType($parameter->type, $classes, ContractTypes::isEventData($class))) {
+                if (!$this->isDataType($parameter->type, $classes, $class)) {
                     $errors[] = $this->diagnostic('contract.type', $path, $parameter, $class, 'expected scalar, declared public data, DateTimeImmutable or Symfony\\Component\\Uid\\Uuid; events may reference only public event data; collections and behavior-bearing types are forbidden');
                 }
                 if (null !== $parameter->default && !$this->isLiteral($parameter->default)) {
@@ -204,14 +277,14 @@ final class SourceRules
     }
 
     /** @param array<string, array{Stmt\ClassLike, string}> $classes */
-    private function isDataType(?Node $type, array $classes, bool $eventsOnly): bool
+    private function isDataType(?Node $type, array $classes, string $source): bool
     {
         if ($type instanceof Node\NullableType) {
-            return $this->isDataType($type->type, $classes, $eventsOnly);
+            return $this->isDataType($type->type, $classes, $source);
         }
         if ($type instanceof Node\UnionType) {
             foreach ($type->types as $member) {
-                if (!$this->isDataType($member, $classes, $eventsOnly)) {
+                if (!$this->isDataType($member, $classes, $source)) {
                     return false;
                 }
             }
@@ -224,7 +297,39 @@ final class SourceRules
         if ($type instanceof Node\Name) {
             $name = $type->toString();
 
-            return ContractTypes::isImmutable($name) || (($eventsOnly ? ContractTypes::isEventData($name) : ContractTypes::isPublic($name)) && isset($classes[$name]));
+            if (ContractTypes::isImmutable($name)) {
+                return true;
+            }
+            // Internal events carry minimal scalar/immutable snapshots, never entities,
+            // services, public Application data or abstract category-typed payloads.
+            if (ContractTypes::isAnyEventData($source) && !ContractTypes::isEventData($source)) {
+                return false;
+            }
+            if (!isset($classes[$name]) || !(ContractTypes::isEventData($source) ? ContractTypes::isEventData($name) : ContractTypes::isPublic($name))) {
+                return false;
+            }
+            $target = $classes[$name][0];
+
+            return !ContractTypes::isAnyEventData($name) || ($target instanceof Stmt\Class_ && ContractTypes::eventCategory($name) === $target->extends?->toString());
+        }
+
+        return false;
+    }
+
+    /** @param array<string, array{Stmt\ClassLike, string}> $classes */
+    private function hasEventAncestor(Stmt\ClassLike $node, array $classes): bool
+    {
+        $seen = [];
+        while ($node instanceof Stmt\Class_ && null !== $node->extends) {
+            $parent = $node->extends->toString();
+            if (ContractTypes::isEventPrimitive($parent)) {
+                return true;
+            }
+            if (isset($seen[$parent]) || !isset($classes[$parent])) {
+                return false;
+            }
+            $seen[$parent] = true;
+            $node = $classes[$parent][0];
         }
 
         return false;

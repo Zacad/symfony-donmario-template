@@ -16,7 +16,6 @@ use App\Module\DiConsuming\Application\Lookup\LookupQuery;
 use App\Module\DiConsuming\Application\Lookup\LookupResult;
 use App\Module\DiConsuming\Application\RepositoryConsumer;
 use App\Module\DiConsuming\Application\Subscriber;
-use App\Module\DiConsuming\Contract\Event\Happened;
 use App\Module\DiConsuming\Domain\LocalDependency;
 use App\Module\DiConsuming\Domain\Record;
 use App\Module\DiConsuming\Domain\RepositoryPolicy;
@@ -30,8 +29,19 @@ use App\Module\DiProviding\Application\UnusedConsumer;
 use App\Module\DiProviding\Domain\Record as ForeignRecord;
 use App\Module\DiProviding\Infrastructure\Factory as ForeignFactory;
 use App\Module\DiProviding\Infrastructure\Repository as ForeignRepository;
+use App\Module\EventChecking\Application\Observe\ObservedEvent;
+use App\Module\EventChecking\Domain\Event\ChangedEvent;
+use App\Module\EventChecking\Infrastructure\Event\ReceivedEvent;
+use App\Module\EventChecking\Infrastructure\EventListener\ObservedListener;
+use App\Platform\Architecture\ContractTypes;
+use App\Platform\Architecture\ModuleInventoryPass;
+use App\Platform\Architecture\ModuleMap;
 use App\Platform\Architecture\ModuleServicesPass;
 use App\Platform\DiFixture\Wrapper;
+use App\Platform\Event\Recording\RecordsDomainEvents;
+use App\Platform\Event\Recording\RecordsDomainEventsTrait;
+use App\Platform\Messaging\CommandBus;
+use App\Tests\Fixtures\Inventory\InventoryFixture;
 use App\Tests\Fixtures\Services\ContainerFacade;
 use Doctrine\Bundle\DoctrineBundle\DependencyInjection\Compiler\ServiceRepositoryCompilerPass;
 use Doctrine\Bundle\DoctrineBundle\Registry;
@@ -57,8 +67,10 @@ use Symfony\Component\DependencyInjection\Definition;
 use Symfony\Component\DependencyInjection\ParameterBag\ContainerBag;
 use Symfony\Component\DependencyInjection\Reference;
 use Symfony\Component\DependencyInjection\ServiceLocator;
+use Symfony\Component\Messenger\MessageBus;
 
 require_once __DIR__.'/../Fixtures/Services/ModuleServices.php';
+require_once __DIR__.'/../Fixtures/Inventory/EventBoundaryServices.php';
 
 final class ModuleServicesPassTest extends TestCase
 {
@@ -255,6 +267,32 @@ final class ModuleServicesPassTest extends TestCase
         $container->setAlias('friendly.wrapper', 'platform.wrapper');
         $container->register('consumer', Consumer::class)->setArgument(0, new Reference('friendly.wrapper'));
         $this->compileFails($container, 'module.services.platform: "consumer" (DiConsuming) -> "platform.wrapper" [App\Platform\DiFixture\Wrapper]; Platform is not a module-facing facade.');
+    }
+
+    public function testRawMessengerBusCannotHideBehindAnAlias(): void
+    {
+        $container = $this->container();
+        $container->register('raw.bus', MessageBus::class)->setArgument(0, []);
+        $container->setAlias('friendly.bus', 'raw.bus');
+        $container->register('consumer', Consumer::class)->setArgument(0, new Reference('friendly.bus'));
+        $this->compileFails($container, 'module.services.messenger: "consumer" (DiConsuming) -> "raw.bus"; use the approved command/query facade instead of raw Messenger services.');
+    }
+
+    public function testDomainCannotConsumeTheCommandFacade(): void
+    {
+        $container = $this->container();
+        $container->register('raw.bus', MessageBus::class)->setArgument(0, []);
+        $container->register(CommandBus::class)->setArgument(0, new Reference('raw.bus'));
+        $container->register('consumer', RepositoryPolicy::class)->setArgument(0, new Reference(CommandBus::class));
+        $this->compileFails($container, sprintf('module.services.platform: "consumer" (DiConsuming) -> "%s" [%s]; Platform is not a module-facing facade.', CommandBus::class, CommandBus::class));
+    }
+
+    public function testInlineFacadeCannotUseTheNamedServiceException(): void
+    {
+        $container = $this->container();
+        $container->register('raw.bus', MessageBus::class)->setArgument(0, []);
+        $container->register('consumer', Consumer::class)->setArgument(0, new Definition(CommandBus::class, [new Reference('raw.bus')]));
+        $this->compileFails($container, sprintf('module.services.platform: "consumer" (DiConsuming) -> "consumer (inline %s)" [%s]; Platform is not a module-facing facade.', CommandBus::class, CommandBus::class));
     }
 
     public function testSameModuleAutowiringUsesTheDefinitionClassAndSurvivesCompilation(): void
@@ -486,13 +524,19 @@ final class ModuleServicesPassTest extends TestCase
         $this->compileFails($container, sprintf('module.services.data: "data.service" [%s] is %s data, not a service.', $class, $kind));
     }
 
-    /** @return iterable<string, array{class-string, string}> */
+    /** @return iterable<string, array{string, string}> */
     public static function dataServices(): iterable
     {
         yield 'Application command' => [LookupCommand::class, 'contract'];
         yield 'Application query' => [LookupQuery::class, 'contract'];
         yield 'Application result' => [LookupResult::class, 'contract'];
-        yield 'public event' => [Happened::class, 'contract'];
+        yield 'public event' => [ObservedEvent::class, 'contract'];
+        yield 'domain event' => [ChangedEvent::class, 'contract'];
+        yield 'infrastructure event' => [ReceivedEvent::class, 'contract'];
+        yield 'misplaced subclass' => [\App\Module\EventChecking\Application\Misplaced::class, 'contract'];
+        foreach (ContractTypes::eventPrimitives() as $class) {
+            yield $class => [$class, 'contract'];
+        }
         yield 'ORM entity' => [Record::class, 'entity'];
         yield 'migration' => [Version20990101000000::class, 'migration'];
     }
@@ -502,6 +546,9 @@ final class ModuleServicesPassTest extends TestCase
         $container = $this->container();
         $container->register(LookupResult::class)->setAbstract(true)->addTag('container.excluded');
         $container->register(Record::class)->setAbstract(true)->addTag('container.excluded');
+        foreach (ContractTypes::eventPrimitives() as $class) {
+            $container->register($class)->setAbstract(true)->addTag('container.excluded');
+        }
         $container->register('consumer', Consumer::class)->setAutowired(true);
         $this->expose($container, 'consumer');
 
@@ -527,6 +574,270 @@ final class ModuleServicesPassTest extends TestCase
         $container->register('consumer', Consumer::class)->setArgument(0, new Reference('data.alias'));
 
         $this->compileFails($container, sprintf('module.services.data: "data.named" [%s] is contract data, not a service.', LookupResult::class));
+    }
+
+    #[DataProvider('dataServices')]
+    public function testInlineDataIsRejectedUnderVendorWiring(string $class, string $kind): void
+    {
+        $container = $this->container();
+        $container->register('vendor.root', \stdClass::class)->setPublic(true)->setProperty('data', new Definition($class));
+        $this->compileFails($container, sprintf('module.services.data: "vendor.root (inline %s)" [%s] is %s data, not a service.', $class, $class, $kind));
+    }
+
+    public function testOwnListenerUsesPrivateExactBusService(): void
+    {
+        $container = $this->container();
+        $container->register('raw.bus', MessageBus::class)->setArgument(0, []);
+        $container->register(CommandBus::class)->setArgument(0, new Reference('raw.bus'));
+        $container->register('consumer', ObservedListener::class)->setArgument(0, new Reference(CommandBus::class));
+        $this->expose($container, 'consumer');
+        $container->compile();
+        $listener = $this->service($container);
+        self::assertInstanceOf(ObservedListener::class, $listener);
+        self::assertInstanceOf(CommandBus::class, $listener->dependency);
+        self::assertFalse($container->has('consumer'));
+    }
+
+    /** @return iterable<string, array{string}> */
+    public static function listenerWiring(): iterable
+    {
+        foreach (['alias', 'inline', 'locator', 'port setter', 'property', 'nested argument'] as $wiring) {
+            yield $wiring => [$wiring];
+        }
+    }
+
+    #[DataProvider('listenerWiring')]
+    public function testListenerCannotReachOwnRepositoryEvenThroughAPort(string $wiring): void
+    {
+        $container = $this->container();
+        $repository = \App\Module\EventChecking\Infrastructure\Repository::class;
+        $container->register('repository', $repository);
+        $container->setAlias('friendly.repository', 'repository');
+        $reference = new Reference('friendly.repository');
+        $listener = $container->register('consumer', ObservedListener::class);
+        $target = 'repository';
+        $class = $repository;
+        match ($wiring) {
+            'inline' => $listener->setArgument(0, new Definition($repository)),
+            'locator' => $listener->setArgument(0, $this->locator($container, $reference)),
+            'port setter' => $listener->addMethodCall('setRepository', [$reference]),
+            'property' => $listener->setProperty('dependency', $reference),
+            'nested argument' => $listener->setArgument(0, ['repository' => $reference]),
+            default => $listener->setArgument(0, $reference),
+        };
+        if ('inline' === $wiring) {
+            $target = 'consumer (inline '.$repository.')';
+        } elseif ('locator' === $wiring) {
+            $target = 'technical.locator';
+            $class = ServiceLocator::class;
+        }
+        $this->compileFails($container, sprintf('module.services.listener_dependency: "consumer" -> "%s" [%s]; own event listeners may inject only exact command/query helpers or immutable values.', $target, $class));
+    }
+
+    public function testListenerCannotBeExposedByPublicAliasChain(): void
+    {
+        $container = $this->container();
+        $container->register('consumer', ObservedListener::class);
+        $container->setAlias('private.alias', 'consumer');
+        $container->setAlias('public.alias', 'private.alias')->setPublic(true);
+        $this->compileFails($container, 'module.services.listener_private: public.alias exposes consumer.');
+    }
+
+    public function testExplicitAbstractPrimitiveRegistrationIsStillData(): void
+    {
+        $container = $this->container();
+        $class = \App\Platform\Event\BaseEvent::class;
+        $container->register('primitive', $class)->setAbstract(true);
+        // Exercise the pass before Symfony removes abstract definitions.
+        $this->expectExceptionMessage('module.services.data: "primitive" ['.$class.'] is contract data, not a service.');
+        new ModuleServicesPass()->process($container);
+    }
+
+    public function testEarlyInventoryRejectsInlineEventBeforeAutowiring(): void
+    {
+        $container = new ContainerBuilder();
+        $container->register('vendor.root', \stdClass::class)->setProperty('data', new Definition(ChangedEvent::class));
+        $this->expectExceptionMessage('module.inventory.data: '.ChangedEvent::class.' is message/result/event data and must be excluded from service registration.');
+        new ModuleInventoryPass(new ModuleMap('/tmp/unused-event-inventory'))->process($container);
+    }
+
+    public function testRealModulePrototypeExcludesEveryEventCategory(): void
+    {
+        InventoryFixture::run(function (InventoryFixture $fixture): void {
+            $fixture->addModule($fixture->module);
+            $fixture->addUseCase($fixture->module);
+            $events = $fixture->addEvents($fixture->module);
+            $container = $fixture->container();
+            $container->compile();
+            foreach ($events as $class) {
+                self::assertTrue(class_exists($class));
+                self::assertFalse($container->has($class));
+            }
+        });
+    }
+
+    public function testConcreteDataCannotPretendToBeAnExcludedPlaceholder(): void
+    {
+        $container = $this->container();
+        $container->register('event', ObservedEvent::class)->addTag('container.excluded');
+        $this->compileFails($container, sprintf('module.services.data: "event" [%s] is contract data, not a service.', ObservedEvent::class));
+    }
+
+    /** @return iterable<string, array{string, string, bool}> */
+    public static function recordingSupportRegistrations(): iterable
+    {
+        foreach ([RecordsDomainEvents::class, RecordsDomainEventsTrait::class] as $class) {
+            foreach (['named', 'inline', 'abstract', 'alias', 'noncanonical', 'concrete excluded'] as $wiring) {
+                foreach ([true, false] as $early) {
+                    yield $class.' '.$wiring.($early ? ' early' : ' late') => [$class, $wiring, $early];
+                }
+            }
+        }
+    }
+
+    #[DataProvider('recordingSupportRegistrations')]
+    public function testRecordingSupportCannotBecomeAService(string $class, string $wiring, bool $early): void
+    {
+        if ('noncanonical' === $wiring) {
+            // PHP's case-insensitive lookup applies once the declaration is loaded.
+            self::assertTrue(interface_exists($class) || trait_exists($class));
+        }
+        $container = new ContainerBuilder();
+        $definition = new Definition('noncanonical' === $wiring ? '\\'.strtolower($class) : $class);
+        $id = 'support.named';
+        if ('inline' === $wiring) {
+            $container->register('vendor.root', \stdClass::class)->setProperty('support', new ServiceClosureArgument($definition));
+            $id = 'vendor.root (inline '.$class.')';
+        } else {
+            $container->setDefinition($id, $definition);
+            if ('abstract' === $wiring) {
+                $definition->setAbstract(true);
+            } elseif ('concrete excluded' === $wiring) {
+                $definition->addTag('container.excluded');
+            } elseif ('alias' === $wiring) {
+                $container->setAlias('support.alias', $id);
+                $container->register('consumer', Consumer::class)->setArgument(0, new Reference('support.alias'));
+            }
+        }
+        $this->expectException(\LogicException::class);
+        $this->expectExceptionMessage($early
+            ? 'module.inventory.support: '.$class.' is Domain event recording support and must be excluded from service registration.'
+            : sprintf('module.services.support: "%s" [%s] is Domain event recording support, not a service.', $id, $class));
+        // Exercise each guard independently: Symfony may reject interface/trait
+        // construction before the late pass in an ordinary compilation.
+        if ($early) {
+            new ModuleInventoryPass(new ModuleMap('/tmp/unused-recording-inventory'))->process($container);
+        } else {
+            new ModuleServicesPass()->process($container);
+        }
+    }
+
+    /** @return iterable<string, array{string, string}> */
+    public static function recordingSupportInjections(): iterable
+    {
+        foreach ([RecordsDomainEvents::class, RecordsDomainEventsTrait::class] as $support) {
+            foreach ([Consumer::class, ObservedListener::class, \App\Module\EventChecking\UI\Http\Controller::class] as $consumer) {
+                yield $consumer.' '.$support => [$support, $consumer];
+            }
+        }
+    }
+
+    #[DataProvider('recordingSupportInjections')]
+    public function testResolvedApplicationListenerAndUiWiringCannotInjectRecordingSupport(string $support, string $consumer): void
+    {
+        $container = $this->container();
+        $container->register('consumer', $consumer);
+        // Insert resolved wiring at the late boundary, after Symfony's own
+        // interface/trait construction checks, so this proves our guard as well.
+        $container->addCompilerPass(new class($support) implements CompilerPassInterface {
+            public function __construct(private readonly string $support)
+            {
+            }
+
+            public function process(ContainerBuilder $container): void
+            {
+                $container->register('support.named', $this->support);
+                $container->setAlias('support.alias', 'support.named');
+                $container->getDefinition('consumer')->setArgument(0, new Reference('support.alias'));
+            }
+        }, PassConfig::TYPE_BEFORE_REMOVING, 1);
+        $this->compileFails($container, sprintf('module.services.support: "support.named" [%s] is Domain event recording support, not a service.', $support));
+    }
+
+    public function testRecordingSupportAndOptInEntitiesRemainSeparateFromPublicDataAndServices(): void
+    {
+        InventoryFixture::run(function (InventoryFixture $fixture): void {
+            $fixture->addModule($fixture->module);
+            $entities = $fixture->addRecordingEntities($fixture->module);
+            $container = $fixture->container();
+            $container->compile();
+            foreach ([RecordsDomainEvents::class, RecordsDomainEventsTrait::class, ...$entities] as $class) {
+                self::assertFalse(ContractTypes::isPublic($class));
+                self::assertFalse(ContractTypes::isDataCandidate($class));
+                self::assertFalse(ContractTypes::isEventPrimitive($class));
+                self::assertFalse(ContractTypes::isAnyEventData($class));
+                self::assertNull(ContractTypes::messageKind($class));
+                self::assertFalse($container->has($class));
+                self::assertSame(!in_array($class, $entities, true), ContractTypes::isEventRecordingSupport($class));
+            }
+            foreach ($entities as $class) {
+                $entity = new $class();
+                self::assertInstanceOf(RecordsDomainEvents::class, $entity);
+                self::assertSame([], $entity->releaseEvents());
+                $explicit = $this->container();
+                $explicit->register('recording.entity', $class);
+                $this->compileFails($explicit, sprintf('module.services.data: "recording.entity" [%s] is entity data, not a service.', $class));
+            }
+        });
+        foreach (['App\\Platform\\Event\\Recording\\OtherSupport', RecordsDomainEvents::class.'Child', 'App\\Module\\EventChecking\\Domain\\RecordsDomainEvents', ...ContractTypes::eventPrimitives()] as $class) {
+            self::assertFalse(ContractTypes::isEventRecordingSupport($class));
+        }
+        self::assertCount(4, ContractTypes::eventPrimitives());
+    }
+
+    public function testRecordingSupportExcludedPlaceholdersRemainValid(): void
+    {
+        $container = $this->container();
+        foreach ([RecordsDomainEvents::class, RecordsDomainEventsTrait::class] as $class) {
+            $container->register($class)->setAbstract(true)->addTag('container.excluded');
+        }
+        new ModuleInventoryPass(new ModuleMap('/tmp/unused-recording-inventory'))->process($container);
+        $container->compile();
+        self::assertFalse($container->has(RecordsDomainEvents::class));
+        self::assertFalse($container->has(RecordsDomainEventsTrait::class));
+    }
+
+    /** @return iterable<string, array{string}> */
+    public static function recorderConsumers(): iterable
+    {
+        yield 'Domain' => [RepositoryPolicy::class];
+        yield 'Infrastructure' => [DoctrineConsumer::class];
+        yield 'own event listener' => [ObservedListener::class];
+        yield 'UI' => [\App\Module\EventChecking\UI\Http\Controller::class];
+    }
+
+    #[DataProvider('recorderConsumers')]
+    public function testRecorderIsForbiddenOutsideApplicationImplementation(string $consumer): void
+    {
+        $container = $this->container();
+        $recorder = \App\Platform\Messaging\ApplicationEventRecorder::class;
+        $container->register($recorder);
+        $container->register('consumer', $consumer)->setArgument(0, new Reference($recorder));
+        $module = ModuleMap::owner($consumer);
+        $this->compileFails($container, sprintf('module.services.platform: "consumer" (%s) -> "%s" [%s]; Platform is not a module-facing facade.', $module, $recorder, $recorder));
+    }
+
+    public function testResolvedEventClassificationRequiresTheDirectMatchingCategory(): void
+    {
+        foreach ([ObservedEvent::class, ChangedEvent::class, ReceivedEvent::class] as $class) {
+            self::assertTrue(ContractTypes::isConcreteEvent(new \ReflectionClass($class)));
+        }
+        foreach ([\App\Module\EventChecking\Application\Observe\WrongCategoryEvent::class, \App\Module\EventChecking\Application\Observe\UnrelatedEvent::class, \App\Module\EventChecking\Application\Misplaced::class, \App\Platform\Event\ApplicationEvent::class] as $class) {
+            self::assertFalse(ContractTypes::isConcreteEvent(new \ReflectionClass($class)));
+        }
+        self::assertSame('event', ContractTypes::messageKind(ObservedEvent::class));
+        self::assertNull(ContractTypes::messageKind(ChangedEvent::class));
+        self::assertNull(ContractTypes::messageKind(ReceivedEvent::class));
     }
 
     public function testExpressionWiringHasASpecificUnsupportedDiagnostic(): void

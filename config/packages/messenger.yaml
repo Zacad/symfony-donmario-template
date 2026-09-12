@@ -1,0 +1,27 @@
+framework:
+    messenger:
+        default_bus: command.bus
+        buses:
+            command.bus:
+                default_middleware: false
+                middleware:
+                    - app.command_scope
+                    - app.command_policy
+                    - add_bus_name_stamp_middleware
+                    - validation
+                    - App\Platform\Messaging\CommandTransactionMiddleware
+                    - handle_message
+            query.bus:
+                default_middleware: false
+                middleware:
+                    - app.query_scope
+                    - app.query_policy
+                    - add_bus_name_stamp_middleware
+                    - validation
+                    - handle_message
+            application.event.bus:
+                default_middleware: false
+                middleware:
+                    - App\Platform\Messaging\EventPolicyMiddleware
+                    - add_bus_name_stamp_middleware
+                    - handle_message: { index_1: true }

@@ -156,12 +156,6 @@ namespace App\Module\DiConsuming\Application\Lookup {
     }
 }
 
-namespace App\Module\DiConsuming\Contract\Event {
-    final readonly class Happened
-    {
-    }
-}
-
 namespace App\Module\DiConsuming\Infrastructure {
     use App\Module\DiConsuming\Domain\Record;
     use App\Module\DiConsuming\Domain\RepositoryPort;

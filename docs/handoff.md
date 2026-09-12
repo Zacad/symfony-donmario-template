@@ -2,7 +2,7 @@
 
 ## Status and next action
 
-Date: **2026-09-11**
+Date: **2026-09-12**
 
 Repository: `/var/home/adam/Projects/symfony-donmario-template`
 
@@ -13,17 +13,19 @@ The user has accepted:
   Domain repository interfaces and Infrastructure Doctrine implementations.
 - **Subtask 3a:** Application public-data co-location, dependency boundaries and
   service exclusions; accepted on **2026-09-11**.
+- **Subtask 3b:** synchronous CQRS, YAML validation, shared HTTP/CLI adapters,
+  transaction coordination and handler/wiring checks; accepted on **2026-09-11**.
+- **Subtask 4:** layered events, best-effort postcommit delivery, category-only
+  primitives and the opt-in Domain-event recording interface/trait.
 
 Implementation, actual container/PostgreSQL verification and independent reviews
-are complete for all three accepted subtasks. All review findings are resolved.
+are complete for all accepted subtasks. All review findings are resolved.
 
-The user subsequently chose to co-locate public commands, queries and results
-beside their handlers in `Application/<UseCase>`, and approved the bounded
-documentation/architecture-check alignment plan on **2026-09-11**.
-
-The user accepted the completed Subtask 3a and requested continuation.
-**Current: review the proposed Subtask 3b CQRS/transaction design and obtain approval.**
-Subtask 3b implementation has **not** been approved.
+**Subtask 4 is accepted, including the opt-in recording refactor.** Implementation,
+verification and fresh independent reviews are complete, with all findings resolved.
+**Next: separate Subtask 5 discovery/design — durable outbox/optional async delivery.**
+No Subtask 5 design or implementation has been approved; obtain design approval
+before implementing it.
 
 This is a dated handoff. Reconcile it with subsequent user instructions, current
 task records and the working tree when resuming; refresh it at the next handoff.
@@ -36,14 +38,18 @@ Paths below are relative to the repository root:
 2. `README.md`
 3. `docs/architecture.md`
 4. `docs/roadmap.md`
-5. `docs/tasks/03-cqrs-transactions.md` — active decisions, scope and evidence
-6. `docs/tasks/02-module-persistence.md` — accepted persistence foundation
-7. `composer.json`, `composer.lock` and `symfony.lock`
+5. `docs/tasks/04-synchronous-events.md` — accepted implementation, recording follow-up and evidence
+6. `docs/tasks/03-cqrs-transactions.md` — accepted 3a/3b historical decisions and evidence
+7. `docs/tasks/02-module-persistence.md` — accepted persistence foundation
+8. `composer.json`, `composer.lock` and `symfony.lock`
 
 Inspect current Git status and history before editing. The repository branch is
-`main`; the user requested an initial local commit of the work to date. No remote
-is configured, and the user explicitly deferred pushing. Treat existing files as
-project work. Further commits/pushes require an explicit user request.
+`main`; initial checkpoint commit is `41b368f`, with accepted 3b work and Subtask 4
+changes uncommitted. New CQRS/event source/config/test files are still untracked. No remote is
+configured, and the user explicitly deferred pushing. Treat modified and untracked
+files as existing project work. Further commits/pushes require an explicit request.
+Preserve the user's instruction near the top of `AGENTS.md` to use subagents and
+parallel work by default when independent.
 
 ## Implemented foundation
 
@@ -54,6 +60,7 @@ project work. Further commits/pushes require an explicit user request.
 - Doctrine ORM **3.7.0**, Migrations **3.9.7**, MigrationsBundle **3.7.0**,
   Symfony UID **8.1.5** and Deptrac **4.7.1**. Exact versions are locked.
 - One default business EntityManager/connection.
+- Messenger **8.1.6** and Validator **8.1.6** with synchronous command/query buses.
 - Setup applies checked-in migrations without resetting data; `up` starts services.
 - Module migrations have unique UTC timestamps and pending migrations execute
   chronologically across namespaces, with per-migration transactions.
@@ -67,15 +74,23 @@ TaskTracking currently contains:
 
 ```text
 src/Module/TaskTracking/
+  Application/
+    CreateTask/{CreateTaskCommand.php,CreateTaskHandler.php,TaskCreatedEvent.php}
+    GetTask/{GetTaskQuery.php,GetTaskHandler.php,GetTaskResult.php}
   Domain/
     Task.php
     TaskRepository.php
+    Event/TaskCreatedEvent.php
   Infrastructure/
     Persistence/
       DoctrineTaskRepository.php
   Resources/
     config/services.yaml
+    config/validation.yaml
     migrations/Version20260911000100.php
+  UI/
+    Http/TaskController.php
+    Console/{CreateTaskConsoleCommand.php,ShowTaskConsoleCommand.php}
 ```
 
 Domain owns the repository interface:
@@ -88,15 +103,17 @@ Symfony binds the interface to the private implementation. Application handlers
 must inject Domain ports.
 
 **Repositories do not flush or commit.** Transaction coordination belongs to the
-application transaction boundary designed in Subtask 3.
+application transaction boundary implemented in Subtask 3b.
 
 Task retains approved Doctrine mapping attributes but has no Infrastructure
 import or `repositoryClass` reference.
 
 Repository interfaces are module-internal ports. Public command/query/result data
-uses `Application/<UseCase>/<Name>{Command,Query,Result}.php`; neighboring handlers
-and helpers stay internal. Public events use `Contract/Event`. Domain has no
-Application DTO dependency, and public event payloads cannot carry Application data.
+uses `Application/<UseCase>/<Name>{Command,Query,Result,Event}.php`; neighboring handlers
+and helpers stay internal. Domain records internal facts and Application explicitly
+maps selected facts to public events. Domain has no Application DTO/public-event
+dependency; public events cannot carry command/query/result DTOs or internals. No
+current `Contract` path remains. Historical 3a/3b event direction is superseded by 4.
 
 ## Architectural checks and constraints
 
@@ -111,7 +128,10 @@ Subtask 3a separates public Application data and event data from Application
 implementation in Deptrac, shares their classification with source/container checks,
 and excludes DTOs from required service discovery while requiring handlers.
 Early/late DI checks reject explicit/inline data-service registrations. Subtask 3a
-is verified, independently reviewed and accepted; evidence is in the active task record.
+is verified, independently reviewed and accepted; evidence is in the Subtask 3 record.
+Subtask 4 extends classification to exact category primitives, internal events and
+private listeners; full verification and fresh independent reviews are complete,
+with all findings resolved and user acceptance recorded, including the recording follow-up.
 
 Domain cannot depend on Application, Infrastructure, UI or migration code.
 Application cannot depend directly on concrete Infrastructure/UI implementations.
@@ -132,6 +152,132 @@ are not a runtime sandbox or universal dynamic-SQL analysis.
 Module configuration uses YAML. Keep framework/Platform exceptions explicit and
 narrow when designing CQRS integration.
 
+Application/UI use the exact CommandBus/QueryBus helpers. Subtask 4 additionally
+permits ApplicationEventRecorder from Application and those bus helpers from our
+private Infrastructure event listeners. Raw Messenger services, delivery and
+invocation state remain internal. The compiler checks
+handler cardinality/co-location/signatures, shared invocation state and middleware
+wiring. The logical invocation scope precedes validation; the physical transaction
+starts afterward. Nested failures prevent outer commit even if caught. Independent
+operations reset ORM/context state; queries never automatically flush and cannot
+dispatch commands. See the Subtask 3 record for accepted CQRS evidence and Subtask 4
+for the event extension's completed verification/review and user acceptance.
+
+### CQRS/event implementation entry points
+
+Subtask 4 implementation references:
+
+- `src/Platform/Messaging/CommandTransactionMiddleware.php`: the root Doctrine
+  retained ORM wrapInTransaction callback, pre-flush result/failure checks,
+  rollback-only invalidation and failure cleanup.
+- `src/Platform/Messaging/InvocationMiddleware.php` and `InvocationContext.php`:
+  shared nesting, handler/lifecycle guards, event buffering, failure tracking,
+  root-only ORM/context reset and delivery only after confirmed commit/cleanup.
+- `src/Platform/Messaging/ApplicationEventRecorder.php`, `BestEffortEventDispatcher.php`,
+  `EventDeliveryContext.php` and `EventPolicyMiddleware.php`: exact public-event
+  recording, separate bounded FIFO delivery, safe diagnostics and private bus access.
+- `src/Platform/Messaging/EventListenerInvoker.php`: descriptor-owned lazy listener
+  resolution/construction inside Messenger's per-handler catch, with safe logical
+  listener identity. Compiler/DI checks permit only this exact wrapper/closure/target.
+- `src/Platform/Event/`: empty abstract readonly BaseEvent and its three categories.
+- `src/Platform/Messaging/CommandBus.php`, `QueryBus.php`,
+  `MessagePolicyMiddleware.php` and `DispatchResult.php`: exact DTO dispatch,
+  rejection of caller envelopes/stamps and result/exception propagation.
+- `config/packages/messenger.yaml` and `config/services/messaging.yaml`: explicit
+  middleware order and shared technical services.
+- `src/Platform/Architecture/CqrsPass.php`, `ContractTypes.php`,
+  `ModuleServicesPass.php`, `tools/Architecture/DeptracRules.php` and `SourceRules.php`:
+  supported public data, exact facade permissions, handler ownership/privacy and
+  wiring guarantees, including exact event-category/recorder/listener exceptions.
+  Command/query buses still reject event DTOs.
+- `tests/E2E/CqrsTest.php`, `tests/Architecture/CqrsTest.php` and
+  `tests/Fixtures/Cqrs/`: real compiled-kernel and PostgreSQL failure/recovery patterns.
+- `tests/E2E/EventsTest.php`, `tests/Architecture/Event*Test.php`,
+  `tests/Fixtures/Events/` and `tests/Fixtures/EventCompilation/`: event journeys and
+  boundary fixtures. EventObserving is disposable test infrastructure, not a
+  production business module.
+- `docker/tools/test.sh` and `check.sh`: isolated snapshot execution and test phases.
+
+The shared journeys are `CreateTaskCommand -> Uuid` and
+`GetTaskQuery -> GetTaskResult|null`. HTTP uses dev/test-only `POST /_demo/tasks`
+and `GET /_demo/tasks/{id}`; CLI uses `app:task:create` and `app:task:show` through
+`./bin/dev console`. These are pre-authentication demonstration adapters.
+
+## Subtask 4 final verification and review
+
+Original event implementation runs, all exit **0**, preceding the bounded recording
+follow-up below; these were not rerun for documentation alignment:
+
+| Command | Result and observable behavior | Evidence |
+| --- | --- | --- |
+| `./bin/dev check` | **429 tests, 2825 assertions**; Deptrac **651 allowed / 0 violations / 0 uncovered**; full checks passed | `var/test-runs/run-FBkwdQNX/checks.log` |
+| `./bin/dev test` | **67 tests, 1327 assertions**, including **16 event tests / 646 assertions**; actual HTTP/CLI/PostgreSQL event failure/recovery and full E2E passed | `var/test-runs/run-LGHB90if/` |
+| `TMPDIR=/tmp/opencode ./bin/dev verify-setup` | Post-fix clean-checkout repeatability and full event HTTP/CLI/PostgreSQL failure/recovery passed, preserving development data | `/tmp/opencode/donmario-setup-g66L7xZX/` |
+
+Fresh independent reviewers both reapproved the latest code and evidence after
+findings were resolved:
+
+- Runtime: `ses_f6b6b07d8ffeyOaY0gqScoL2ud` — approved.
+- Boundaries: `ses_f6b6b06d7ffeaMjEEM2a0gEQNP` — approved.
+
+Corrections keep listener resolution/construction inside Messenger's per-handler
+catch through the exact descriptor-owned EventListenerInvoker/ServiceClosureArgument
+wiring, preserving safe logical listener diagnostics and narrow DI permissions.
+SourceRules rejects statically named cross-listener calls, including same-layer
+edges ignored by Deptrac. Actual PostgreSQL `postFlush` callbacks catch recording
+and command rejections, yet rollback-only prevents commit and held services recover.
+These results preserve the documented bounded lifecycle-detection coverage.
+
+### Opt-in recording follow-up — latest evidence
+
+The user approved `RecordsDomainEvents` plus `RecordsDomainEventsTrait` under
+`Platform/Event/Recording`, Task adoption and explicit selection of Domain facts
+for public translation. Identity stays local. No BaseEntity/BaseAggregateRoot,
+optimistic version or automatic collector was introduced.
+
+Both follow-up commands exited **0**:
+
+| Command | Result / observable behavior | Evidence |
+| --- | --- | --- |
+| `./bin/dev check` | **493 tests, 3327 assertions**, Deptrac **669 allowed / 0 violations / 0 uncovered**; all checks pass | `var/test-runs/run-M1k0mj9O/checks.log` |
+| `./bin/dev test` | **68 tests, 1421 assertions**, including **17 event tests / 733 assertions**; actual selective HTTP/CLI publication, unmapped buffer/native-lazy hydration and full PostgreSQL regression pass | `var/test-runs/run-cLhpQgCm/` |
+
+Fresh follow-up reviewer `ses_f6b039770ffeTdpi6MFcPxWUtS` approved with no actionable
+findings. This bounded refactor changes no bootstrap/dependencies/schema/transaction
+coordination; its checks were `check` and `test`. The consumer run above is historical.
+
+**Implementation verification and review, including the follow-up, are complete;
+the user has accepted the result.**
+Detailed findings and evidence belong in the Subtask 4 record. The following accepted
+3b/3a/2 results remain historical evidence for their respective subtasks.
+
+## Accepted Subtask 3b evidence
+
+These are completed verification runs, not new tests run while preparing the
+handoff. All exited **0** on **2026-09-11**:
+
+- `./bin/dev setup`: migration current; development HTTP/PostgreSQL healthy.
+- `./bin/dev check`: **264 tests, 1091 assertions**; Deptrac **534 allowed / 0
+  violations / 0 uncovered**, audit/lint/PHPStan/style/shell checks pass.
+  Evidence: `var/test-runs/run-A1hHkzXl/checks.log`.
+- `./bin/dev test`: **51 tests, 681 assertions**, including 20 CQRS tests establishing
+  cross-adapter success, validation, nested rollback, commit failure and ORM recovery.
+  Evidence: `var/test-runs/run-ccxmS6wn/`.
+- `TMPDIR=/tmp/opencode ./bin/dev verify-setup`: clean consumer repeatability,
+  full E2E isolation and preservation of development data/history/credentials.
+  Evidence: `/tmp/opencode/donmario-setup-WVo9gMEV/`.
+
+Independent reviewers:
+- Runtime: `ses_f6e5519eeffePIIpfywMFd0SDO` — approved.
+- Boundaries: `ses_f6e551798ffeyJ7Izv8zkSGJUf` — approved after corrections for
+  post-construction wiring replacement and public handler alias exposure.
+
+The corrections changed only compiler guards/fixtures; `cache:clear` and full `check`
+were rerun successfully, preserving debug/logger wiring. Runtime/E2E implementations
+were unchanged; the existing PostgreSQL and consumer evidence remains applicable.
+Safe logs and details are in the Subtask 3 record; runtime directories can contain
+private settings and must not be published wholesale.
+
 ## Accepted Subtask 3a evidence
 
 Completed on **2026-09-11**, both with exit **0**:
@@ -143,12 +289,11 @@ Completed on **2026-09-11**, both with exit **0**:
   migrations/schema boundaries, ORM persistence, outage/recreation/recovery.
   Evidence: `var/test-runs/run-32r5L0jL/`.
 
-These runs establish the boundary-alignment integration and regressions. Messenger,
-validation middleware and command transaction coordination are still the 3b proposal.
-See the active task record for exact behavior and review status.
+These historical runs establish the accepted 3a boundary alignment, preceding 3b.
+See the Subtask 3 record for exact behavior and review status.
 
 Independent 3a reviewer: `ses_f6f346d5bffem59acqW8EJwnqp`; approved with no actionable
-findings or blockers. Only acceptance/design documentation changed after verification.
+findings or blockers. The later runtime work has separate 3b evidence above.
 
 ## Accepted Subtask 2 evidence
 
@@ -182,38 +327,49 @@ Local execution artifacts may be temporary. Do not expose private settings or
 publish whole evidence directories. Preserve `var/docker/local.env` and
 development data.
 
-## Subtask 3 continuation
+## Accepted Subtask 4 conventions
 
-Subtask 3a is accepted. The detailed 3b proposal is ready for user review and
-design/implementation approval.
-Read `docs/tasks/03-cqrs-transactions.md` for the design and prior execution evidence.
-The repository still has no business messages/handlers or Messenger/Validator
-installation; the new layout is established through verification fixtures.
+The approved design and acceptance criteria are in `docs/tasks/04-synchronous-events.md`.
+Current implementation guarantees and limits:
 
-The 3b proposal covers:
+- Concrete events directly extend their exact empty abstract readonly category:
+  `Platform/Event/BaseEvent -> DomainEvent, ApplicationEvent, InfrastructureEvent`.
+  No primitive state, behavior, event IDs or metadata. Domain has the narrow
+  pure-data DomainEvent exception and exact opt-in recording support permission,
+  not general Platform access. All event data and
+  primitives are excluded from services.
+- Domain entities may use `Platform/Event/Recording/RecordsDomainEvents` and
+  `RecordsDomainEventsTrait` to record protected internal facts and publicly release
+  the batch. These helpers are non-service support, not public data. Application
+  calls the entity's release method and selects facts explicitly; generic DomainEvent
+  batches must not all be translated as creation events.
+- Internal `Domain/Event` facts are translated to public `Application/<UseCase>`
+  events. Our internal `Infrastructure/Event` and private `Infrastructure/EventListener`
+  are distinct from `Infrastructure/Framework/<Library>/EventListener`. Our listeners
+  accept exact public events and use public data, approved values, the handler
+  declaration and exact CommandBus/QueryBus helpers, never repositories/handlers/ORM.
+- Required effects use explicit nested command orchestration in the root transaction.
+  Best-effort events run **after confirmed commit and root ORM/context cleanup**.
+  Each listener command has a fresh independent transaction. Listener failures retain
+  producer success and earlier committed effects, log safe metadata and continue.
+- FIFO uses separate command/delivery state, with 100 events per root buffer and
+  100 accepted per delivery session, including delivered/zero-listener events.
+  Valid overflow is dropped and diagnosed; caps do not bound payload size or runtime.
+- Recording requires healthy owned command-handler execution, no query or ORM
+  lifecycle callback. Current Doctrine stack-frame detection has bounded coverage;
+  it is not an arbitrary callback sandbox. ORM wrapInTransaction remains intact;
+  context/rollback-only invalidation prevents caught failures from committing.
+- Cleanup failure disables further runtime messaging/recording. After confirmed
+  commit it preserves producer success and skips unsafe delivery. Safe logging failure
+  cannot replace that success. Process failure may lose events; there is no outbox,
+  durable retry/replay or automatic command retry after unknown commit outcome.
 
-- Separate command/query buses and handler registration.
-- Domain repository injection.
-- Validation and query-result propagation.
-- Transaction ownership, middleware ordering, flush and rollback.
-- Shared use cases through thin HTTP and CLI adapters.
-- Real PostgreSQL success/failure journeys.
-- Necessary narrowly scoped architecture-check integration.
+Full verification and fresh independent reviews are **complete**, with all findings
+resolved and user acceptance recorded; final event-specific evidence is above.
+The next approval gate is separate Subtask 5 discovery/design.
 
-Its main decisions are separate synchronous buses, YAML validation before physical
-transaction startup, a logical outer invocation scope that tracks nested failures,
-root-owned Doctrine transactions and manager cleanup, exact helper/handler wiring,
-and dev/test-only JSON HTTP plus CLI adapters. A caught nested validation/handler
-failure still prevents outer commit. See the active task record for precise
-ordering, error contracts, security/performance review and acceptance journeys.
-
-These remain proposed runtime decisions. Only acceptance/design documentation has
-changed since the 3a verification; no Messenger/Validator installation or 3b checks
-have run. Do not treat the prior 3a execution evidence as 3b evidence.
-
-Use the approved Application co-location and public-data conventions in that
-design. Proposed results are `CreateTaskCommand -> Uuid` and
-`GetTaskQuery -> GetTaskResult|null`; result DTOs are optional, transport-neutral data.
+Durable/async delivery is a separate Subtask 5 design. Authentication, authorization
+and the fuller TaskTracking demo retain their later approval gates.
 
 Follow `AGENTS.md`:
 
@@ -227,7 +383,10 @@ new changes or unresolved concerns.
 
 ## Fresh-session prompt
 
-> Read `docs/handoff.md`, `docs/tasks/03-cqrs-transactions.md` and the referenced
-> project instructions. Subtasks 1, 2 and 3a are accepted. Public commands,
-> queries and results are co-located with handlers in Application use-case folders.
-> Subtask 3b CQRS/transactions requires its own design and implementation approval.
+> Read `docs/handoff.md`, `docs/tasks/04-synchronous-events.md` and the referenced
+> project instructions. Subtasks 1, 2, 3a, 3b and 4 are accepted, including the opt-in
+> recording refactor. Begin separate Subtask 5 discovery and propose its design with
+> acceptance criteria and security/performance review; obtain approval before
+> implementation. Preserve accepted uncommitted work
+> and current Application co-location, exact category/module boundaries and explicit
+> required-command/best-effort postcommit conventions.

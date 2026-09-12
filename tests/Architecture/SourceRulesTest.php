@@ -22,6 +22,10 @@ final class SourceRulesTest extends TestCase
         $this->writeClass('App\\Module\\TaskTracking\\Domain\\Task', 'final class Task {}');
         $this->writeClass('App\\Module\\Authorizing\\Domain\\Grant', 'final class Grant {}');
         $this->writeClass('App\\Module\\Authorizing\\Application\\GetGrant\\GetGrantResult', 'final readonly class GetGrantResult { public function __construct(public string $id) {} }');
+        $this->writeClass('App\\Platform\\Event\\BaseEvent', 'abstract readonly class BaseEvent {}');
+        foreach (['Domain', 'Application', 'Infrastructure'] as $category) {
+            $this->writeClass('App\\Platform\\Event\\'.$category.'Event', 'abstract readonly class '.$category.'Event extends BaseEvent {}');
+        }
     }
 
     protected function tearDown(): void
@@ -31,7 +35,7 @@ final class SourceRulesTest extends TestCase
 
     public function testDataContractsAndModuleResourcesAreAcceptedWithoutExecutingSource(): void
     {
-        $this->writeClass('App\\Module\\TaskTracking\\Contract\\Event\\Status', "enum Status: string { case Open = 'open'; case Closed = 'closed'; }");
+        $this->writeClass('App\\Module\\TaskTracking\\Application\\Lookup\\StatusResult', "enum StatusResult: string { case Open = 'open'; case Closed = 'closed'; }");
         $this->writeClass('App\\Module\\TaskTracking\\Application\\Lookup\\RankResult', 'enum RankResult: int { case Low = -1; case High = 2; }');
         $this->writeClass('App\\Module\\TaskTracking\\Application\\Empty\\EmptyCommand', 'final readonly class EmptyCommand {}');
         $this->writeClass('App\\Module\\TaskTracking\\Application\\Lookup\\LookupQuery', <<<'PHP'
@@ -130,16 +134,251 @@ final class SourceRulesTest extends TestCase
             $this->writeClass($class, 'final class Example'.$kind.' {}');
             $this->assertSourceDiagnostic('contract.shape', $class);
         }
-        $event = 'App\\Module\\TaskTracking\\Contract\\Event\\Happened';
-        $this->writeClass($event, 'final readonly class Happened { public function handle(): void {} }');
+        $event = 'App\\Module\\TaskTracking\\Application\\Example\\HappenedEvent';
+        $this->writeClass($event, 'final readonly class HappenedEvent extends \\App\\Platform\\Event\\ApplicationEvent { public function handle(): void {} }');
         $this->assertSourceDiagnostic('contract.behavior', $event);
     }
 
     public function testEventPayloadCannotIntroduceAnIndirectApplicationDependency(): void
     {
-        $event = 'App\\Module\\TaskTracking\\Contract\\Event\\Happened';
-        $this->writeClass($event, 'final readonly class Happened { public function __construct(public string|\App\Module\Authorizing\Application\GetGrant\GetGrantResult|null $payload) {} }');
+        $event = 'App\\Module\\TaskTracking\\Application\\Example\\HappenedEvent';
+        $this->writeClass($event, 'final readonly class HappenedEvent extends \\App\\Platform\\Event\\ApplicationEvent { public function __construct(public string|\App\Module\Authorizing\Application\GetGrant\GetGrantResult|null $payload) {} }');
         $this->assertSourceDiagnostic('contract.type', $event);
+    }
+
+    public function testAllEventCategoriesAndDistinctListenerLayersHaveInwardDependencies(): void
+    {
+        foreach (['Domain/Event' => 'Domain', 'Application/Observe' => 'Application', 'Infrastructure/Event' => 'Infrastructure'] as $path => $category) {
+            $this->writeClass('App\\Module\\TaskTracking\\'.str_replace('/', '\\', $path).'\\ObservedEvent', 'use App\\Platform\\Event\\'.$category.'Event as Category; final readonly class ObservedEvent extends Category { public function __construct(public string $id, public \\DateTimeImmutable $at) {} }');
+        }
+        $this->writeClass('App\\Module\\TaskTracking\\Domain\\Observer', 'final class Observer { public function observe(\\App\\Platform\\Event\\DomainEvent $event): void {} }');
+        $this->writeClass('App\\Module\\TaskTracking\\Infrastructure\\EventListener\\ObservedListener', 'use Symfony\\Component\\Messenger\\Attribute\\AsMessageHandler; #[AsMessageHandler(bus: "event.bus")] final class ObservedListener { public function __construct(private \\App\\Platform\\Messaging\\CommandBus $commands) {} public function __invoke(\\App\\Module\\TaskTracking\\Application\\Observe\\ObservedEvent $event): void {} }');
+        $this->writeClass('App\\Module\\TaskTracking\\Application\\Observe\\ObserveHandler', 'final class ObserveHandler { public function __construct(private \\App\\Platform\\Messaging\\ApplicationEventRecorder $recorder) {} }');
+        $this->writeClass('App\\Module\\TaskTracking\\Infrastructure\\Framework\\Doctrine\\EventListener\\FlushListener', 'final class FlushListener { public function __construct(private \\Doctrine\\ORM\\EntityManagerInterface $manager) {} }');
+        self::assertSame([], (new SourceRules())->violations($this->root));
+        $process = $this->deptrac();
+        self::assertSame(0, $process->getExitCode(), $process->getOutput().$process->getErrorOutput());
+        /** @var array{Report: array<string, int>} $report */
+        $report = json_decode($process->getOutput(), true, flags: JSON_THROW_ON_ERROR);
+        foreach (['Violations', 'Uncovered', 'Errors', 'Warnings'] as $counter) {
+            self::assertSame(0, $report['Report'][$counter], $process->getOutput());
+        }
+    }
+
+    public function testSameModuleDirectListenerInvocationIsRejectedEvenWhenDeptracAllowsIt(): void
+    {
+        $this->writeListenerPair('(new LastTaskListener($this->commands))($event);');
+        $process = $this->deptrac();
+        self::assertSame(0, $process->getExitCode(), $process->getOutput().$process->getErrorOutput());
+        /** @var array{Report: array<string, int>} $report */
+        $report = json_decode($process->getOutput(), true, flags: JSON_THROW_ON_ERROR);
+        self::assertSame(0, $report['Report']['Violations']);
+        $violations = (new SourceRules())->violations($this->root);
+        self::assertCount(1, $violations);
+        self::assertStringStartsWith('event.listener_dependency: src/Module/TaskTracking/Infrastructure/EventListener/FirstTaskListener.php:', $violations[0]);
+        self::assertStringContainsString('App\\Module\\TaskTracking\\Infrastructure\\EventListener\\FirstTaskListener: must not depend on listener App\\Module\\TaskTracking\\Infrastructure\\EventListener\\LastTaskListener;', $violations[0]);
+    }
+
+    public function testOptInDomainRecordingIsReusableWithoutMakingEntitiesPublic(): void
+    {
+        $this->writeClass('App\\Platform\\Event\\Recording\\RecordsDomainEvents', 'interface RecordsDomainEvents { /** @return list<\\App\\Platform\\Event\\DomainEvent> */ public function releaseEvents(): array; }');
+        $this->writeClass('App\\Platform\\Event\\Recording\\RecordsDomainEventsTrait', <<<'PHP'
+            use App\Platform\Event\DomainEvent;
+            trait RecordsDomainEventsTrait {
+                /** @var list<DomainEvent> */ private array $events = [];
+                protected function recordEvent(DomainEvent $event): void { $this->events[] = $event; }
+                /** @return list<DomainEvent> */
+                public function releaseEvents(): array { $events = $this->events; $this->events = []; return $events; }
+            }
+            PHP);
+        foreach (['TaskTracking' => 'Task', 'Authorizing' => 'Grant'] as $module => $entity) {
+            $this->writeClass('App\\Module\\'.$module.'\\Domain\\LocalBehavior', 'trait LocalBehavior { private function label(): string { return "local"; } }');
+            $this->writeClass('App\\Module\\'.$module.'\\Domain\\'.$entity, str_replace('__ENTITY__', $entity, <<<'PHP'
+                use App\Platform\Event\Recording\{RecordsDomainEvents, RecordsDomainEventsTrait};
+                use Doctrine\ORM\Mapping as ORM;
+                #[ORM\Entity]
+                final class __ENTITY__ implements RecordsDomainEvents {
+                    use RecordsDomainEventsTrait;
+                    use LocalBehavior;
+                    #[ORM\Id] #[ORM\Column] private int $id;
+                }
+                PHP));
+            $this->writeClass('App\\Module\\'.$module.'\\Application\\Observe\\ObserveHandler', 'final class ObserveHandler { public function observe(\\App\\Module\\'.$module.'\\Domain\\'.$entity.' $entity): void { foreach ($entity->releaseEvents() as $event) {} } }');
+        }
+        $this->writeClass('App\\Module\\TaskTracking\\Domain\\Unrecorded', 'final class Unrecorded {}');
+        self::assertSame([], (new SourceRules())->violations($this->root));
+        $process = $this->deptrac();
+        self::assertSame(0, $process->getExitCode(), $process->getOutput().$process->getErrorOutput());
+        /** @var array{Report: array<string, int>} $report */
+        $report = json_decode($process->getOutput(), true, flags: JSON_THROW_ON_ERROR);
+        foreach (['Violations', 'Uncovered', 'Errors', 'Warnings', 'Skipped violations'] as $counter) {
+            self::assertSame(0, $report['Report'][$counter], $process->getOutput());
+        }
+        self::assertGreaterThan(0, $report['Report']['Allowed']);
+        $this->writeClass('App\\Module\\TaskTracking\\Application\\ForeignReader', 'final class ForeignReader { public function read(\\App\\Module\\Authorizing\\Domain\\Grant $grant): void { $grant->releaseEvents(); } }');
+        $process = $this->deptrac();
+        self::assertSame(1, $process->getExitCode(), $process->getOutput().$process->getErrorOutput());
+        self::assertStringContainsString('TaskTracking.Application on Authorizing.Domain', $process->getOutput());
+    }
+
+    public function testIndependentPrioritizedListenersRemainValid(): void
+    {
+        $this->writeListenerPair();
+        self::assertSame([], (new SourceRules())->violations($this->root));
+        $process = $this->deptrac();
+        self::assertSame(0, $process->getExitCode(), $process->getOutput().$process->getErrorOutput());
+    }
+
+    /** @return iterable<string, array{string}> */
+    public static function listenerClassDependencies(): iterable
+    {
+        $target = '\\App\\Module\\TaskTracking\\Infrastructure\\EventListener\\LastTaskListener';
+        yield 'FQCN construction' => ['final class FirstTaskListener { public function call(): void { new '.$target.'(); } }'];
+        yield 'case insensitive construction' => ['final class FirstTaskListener { public function call(): void { new '.strtolower($target).'(); } }'];
+        yield 'aliased construction' => ['use '.$target.' as Other; final class FirstTaskListener { public function call(): void { new Other(); } }'];
+        yield 'group import alias' => ['use App\\Module\\TaskTracking\\Infrastructure\\EventListener\\{LastTaskListener as Other}; final class FirstTaskListener { public function call(): void { new Other(); } }'];
+        yield 'namespace alias' => ['use App\\Module\\TaskTracking\\Infrastructure\\EventListener as Listeners; final class FirstTaskListener { public function call(): void { new Listeners\\LastTaskListener(); } }'];
+        yield 'unused class import' => ['use '.$target.' as Other; final class FirstTaskListener {}'];
+        yield 'unused group class import' => ['use App\\Module\\TaskTracking\\Infrastructure\\EventListener\\{LastTaskListener as Other}; final class FirstTaskListener {}'];
+        yield 'static call' => ['final class FirstTaskListener { public function call(): void { LastTaskListener::handle(); } }'];
+        yield 'static property' => ['final class FirstTaskListener { public function call(): void { LastTaskListener::$handler; } }'];
+        yield 'class constant' => ['final class FirstTaskListener { public const TARGET = LastTaskListener::class; }'];
+        yield 'inheritance' => ['class FirstTaskListener extends LastTaskListener {}'];
+        yield 'instanceof' => ['final class FirstTaskListener { public function accepts(object $value): bool { return $value instanceof LastTaskListener; } }'];
+        yield 'promoted union type' => ['final class FirstTaskListener { public function __construct(public LastTaskListener|string $value) {} }'];
+        yield 'property type' => ['final class FirstTaskListener { public ?LastTaskListener $value = null; }'];
+        yield 'return type' => ['final class FirstTaskListener { public function value(): ?LastTaskListener { return null; } }'];
+        yield 'closure return type' => ['final class FirstTaskListener { public function call(): void { $factory = static fn (): ?LastTaskListener => null; } }'];
+        yield 'attribute' => ['#[LastTaskListener] final class FirstTaskListener {}'];
+        yield 'parameter attribute alias' => ['use '.$target.' as Other; final class FirstTaskListener { public function call(#[Other] string $value): void {} }'];
+        yield 'catch type' => ['final class FirstTaskListener { public function call(): void { try {} catch (LastTaskListener $error) {} } }'];
+        yield 'trait use' => ['final class FirstTaskListener { use LastTaskListener; }'];
+    }
+
+    #[DataProvider('listenerClassDependencies')]
+    public function testResolvedListenerClassDependenciesCannotBypassSourceChecks(string $declaration): void
+    {
+        $this->writeListenerPair();
+        $source = 'App\\Module\\TaskTracking\\Infrastructure\\EventListener\\FirstTaskListener';
+        $this->writeClass($source, $declaration);
+        $this->assertSourceDiagnostic('event.listener_dependency', $source);
+    }
+
+    public function testListenerDependencyCheckDoesNotInterpretStringsOrFunctionNamesAsClasses(): void
+    {
+        $this->writeListenerPair(<<<'PHP'
+            $label = 'App\\Module\\TaskTracking\\Infrastructure\\EventListener\\LastTaskListener';
+            $self = FirstTaskListener::class;
+            \App\Module\TaskTracking\Infrastructure\EventListener\LastTaskListener();
+            PHP);
+        self::assertSame([], (new SourceRules())->violations($this->root));
+        $this->writeClass('App\\Module\\TaskTracking\\Infrastructure\\EventListener\\FirstTaskListener', <<<'PHP'
+            use function App\Module\TaskTracking\Infrastructure\EventListener\LastTaskListener;
+            use App\Module\TaskTracking\Infrastructure\EventListener\{function LastTaskListener as action, const LastTaskListener as LABEL};
+            final class FirstTaskListener { public function call(): void { LastTaskListener(); action(); $label = LABEL; } }
+            PHP);
+        self::assertSame([], (new SourceRules())->violations($this->root));
+    }
+
+    private function writeListenerPair(string $firstBody = ''): void
+    {
+        $this->writeClass('App\\Module\\TaskTracking\\Application\\CreateTask\\TaskCreatedEvent', 'final readonly class TaskCreatedEvent extends \\App\\Platform\\Event\\ApplicationEvent { public function __construct(public \\Symfony\\Component\\Uid\\Uuid $taskId) {} }');
+        foreach (['First' => 100, 'Last' => -100] as $name => $priority) {
+            $this->writeClass('App\\Module\\TaskTracking\\Infrastructure\\EventListener\\'.$name.'TaskListener', str_replace(
+                ['__NAME__', '__PRIORITY__', '__BODY__'],
+                [$name, (string) $priority, 'First' === $name ? $firstBody : ''],
+                <<<'PHP'
+                    use App\Module\TaskTracking\Application\CreateTask\TaskCreatedEvent;
+                    use App\Platform\Messaging\CommandBus;
+                    use Symfony\Component\Messenger\Attribute\AsMessageHandler;
+
+                    #[AsMessageHandler(bus: 'event.bus', priority: __PRIORITY__)]
+                    final class __NAME__TaskListener
+                    {
+                        public function __construct(private readonly CommandBus $commands) {}
+                        public function __invoke(TaskCreatedEvent $event): void { __BODY__ }
+                    }
+                    PHP,
+            ));
+        }
+    }
+
+    /** @return iterable<string, array{string, string}> */
+    public static function invalidEventShapes(): iterable
+    {
+        yield 'missing parent' => ['final readonly class ExampleEvent {}', 'contract.shape'];
+        yield 'wrong category' => ['final readonly class ExampleEvent extends \\App\\Platform\\Event\\DomainEvent {}', 'contract.shape'];
+        yield 'base primitive' => ['final readonly class ExampleEvent extends \\App\\Platform\\Event\\BaseEvent {}', 'contract.shape'];
+        yield 'intermediate base' => ['final readonly class ExampleEvent extends \\App\\Module\\TaskTracking\\Application\\Intermediate {}', 'contract.shape'];
+        yield 'enum event' => ['enum ExampleEvent: string { case Open = "open"; }', 'contract.shape'];
+        yield 'abstract event' => ['abstract readonly class ExampleEvent extends \\App\\Platform\\Event\\ApplicationEvent {}', 'contract.shape'];
+        yield 'behavior' => ['final readonly class ExampleEvent extends \\App\\Platform\\Event\\ApplicationEvent { public function handle(): void {} }', 'contract.behavior'];
+        yield 'recording interface is not event data' => ['final readonly class ExampleEvent extends \\App\\Platform\\Event\\ApplicationEvent implements \\App\\Platform\\Event\\Recording\\RecordsDomainEvents {}', 'contract.shape'];
+        yield 'recording trait remains behavior' => ['final readonly class ExampleEvent extends \\App\\Platform\\Event\\ApplicationEvent { use \\App\\Platform\\Event\\Recording\\RecordsDomainEventsTrait; }', 'contract.behavior'];
+        yield 'recording support is not public payload' => ['final readonly class ExampleEvent extends \\App\\Platform\\Event\\ApplicationEvent { public function __construct(public \\App\\Platform\\Event\\Recording\\RecordsDomainEvents $recording) {} }', 'contract.type'];
+        foreach (['BaseEvent', 'DomainEvent', 'ApplicationEvent', 'InfrastructureEvent'] as $primitive) {
+            yield 'abstract payload '.$primitive => ['final readonly class ExampleEvent extends \\App\\Platform\\Event\\ApplicationEvent { public function __construct(public \\App\\Platform\\Event\\'.$primitive.' $event) {} }', 'contract.type'];
+        }
+        foreach (['Domain\\Event\\ChangedEvent', 'Infrastructure\\Event\\ReceivedEvent', 'Application\\GetTask\\GetTaskResult', 'Domain\\Task'] as $type) {
+            yield 'private or CQRS payload '.$type => ['final readonly class ExampleEvent extends \\App\\Platform\\Event\\ApplicationEvent { public function __construct(public \\App\\Module\\TaskTracking\\'.$type.' $payload) {} }', 'contract.type'];
+        }
+    }
+
+    #[DataProvider('invalidEventShapes')]
+    public function testPublicEventsHaveOnlyExactCategoryInheritanceAndPublicPayload(string $declaration, string $rule): void
+    {
+        $class = 'App\\Module\\TaskTracking\\Application\\Example\\ExampleEvent';
+        $this->writeClass($class, $declaration);
+        $this->assertSourceDiagnostic($rule, $class);
+    }
+
+    public function testInternalEventsCannotCarryDomainEntitiesOrApplicationData(): void
+    {
+        foreach (['Domain', 'Infrastructure'] as $category) {
+            foreach (['\\App\\Module\\TaskTracking\\Domain\\Task', '\\App\\Module\\Authorizing\\Application\\GetGrant\\GetGrantResult', '\\App\\Platform\\Event\\'.$category.'Event'] as $payload) {
+                $class = 'App\\Module\\TaskTracking\\'.$category.'\\Event\\SnapshotEvent';
+                $this->writeClass($class, 'final readonly class SnapshotEvent extends \\App\\Platform\\Event\\'.$category.'Event { public function __construct(public '.$payload.' $payload) {} }');
+                $this->assertSourceDiagnostic('contract.type', $class);
+            }
+        }
+    }
+
+    public function testMisplacedAndIndirectSubclassesCannotHideBehindNonEventNames(): void
+    {
+        $base = 'App\\Module\\TaskTracking\\Domain\\Intermediate';
+        $child = 'App\\Module\\TaskTracking\\Infrastructure\\Misplaced';
+        $this->writeClass($base, 'abstract readonly class Intermediate extends \\App\\Platform\\Event\\DomainEvent {}');
+        $this->writeClass($child, 'final readonly class Misplaced extends \\'.$base.' {}');
+        $this->assertSourceDiagnostic('contract.path', $base);
+        $this->assertSourceDiagnostic('contract.path', $child);
+    }
+
+    public function testEveryPrimitiveIsCheckedOutsideModuleSource(): void
+    {
+        foreach (['Base', 'Domain', 'Application', 'Infrastructure'] as $category) {
+            $class = 'App\\Platform\\Event\\'.$category.'Event';
+            $parent = 'Base' === $category ? '' : ' extends BaseEvent';
+            foreach ([
+                'abstract readonly class '.$category.'Event'.$parent.' { public const BEHAVIOR = true; }',
+                'abstract readonly class '.$category.'Event'.$parent.' { private array $events; }',
+                'abstract readonly class '.$category.'Event'.$parent.' { public function __construct(public string $id) {} }',
+                'abstract readonly class '.$category.'Event'.$parent.' { public function releaseEvents(): array { return []; } }',
+                'abstract readonly class '.$category.'Event'.$parent.' { use \\App\\Platform\\Event\\Recording\\RecordsDomainEventsTrait; }',
+                'abstract readonly class '.$category.'Event'.$parent.' implements \\App\\Platform\\Event\\Recording\\RecordsDomainEvents {}',
+                'readonly class '.$category.'Event'.$parent.' {}',
+                'abstract class '.$category.'Event'.$parent.' {}',
+                'abstract readonly class '.$category.'Event extends \\DateTimeImmutable {}',
+            ] as $declaration) {
+                $this->writeClass($class, $declaration);
+                $this->assertSourceDiagnostic('event.primitive', $class);
+            }
+        }
+    }
+
+    public function testMissingPrimitiveDoesNotLeaveAnUncheckedExternalParent(): void
+    {
+        $this->filesystem->remove($this->root.'/src/Platform/Event/InfrastructureEvent.php');
+        $this->assertSourceDiagnostic('event.primitive', 'App\\Platform\\Event\\InfrastructureEvent');
     }
 
     #[DataProvider('invalidLayouts')]
@@ -169,6 +408,11 @@ final class SourceRulesTest extends TestCase
         }
         yield 'missing descriptive prefix' => ['src/Module/TaskTracking/Application/Example/Result.php', 'App\\Module\\TaskTracking\\Application\\Example\\Result', 'contract.path'];
         yield 'internal namespace hidden in application data path' => ['src/Module/TaskTracking/Application/Example/ExampleResult.php', 'App\\Module\\TaskTracking\\Domain\\Example', 'contract.path'];
+        yield 'old public event layout' => ['src/Module/TaskTracking/Contract/Event/Created.php', 'App\\Module\\TaskTracking\\Contract\\Event\\Created', 'contract.path'];
+        yield 'nested Domain event' => ['src/Module/TaskTracking/Domain/Event/Nested/CreatedEvent.php', 'App\\Module\\TaskTracking\\Domain\\Event\\Nested\\CreatedEvent', 'contract.path'];
+        yield 'missing application use case' => ['src/Module/TaskTracking/Application/CreatedEvent.php', 'App\\Module\\TaskTracking\\Application\\CreatedEvent', 'contract.path'];
+        yield 'nested listener' => ['src/Module/TaskTracking/Infrastructure/EventListener/Nested/CreatedListener.php', 'App\\Module\\TaskTracking\\Infrastructure\\EventListener\\Nested\\CreatedListener', 'event.listener_path'];
+        yield 'old UI event listener' => ['src/Module/TaskTracking/UI/Event/CreatedListener.php', 'App\\Module\\TaskTracking\\UI\\Event\\CreatedListener', 'source.layout'];
     }
 
     public function testInvalidModuleNameAndEmptySourceAreNotVacuousSuccesses(): void
@@ -193,9 +437,9 @@ final class SourceRulesTest extends TestCase
         $this->writeClass('App\\Module\\Authorizing\\Application\\GrantAccess\\GrantAccessCommand', 'final readonly class GrantAccessCommand { public function __construct(public string $id) {} }');
         $this->writeClass('App\\Module\\TaskTracking\\Application\\Reader', 'final class Reader { public function read(\App\Module\Authorizing\Application\GetGrant\GetGrantQuery $query): \App\Module\Authorizing\Application\GetGrant\GetGrantResult { return new \App\Module\Authorizing\Application\GetGrant\GetGrantResult($query->id); } }');
         $this->writeClass('App\\Module\\Auditing\\Application\\Recorder', 'final class Recorder { public function record(\App\Module\Authorizing\Application\GrantAccess\GrantAccessCommand $command): string { return $command->id; } }');
-        $this->writeClass('App\\Module\\Auditing\\Contract\\Event\\Recorded', 'final readonly class Recorded { public function __construct(public \DateTimeImmutable $at, public \Symfony\Component\Uid\Uuid $id) {} }');
-        $this->writeClass('App\\Module\\TaskTracking\\Contract\\Event\\Linked', 'final readonly class Linked { public function __construct(public \App\Module\Auditing\Contract\Event\Recorded $event) {} }');
-        $this->writeClass('App\\Module\\TaskTracking\\Domain\\EventConsumer', 'final class EventConsumer { public function consume(\App\Module\TaskTracking\Contract\Event\Linked $event): void {} }');
+        $this->writeClass('App\\Module\\Auditing\\Application\\Record\\RecordedEvent', 'final readonly class RecordedEvent extends \\App\\Platform\\Event\\ApplicationEvent { public function __construct(public \DateTimeImmutable $at, public \Symfony\Component\Uid\Uuid $id) {} }');
+        $this->writeClass('App\\Module\\TaskTracking\\Application\\Link\\LinkedEvent', 'final readonly class LinkedEvent extends \\App\\Platform\\Event\\ApplicationEvent { public function __construct(public \App\Module\Auditing\Application\Record\RecordedEvent $event) {} }');
+        $this->writeClass('App\\Module\\TaskTracking\\Application\\EventConsumer', 'final class EventConsumer { public function consume(\App\Module\TaskTracking\Application\Link\LinkedEvent $event): void {} }');
         $this->writeClass('App\\Platform\\Technical', 'final class Technical { public function __construct(private \Symfony\Component\DependencyInjection\ContainerBuilder $container, private \App\Module\Authorizing\Application\GetGrant\GetGrantResult $view) {} }');
         $this->writeClass('App\\Kernel', 'final class Kernel extends \Symfony\Component\HttpKernel\Kernel { public function __construct(private \App\Platform\Technical $technical) {} }');
         self::assertSame([], (new SourceRules())->violations($this->root));
@@ -326,20 +570,57 @@ final class SourceRulesTest extends TestCase
         foreach (['Command', 'Query', 'Result'] as $kind) {
             yield 'Domain cannot depend on own '.$kind => ['App\\Module\\TaskTracking\\Domain\\Leak', 'App\\Module\\TaskTracking\\Application\\Lookup\\Lookup'.$kind, 'TaskTracking.Domain on TaskTracking.ApplicationData'];
             yield 'Domain cannot depend on foreign '.$kind => ['App\\Module\\TaskTracking\\Domain\\Leak', 'App\\Module\\Authorizing\\Application\\Lookup\\Lookup'.$kind, 'TaskTracking.Domain on Authorizing.ApplicationData'];
-            yield 'event cannot expose Application '.$kind => ['App\\Module\\TaskTracking\\Contract\\Event\\Leak', 'App\\Module\\Authorizing\\Application\\Lookup\\Lookup'.$kind, 'TaskTracking.EventData on Authorizing.ApplicationData'];
+            yield 'event cannot expose Application '.$kind => ['App\\Module\\TaskTracking\\Application\\Leak\\LeakEvent', 'App\\Module\\Authorizing\\Application\\Lookup\\Lookup'.$kind, 'TaskTracking.EventData on Authorizing.ApplicationData'];
         }
         yield 'foreign co-located handler' => ['App\\Module\\TaskTracking\\Application\\Leak', 'App\\Module\\Authorizing\\Application\\GetGrant\\GetGrantHandler', 'TaskTracking.Application on Authorizing.Application'];
         yield 'foreign helper in a use case' => ['App\\Module\\TaskTracking\\Application\\Leak', 'App\\Module\\Authorizing\\Application\\GetGrant\\Formatter', 'TaskTracking.Application on Authorizing.Application'];
         yield 'public data cannot expose its co-located handler' => ['App\\Module\\TaskTracking\\Application\\Lookup\\LookupResult', 'App\\Module\\TaskTracking\\Application\\Lookup\\LookupHandler', 'TaskTracking.ApplicationData on TaskTracking.Application'];
         yield 'case variation cannot hide public data dependency from Domain' => ['App\\Module\\TaskTracking\\Domain\\Leak', 'app\\module\\authorizing\\application\\GetGrant\\GetGrantResult', 'TaskTracking.Domain on Authorizing.ApplicationData'];
         yield 'no blanket Platform access' => ['App\\Module\\TaskTracking\\Application\\Leak', 'App\\Platform\\Repository', 'TaskTracking.Application on Platform'];
+        yield 'Domain has no blanket Platform access' => ['App\\Module\\TaskTracking\\Domain\\Leak', 'App\\Platform\\Repository', 'TaskTracking.Domain on Platform'];
+        yield 'recording directory is not a blanket exception' => ['App\\Module\\TaskTracking\\Domain\\Leak', 'App\\Platform\\Event\\Recording\\OtherSupport', 'TaskTracking.Domain on Platform'];
+        foreach (['RecordsDomainEvents', 'RecordsDomainEventsTrait'] as $support) {
+            $target = 'App\\Platform\\Event\\Recording\\'.$support;
+            foreach (['Application\\Leak' => 'Application', 'Application\\Leak\\LeakResult' => 'ApplicationData', 'Application\\Leak\\LeakEvent' => 'EventData', 'Domain\\Event\\LeakEvent' => 'DomainEventData', 'Infrastructure\\Event\\LeakEvent' => 'InfrastructureEventData', 'Infrastructure\\Leak' => 'Internal', 'Infrastructure\\EventListener\\LeakListener' => 'EventListener', 'Infrastructure\\Framework\\Doctrine\\EventListener\\Leak' => 'FrameworkEventListener', 'UI\\Http\\Leak' => 'UI'] as $source => $layer) {
+                yield $source.' cannot consume '.$support => ['App\\Module\\TaskTracking\\'.$source, $target, 'TaskTracking.'.$layer.' on DomainEventRecording'];
+            }
+        }
+        foreach (['App\\Platform\\Repository' => 'Platform', 'App\\Platform\\Event\\BaseEvent' => 'BaseEvent', 'App\\Platform\\Event\\ApplicationEvent' => 'ApplicationEvent', 'App\\Platform\\Event\\InfrastructureEvent' => 'InfrastructureEvent', 'App\\Module\\TaskTracking\\Domain\\Task' => 'TaskTracking.Domain', 'DateTimeImmutable' => 'ImmutableValues', 'Psr\\Log\\LoggerInterface' => 'Vendor'] as $target => $layer) {
+            yield 'recording support cannot consume '.$target => ['App\\Platform\\Event\\Recording\\RecordsDomainEventsTrait', $target, 'DomainEventRecording on '.$layer];
+        }
+        yield 'raw Messenger bus' => ['App\\Module\\TaskTracking\\Application\\Leak', 'Symfony\\Component\\Messenger\\MessageBusInterface', 'TaskTracking.Application on MessagingRuntime'];
+        yield 'raw handler locator' => ['App\\Module\\TaskTracking\\UI\\Http\\Leak', 'Symfony\\Component\\Messenger\\Handler\\HandlersLocatorInterface', 'TaskTracking.UI on MessagingRuntime'];
+        yield 'Domain cannot dispatch' => ['App\\Module\\TaskTracking\\Domain\\Leak', 'App\\Platform\\Messaging\\CommandBus', 'TaskTracking.Domain on MessagingFacades'];
+        yield 'Infrastructure cannot dispatch' => ['App\\Module\\TaskTracking\\Infrastructure\\Leak', 'App\\Platform\\Messaging\\QueryBus', 'TaskTracking.Internal on MessagingFacades'];
+        yield 'invocation context remains private' => ['App\\Module\\TaskTracking\\Application\\Leak', 'App\\Platform\\Messaging\\InvocationContext', 'TaskTracking.Application on Platform'];
+        yield 'public DTO cannot dispatch' => ['App\\Module\\TaskTracking\\Application\\Leak\\LeakResult', 'App\\Platform\\Messaging\\QueryBus', 'TaskTracking.ApplicationData on MessagingFacades'];
         foreach (['Infrastructure\\Persistence\\DoctrineTaskRepository', 'Application\\Handler', 'UI\\Http\\Controller'] as $target) {
-            yield 'domain must not depend on '.$target => ['App\\Module\\TaskTracking\\Domain\\Leak', 'App\\Module\\TaskTracking\\'.$target, 'TaskTracking.Domain on TaskTracking.'.(str_starts_with($target, 'Application') ? 'Application' : 'Internal')];
+            yield 'domain must not depend on '.$target => ['App\\Module\\TaskTracking\\Domain\\Leak', 'App\\Module\\TaskTracking\\'.$target, 'TaskTracking.Domain on TaskTracking.'.(str_starts_with($target, 'Application') ? 'Application' : (str_starts_with($target, 'UI') ? 'UI' : 'Internal'))];
         }
         yield 'application concrete repository' => ['App\\Module\\TaskTracking\\Application\\Leak', 'App\\Module\\TaskTracking\\Infrastructure\\Persistence\\DoctrineTaskRepository', 'TaskTracking.Application on TaskTracking.Internal'];
         yield 'domain runtime ORM type' => ['App\\Module\\TaskTracking\\Domain\\Leak', 'Doctrine\\ORM\\EntityManagerInterface', 'TaskTracking.Domain on PersistenceRuntime'];
         yield 'domain Doctrine collection' => ['App\\Module\\TaskTracking\\Domain\\Leak', 'Doctrine\\Common\\Collections\\Collection', 'TaskTracking.Domain on PersistenceRuntime'];
         yield 'application DBAL shortcut' => ['App\\Module\\TaskTracking\\Application\\Leak', 'Doctrine\\DBAL\\Connection', 'TaskTracking.Application on PersistenceRuntime'];
+        foreach (['Domain', 'Infrastructure'] as $category) {
+            yield 'foreign internal '.$category.' event' => ['App\\Module\\TaskTracking\\Application\\Leak', 'App\\Module\\Authorizing\\'.$category.'\\Event\\ObservedEvent', 'TaskTracking.Application on Authorizing.'.$category.'EventData'];
+            yield 'public payload cannot contain '.$category.' event' => ['App\\Module\\TaskTracking\\Application\\Observe\\ObservedEvent', 'App\\Module\\TaskTracking\\'.$category.'\\Event\\ObservedEvent', 'TaskTracking.EventData on TaskTracking.'.$category.'EventData'];
+            yield $category.' event cannot contain own entity' => ['App\\Module\\TaskTracking\\'.$category.'\\Event\\ObservedEvent', 'App\\Module\\TaskTracking\\Domain\\Task', 'TaskTracking.'.$category.'EventData on TaskTracking.Domain'];
+            yield $category.' event cannot depend on public Application event' => ['App\\Module\\TaskTracking\\'.$category.'\\Event\\ObservedEvent', 'App\\Module\\TaskTracking\\Application\\Observe\\ObservedEvent', 'TaskTracking.'.$category.'EventData on TaskTracking.EventData'];
+        }
+        yield 'Domain cannot depend on public Application event' => ['App\\Module\\TaskTracking\\Domain\\Leak', 'App\\Module\\TaskTracking\\Application\\Observe\\ObservedEvent', 'TaskTracking.Domain on TaskTracking.EventData'];
+        foreach (['Base', 'Application', 'Infrastructure'] as $category) {
+            yield 'Domain cannot use '.$category.' primitive' => ['App\\Module\\TaskTracking\\Domain\\Leak', 'App\\Platform\\Event\\'.$category.'Event', 'TaskTracking.Domain on '.$category.'Event'];
+        }
+        foreach (['Domain\\Task' => 'Domain', 'Application\\Observe\\ObserveHandler' => 'Application', 'Infrastructure\\Repository' => 'Internal', 'Domain\\Event\\ObservedEvent' => 'DomainEventData', 'Infrastructure\\Event\\ObservedEvent' => 'InfrastructureEventData'] as $target => $layer) {
+            yield 'own listener cannot reach '.$target => ['App\\Module\\TaskTracking\\Infrastructure\\EventListener\\ObservedListener', 'App\\Module\\TaskTracking\\'.$target, 'TaskTracking.EventListener on TaskTracking.'.$layer];
+        }
+        foreach (['Doctrine\\ORM\\EntityManagerInterface' => 'PersistenceRuntime', 'Symfony\\Component\\Messenger\\MessageBusInterface' => 'MessagingRuntime', 'Symfony\\Component\\Messenger\\Exception\\ValidationFailedException' => 'MessagingDeclarations', 'Psr\\Log\\LoggerInterface' => 'Vendor', 'App\\Platform\\Messaging\\ApplicationEventRecorder' => 'ApplicationEventRecorder', 'App\\Platform\\Messaging\\InvocationContext' => 'Platform'] as $target => $layer) {
+            yield 'own listener restricted dependency '.$target => ['App\\Module\\TaskTracking\\Infrastructure\\EventListener\\ObservedListener', $target, 'TaskTracking.EventListener on '.$layer];
+        }
+        foreach (['UI\\Http\\Leak' => 'UI', 'Infrastructure\\Leak' => 'Internal', 'Domain\\Leak' => 'Domain', 'Application\\Observe\\ObservedEvent' => 'EventData', 'Application\\Observe\\ObserveResult' => 'ApplicationData'] as $source => $layer) {
+            yield 'recorder only Application implementation '.$source => ['App\\Module\\TaskTracking\\'.$source, 'App\\Platform\\Messaging\\ApplicationEventRecorder', 'TaskTracking.'.$layer.' on ApplicationEventRecorder'];
+        }
+        yield 'framework listener has no own listener facade permission' => ['App\\Module\\TaskTracking\\Infrastructure\\Framework\\Doctrine\\EventListener\\FlushListener', 'App\\Platform\\Messaging\\CommandBus', 'TaskTracking.FrameworkEventListener on MessagingFacades'];
     }
 
     public function testUnusedForeignInternalImportIsStillADependency(): void

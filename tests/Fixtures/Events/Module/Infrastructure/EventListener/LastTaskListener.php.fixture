@@ -1,0 +1,23 @@
+<?php
+
+declare(strict_types=1);
+
+namespace App\Module\EventObserving\Infrastructure\EventListener;
+
+use App\Module\EventObserving\Application\RecordTaskCreation\RecordTaskCreationCommand;
+use App\Module\TaskTracking\Application\CreateTask\TaskCreatedEvent;
+use App\Platform\Messaging\CommandBus;
+use Symfony\Component\Messenger\Attribute\AsMessageHandler;
+
+#[AsMessageHandler(bus: 'application.event.bus', priority: 10)]
+final readonly class LastTaskListener
+{
+    public function __construct(private CommandBus $commands)
+    {
+    }
+
+    public function __invoke(TaskCreatedEvent $event): void
+    {
+        $this->commands->dispatch(new RecordTaskCreationCommand($event->taskId, 'last'));
+    }
+}

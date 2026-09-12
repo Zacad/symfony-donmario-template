@@ -51,7 +51,7 @@ final readonly class InventoryFixture
     public function addModule(string $module, string $label = 'module-local'): string
     {
         $root = $this->modules->path($module);
-        $this->filesystem->mkdir([$root.'/Domain', $root.'/Contract']);
+        $this->filesystem->mkdir([$root.'/Domain', $root.'/Infrastructure/Event']);
         $this->loader->addPsr4('App\\Module\\'.$module.'\\', $root);
         foreach (['ConfiguredService', 'Dependency'] as $class) {
             $this->write('src/Module/'.$module.'/Infrastructure/'.$class.'.php', str_replace(
@@ -104,9 +104,43 @@ final readonly class InventoryFixture
         return 'App\\Module\\'.$module.'\\Application\\Lookup\\LookupHandler';
     }
 
+    /** @return list<string> */
+    public function addEvents(string $module): array
+    {
+        $classes = [];
+        foreach (['Domain' => 'Event', 'Application' => 'Lookup', 'Infrastructure' => 'Event'] as $category => $directory) {
+            $namespace = 'App\\Module\\'.$module.'\\'.$category.'\\'.$directory;
+            $class = $namespace.'\\ObservedEvent';
+            $this->write('src/Module/'.$module.'/'.$category.'/'.$directory.'/ObservedEvent.php', '<?php namespace '.$namespace.'; final readonly class ObservedEvent extends \\App\\Platform\\Event\\'.$category.'Event { public function __construct(public string $id) {} }');
+            $classes[] = $class;
+        }
+
+        return $classes;
+    }
+
     public function configurationPath(string $module): string
     {
         return 'src/Module/'.$module.'/Resources/config/services.yaml';
+    }
+
+    /** @return list<string> */
+    public function addRecordingEntities(string $module): array
+    {
+        foreach (['RecordsDomainEvents', 'RecordsDomainEventsTrait'] as $support) {
+            $path = 'src/Platform/Event/Recording/'.$support.'.php';
+            $this->write($path, $this->source($path));
+        }
+        $classes = [];
+        foreach (['FirstRecord', 'SecondRecord'] as $name) {
+            $namespace = 'App\\Module\\'.$module.'\\Domain';
+            $this->write('src/Module/'.$module.'/Domain/'.$name.'.php', '<?php namespace '.$namespace.'; '
+                .'#[\\Doctrine\\ORM\\Mapping\\Entity] final class '.$name.' implements \\App\\Platform\\Event\\Recording\\RecordsDomainEvents { '
+                .'use \\App\\Platform\\Event\\Recording\\RecordsDomainEventsTrait; '
+                .'#[\\Doctrine\\ORM\\Mapping\\Id] #[\\Doctrine\\ORM\\Mapping\\Column] private int $id; }');
+            $classes[] = $namespace.'\\'.$name;
+        }
+
+        return $classes;
     }
 
     public function container(): ContainerBuilder
@@ -136,7 +170,8 @@ final readonly class InventoryFixture
     private function initialize(): void
     {
         $this->filesystem->mkdir($this->projectDir, 0700);
-        $this->write('config/services.yaml', $this->source('config/services.yaml'));
+        // This fixture exercises module discovery, not the separate CQRS runtime.
+        $this->write('config/services.yaml', str_replace("    - { resource: 'services/messaging.yaml' }\n", '', $this->source('config/services.yaml')));
         $this->write('config/packages/framework.yaml', $this->template('framework.yaml'));
         $platformPath = 'src/'.str_replace('\\', '/', substr($this->platformNamespace, 4));
         $this->write($platformPath.'/PlatformService.php', str_replace('App\\Platform\\InventoryFixture', $this->platformNamespace, $this->template('PlatformService.php.fixture')));

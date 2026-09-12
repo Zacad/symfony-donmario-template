@@ -1,0 +1,15 @@
+<?php
+
+declare(strict_types=1);
+
+namespace App\Module\EventObserving\Application\RecordTaskCreation;
+
+use App\Platform\Event\ApplicationEvent;
+use Symfony\Component\Uid\Uuid;
+
+final readonly class ObservationRecordedEvent extends ApplicationEvent
+{
+    public function __construct(public Uuid $taskId, public string $label)
+    {
+    }
+}
