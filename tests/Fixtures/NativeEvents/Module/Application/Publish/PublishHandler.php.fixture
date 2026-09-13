@@ -1,0 +1,34 @@
+<?php
+
+declare(strict_types=1);
+
+namespace App\Module\NativeObserving\Application\Publish;
+
+use App\Module\NativeObserving\Application\Probe\ProbeQuery;
+use App\Module\NativeObserving\Domain\ObservationRepository;
+use App\Platform\Messaging\EventBus;
+use App\Platform\Messaging\QueryBus;
+use Symfony\Component\Messenger\Attribute\AsMessageHandler;
+
+#[AsMessageHandler(bus: 'command.bus')]
+final readonly class PublishHandler
+{
+    public function __construct(private ObservationRepository $observations, private EventBus $events, private QueryBus $queries)
+    {
+    }
+
+    public function __invoke(PublishCommand $command): void
+    {
+        $this->observations->record($command->id, 'producer', 'pending');
+        try {
+            if ($command->query) {
+                $this->queries->ask(new ProbeQuery());
+            }
+            $this->events->dispatch(new PublishedEvent($command->id, new \DateTimeImmutable('2026-09-13T12:34:56.123456+02:00'), new DetailEvent($command->id, "NATIVE_PRIVATE_PAYLOAD <error>\n雪", 7, true, null)));
+        } catch (\Throwable $failure) {
+            if (!$command->catchFailure) {
+                throw $failure;
+            }
+        }
+    }
+}

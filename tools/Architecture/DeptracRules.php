@@ -37,8 +37,8 @@ final class DeptracRules
         $facadePattern = '~^App\\\\Platform\\\\Messaging\\\\(?:CommandBus|QueryBus)$~Di';
         $messenger = Layer::withName('MessagingRuntime')->collectors(BoolConfig::create([self::collector($messengerPattern)], [self::collector($declarationPattern)]));
         $facades = self::layer('MessagingFacades', $facadePattern);
-        $recorderPattern = '~^App\\\\Platform\\\\Messaging\\\\ApplicationEventRecorder$~Di';
-        $recorder = self::layer('ApplicationEventRecorder', $recorderPattern);
+        $eventBusPattern = '~^App\\\\Platform\\\\Messaging\\\\EventBus$~Di';
+        $eventBus = self::layer('EventBus', $eventBusPattern);
         $primitivePattern = '~^App\\\\Platform\\\\Event\\\\(?:Base|Domain|Application|Infrastructure)Event$~Di';
         $baseEvent = self::layer('BaseEvent', '~^App\\\\Platform\\\\Event\\\\BaseEvent$~Di');
         $domainEvent = self::layer('DomainEvent', '~^App\\\\Platform\\\\Event\\\\DomainEvent$~Di');
@@ -53,7 +53,7 @@ final class DeptracRules
             [self::collector('~^(?!App(?:\\\\|$)).+~i')],
             [self::collector(ContractTypes::IMMUTABLE_PATTERN), self::collector($persistencePattern), self::collector($messengerPattern)],
         ));
-        $platform = Layer::withName('Platform')->collectors(BoolConfig::create([self::collector('~^App\\\\Platform\\\\~i')], [self::collector($facadePattern), self::collector($recorderPattern), self::collector($primitivePattern), self::collector($recordingPattern)]));
+        $platform = Layer::withName('Platform')->collectors(BoolConfig::create([self::collector('~^App\\\\Platform\\\\~i')], [self::collector($facadePattern), self::collector($eventBusPattern), self::collector($primitivePattern), self::collector($recordingPattern)]));
         $kernel = self::layer('KernelBoot', '~^App\\\\Kernel$~Di');
         $classified = [
             self::collector('~^App\\\\Platform\\\\~i'),
@@ -96,7 +96,7 @@ final class DeptracRules
             ->paths($projectDir.'/src')
             ->cacheFile($projectDir.'/var/deptrac.cache')
             ->analyser(AnalyserConfig::create([EmitterType::CLASS_TOKEN, EmitterType::USE_TOKEN]))
-            ->layers($values, $mapping, $persistence, $vendor, $platform, $kernel, $unclassified, $messenger, $declarations, $facades, $recorder, $baseEvent, $domainEvent, $applicationEvent, $infrastructureEvent, $recording, $handlerAttribute, ...array_merge($publicData, $domains, $applications, $internals, $uis, $domainEvents, $infrastructureEvents, $listeners, $frameworkListeners))
+            ->layers($values, $mapping, $persistence, $vendor, $platform, $kernel, $unclassified, $messenger, $declarations, $facades, $eventBus, $baseEvent, $domainEvent, $applicationEvent, $infrastructureEvent, $recording, $handlerAttribute, ...array_merge($publicData, $domains, $applications, $internals, $uis, $domainEvents, $infrastructureEvents, $listeners, $frameworkListeners))
             ->rulesets(
                 Ruleset::forLayer($values),
                 Ruleset::forLayer($mapping),
@@ -110,10 +110,10 @@ final class DeptracRules
                 Ruleset::forLayer($applicationEvent)->accesses($baseEvent),
                 Ruleset::forLayer($infrastructureEvent)->accesses($baseEvent),
                 Ruleset::forLayer($recording)->accesses($domainEvent),
-                Ruleset::forLayer($recorder)->accesses($platform, $vendor, $applicationEvent),
+                Ruleset::forLayer($eventBus)->accesses($platform, $vendor, $messenger, $applicationEvent),
                 Ruleset::forLayer($facades)->accesses($platform, $vendor, $messenger),
                 Ruleset::forLayer($unclassified),
-                Ruleset::forLayer($platform)->accesses($vendor, $values, $mapping, $persistence, $facades, $messenger, $declarations, $recorder, $baseEvent, $domainEvent, $applicationEvent, $infrastructureEvent, $handlerAttribute, ...$publicData),
+                Ruleset::forLayer($platform)->accesses($vendor, $values, $mapping, $persistence, $facades, $messenger, $declarations, $eventBus, $baseEvent, $domainEvent, $applicationEvent, $infrastructureEvent, $handlerAttribute, ...$publicData),
                 Ruleset::forLayer($kernel)->accesses($platform, $vendor, $values),
             );
         foreach ($applicationData as $data) {
@@ -131,7 +131,7 @@ final class DeptracRules
                 Ruleset::forLayer($domainEvents[$index])->accesses($values, $baseEvent, $domainEvent),
                 Ruleset::forLayer($infrastructureEvents[$index])->accesses($values, $baseEvent, $infrastructureEvent),
                 Ruleset::forLayer($domain)->accesses($vendor, $values, $mapping, $domainEvent, $recording, $domainEvents[$index]),
-                Ruleset::forLayer($application)->accesses($domain, $domainEvents[$index], $vendor, $values, $facades, $recorder, $declarations, $handlerAttribute, ...$publicData),
+                Ruleset::forLayer($application)->accesses($domain, $domainEvents[$index], $vendor, $values, $facades, $eventBus, $declarations, $handlerAttribute, ...$publicData),
                 Ruleset::forLayer($listeners[$index])->accesses($values, $facades, $handlerAttribute, ...$publicData),
                 Ruleset::forLayer($frameworkListeners[$index])->accesses($domain, $domainEvents[$index], $application, $internal, $infrastructureEvents[$index], $vendor, $values, $mapping, $persistence, ...$publicData),
                 Ruleset::forLayer($internal)->accesses($domain, $domainEvents[$index], $application, $infrastructureEvents[$index], $vendor, $values, $mapping, $persistence, ...$publicData),

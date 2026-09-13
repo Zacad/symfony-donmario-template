@@ -1,5 +1,9 @@
 # Subtask 4 — layered events and best-effort postcommit delivery
 
+**Historical delivery design, superseded by [Subtask 5b](05b-native-event-bus.md).**
+Category primitives and opt-in Domain recording remain. Current synchronous
+listeners execute inside the producer transaction using EventBus dispatch.
+
 ## Approval and status
 
 The user approved the revised design and instructed **“start with category only
@@ -7,8 +11,9 @@ primitives, accept and proceed”**. Implementation and full verification are co
 Fresh independent reviewers approved the corrected implementation. The user then
 approved the bounded opt-in recording follow-up below; verification and its fresh
 independent review also passed. **The user accepted the completed Subtask 4, including
-the recording refactor, with “i accept”.** Next is separate Subtask 5 discovery/design;
-outbox/async implementation requires its own design approval.
+the recording refactor, with “i accept”.** Subsequent [Subtask 5](05-durable-events.md)
+was implemented and reviewed, then superseded by [Subtask 5b](05b-native-event-bus.md),
+which the user accepted on 2026-09-13. The historical Subtask 4 scope below remains unchanged.
 
 This replaces the earlier unapproved precommit/Contract proposal. Subtasks 1, 2,
 3a and 3b remain accepted. Their existing modified/untracked work is preserved;

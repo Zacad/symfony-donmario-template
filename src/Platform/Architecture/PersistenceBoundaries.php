@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace App\Platform\Architecture;
 
+use Doctrine\DBAL\Connection;
 use Doctrine\DBAL\Platforms\PostgreSQLPlatform;
 use Doctrine\DBAL\Schema\ComparatorConfig;
 use Doctrine\ORM\EntityManagerInterface;
@@ -14,6 +15,7 @@ use Doctrine\ORM\Tools\SchemaTool;
 final readonly class PersistenceBoundaries
 {
     private const string HISTORY_TABLE = 'public.doctrine_migration_versions';
+    private const string TRANSPORT_TABLE = 'public.platform_messaging_message';
 
     public function __construct(private EntityManagerInterface $entityManager, private ModuleMap $moduleMap)
     {
@@ -134,7 +136,7 @@ final readonly class PersistenceBoundaries
 
         // pg_catalog queries intentionally bypass Doctrine's configured asset filter.
         $objects = $connection->fetchAllAssociative(<<<'SQL'
-            SELECT n.nspname || '.' || c.relname AS name, c.relkind AS kind
+            SELECT n.nspname || '.' || c.relname AS name, c.relkind AS kind, c.relpersistence AS persistence
             FROM pg_catalog.pg_class c
             JOIN pg_catalog.pg_namespace n ON n.oid = c.relnamespace
             WHERE n.nspname = 'public' AND c.relkind IN ('r', 'p', 'v', 'm', 'f')
@@ -147,8 +149,14 @@ final readonly class PersistenceBoundaries
             if (!in_array($kind, ['r', 'p'], true)) {
                 throw new \LogicException('persistence.database.unsupported: '.$name.' has unsupported relation kind '.$kind.'.');
             }
-            if (!isset($tables[$name]) && self::HISTORY_TABLE !== $name) {
+            if (self::TRANSPORT_TABLE === $name && 'p' !== $this->catalogString($object, 'persistence')) {
+                throw new \LogicException('persistence.database.transport_durability: '.$name.' must be a permanent logged table.');
+            }
+            if (!isset($tables[$name]) && self::HISTORY_TABLE !== $name && self::TRANSPORT_TABLE !== $name) {
                 throw new \LogicException('persistence.database.unexpected_table: '.$name.' has no mapped owner.');
+            }
+            if (self::TRANSPORT_TABLE === $name && 'r' !== $kind) {
+                throw new \LogicException('persistence.database.transport_schema: '.self::TRANSPORT_TABLE.' must be an ordinary table.');
             }
             $actual[$name] = true;
         }
@@ -156,6 +164,9 @@ final readonly class PersistenceBoundaries
             if (!isset($actual[$name])) {
                 throw new \LogicException('persistence.database.missing_table: '.$name.' owned by '.$owner.' is missing.');
             }
+        }
+        if (!isset($actual[self::TRANSPORT_TABLE])) {
+            throw new \LogicException('persistence.database.missing_table: '.self::TRANSPORT_TABLE.' owned by Platform Messaging is missing.');
         }
 
         $foreignKeys = $connection->fetchAllAssociative(<<<'SQL'
@@ -184,6 +195,8 @@ final readonly class PersistenceBoundaries
             }
         }
 
+        $this->assertTransportSchema($connection);
+
         $configuration = $connection->getConfiguration();
         $filter = $configuration->getSchemaAssetsFilter();
         $configuration->setSchemaAssetsFilter(static fn (): bool => true);
@@ -208,6 +221,60 @@ final readonly class PersistenceBoundaries
             }
         } finally {
             $configuration->setSchemaAssetsFilter($filter);
+        }
+    }
+
+    /** The technical transport has its own exact schema, never business metadata ownership. */
+    private function assertTransportSchema(Connection $connection): void
+    {
+        $columns = $connection->fetchAllAssociative(<<<'SQL'
+            SELECT a.attname AS name, pg_catalog.format_type(a.atttypid, a.atttypmod) AS type,
+                   CASE WHEN a.attnotnull THEN 'required' ELSE 'nullable' END AS nullability,
+                   a.attidentity::text AS identity, a.attgenerated::text AS generated,
+                   CASE WHEN d.oid IS NULL OR (
+                       a.attname = 'delivered_at' AND pg_catalog.pg_get_expr(d.adbin, d.adrelid) IN (
+                           'NULL::timestamp without time zone', 'NULL::timestamp(0) without time zone', 'NULL'
+                       )
+                   ) THEN 'none' ELSE 'unexpected' END AS default_value
+            FROM pg_catalog.pg_attribute a
+            LEFT JOIN pg_catalog.pg_attrdef d ON d.adrelid = a.attrelid AND d.adnum = a.attnum
+            WHERE a.attrelid = 'public.platform_messaging_message'::regclass
+              AND a.attnum > 0 AND NOT a.attisdropped
+            ORDER BY a.attname
+            SQL);
+        $expected = [
+            'available_at' => ['timestamp(0) without time zone', 'required', ''],
+            'body' => ['text', 'required', ''],
+            'created_at' => ['timestamp(0) without time zone', 'required', ''],
+            'delivered_at' => ['timestamp(0) without time zone', 'nullable', ''],
+            'headers' => ['text', 'required', ''],
+            'id' => ['bigint', 'required', 'd'],
+            'queue_name' => ['character varying(190)', 'required', ''],
+        ];
+        $expectedColumns = [];
+        foreach ($expected as $name => [$type, $nullability, $identity]) {
+            $expectedColumns[] = ['name' => $name, 'type' => $type, 'nullability' => $nullability, 'identity' => $identity, 'generated' => '', 'default_value' => 'none'];
+        }
+        if ($columns !== $expectedColumns) {
+            // Never expose actual default expressions or persisted data in diagnostics.
+            throw new \LogicException('persistence.database.transport_columns: '.self::TRANSPORT_TABLE.' differs from the approved transport columns.');
+        }
+
+        $indexes = $connection->fetchAllAssociative(<<<'SQL'
+            SELECT pg_catalog.pg_get_indexdef(i.indexrelid) AS definition,
+                   CASE WHEN i.indisprimary THEN 'primary' ELSE 'secondary' END AS kind,
+                   CASE WHEN i.indisvalid AND i.indisready AND i.indislive AND i.indimmediate
+                             AND i.indpred IS NULL AND i.indexprs IS NULL
+                        THEN 'usable' ELSE 'unusable' END AS state
+            FROM pg_catalog.pg_index i
+            WHERE i.indrelid = 'public.platform_messaging_message'::regclass
+            ORDER BY i.indisprimary DESC
+            SQL);
+        if ($indexes !== [
+            ['definition' => 'CREATE UNIQUE INDEX platform_messaging_message_pkey ON public.platform_messaging_message USING btree (id)', 'kind' => 'primary', 'state' => 'usable'],
+            ['definition' => 'CREATE INDEX platform_messaging_message_queue_idx ON public.platform_messaging_message USING btree (queue_name, available_at, delivered_at, id)', 'kind' => 'secondary', 'state' => 'usable'],
+        ]) {
+            throw new \LogicException('persistence.database.transport_indexes: '.self::TRANSPORT_TABLE.' differs from the approved transport indexes.');
         }
     }
 

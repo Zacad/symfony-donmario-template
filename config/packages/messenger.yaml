@@ -1,6 +1,35 @@
+parameters:
+    env(EVENT_TRANSPORT_DSN): 'sync://'
+
 framework:
     messenger:
         default_bus: command.bus
+        failure_transport: events_failed
+        serializer:
+            default_serializer: messenger.transport.symfony_serializer
+            symfony_serializer:
+                format: json
+        routing:
+            App\Platform\Event\ApplicationEvent: events
+        transports:
+            events:
+                dsn: '%env(EVENT_TRANSPORT_DSN)%'
+                options:
+                    table_name: platform_messaging_message
+                    queue_name: events
+                    auto_setup: false
+                    use_notify: false
+                    redeliver_timeout: 300
+                retry_strategy: { max_retries: 3, delay: 1000, multiplier: 2, max_delay: 4000, jitter: 0 }
+                failure_transport: events_failed
+            events_failed:
+                dsn: 'doctrine://default'
+                options:
+                    table_name: platform_messaging_message
+                    queue_name: events_failed
+                    auto_setup: false
+                    use_notify: false
+                    redeliver_timeout: 300
         buses:
             command.bus:
                 default_middleware: false
@@ -20,8 +49,8 @@ framework:
                     - validation
                     - handle_message
             application.event.bus:
-                default_middleware: false
+                default_middleware:
+                    allow_no_handlers: true
                 middleware:
+                    # FrameworkBundle inserts this before native sending/handling.
                     - App\Platform\Messaging\EventPolicyMiddleware
-                    - add_bus_name_stamp_middleware
-                    - handle_message: { index_1: true }

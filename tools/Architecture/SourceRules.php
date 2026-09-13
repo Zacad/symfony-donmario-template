@@ -129,6 +129,7 @@ final class SourceRules
         $part = '[A-Z][A-Za-z0-9]*';
 
         return 'App\\Kernel' === $class
+            || 1 === preg_match('~^App\\\\Platform\\\\Messaging\\\\Resources\\\\migrations\\\\Version[0-9]{14}$~D', $class)
             || 1 === preg_match('~^App\\\\Platform(?:\\\\'.$part.')+$~D', $class)
             || 1 === preg_match('~^App\\\\Module\\\\'.$part.'ing\\\\(?:'
                 .'(?:Application|Domain|Infrastructure)(?:\\\\'.$part.')+'

@@ -1,21 +1,16 @@
 # Approval-gated delivery
 
-General design and Subtasks 1, 2, 3a, 3b and 4 have user acceptance. Subtask 2, including the
-domain repository segregation correction, was accepted on **2026-09-11** after
-implementation, container/PostgreSQL verification and independent review.
+General design and Subtasks **1, 2, 3a, 3b, 4 and 5b** have user acceptance. Historical
+[Subtask 4](tasks/04-synchronous-events.md) and [Subtask 5](tasks/05-durable-events.md)
+delivery designs are **superseded by approved [Subtask 5b](tasks/05b-native-event-bus.md)**.
+Their records retain historical evidence; current behavior is documented in
+[architecture](architecture.md#native-application-events-5b).
 
-On **2026-09-11**, the user chose public command/query/result data beside handlers
-in Application use-case folders, and approved the bounded alignment plan.
-Subtask **3a** was accepted on **2026-09-11** after implementation, container/PostgreSQL
-verification and independent review. Evidence is in [Subtask 3](tasks/03-cqrs-transactions.md).
-Subtask **3b** was accepted on **2026-09-11** after implementation,
-container/PostgreSQL/consumer verification and independent review, including
-correction/reverification of two boundary findings.
-**[Subtask 4](tasks/04-synchronous-events.md) — revised layered events, category-only
-primitives and the opt-in recording refactor — is implemented, fully verified,
-independently reviewed and accepted by the user.**
-Next: separate Subtask 5 discovery/design. Its implementation is not yet approved.
-See [the session handoff](handoff.md) for continuation context.
+**5b is implemented, verified and independently reviewed**, with all findings
+resolved. **The user accepted 5b on 2026-09-13.** Next: separate Subtask 6
+web-authentication discovery/design in a fresh session. Its implementation requires
+design approval. Reconcile the dated
+[session handoff](handoff.md) with the active task record and subsequent instructions.
 Later subtasks require their own discovery, design and approval before edits.
 Split a subtask further if discovery reveals that its scope is too broad.
 
@@ -25,8 +20,9 @@ Split a subtask further if discovery reveals that its scope is too broad.
 | 2 | Module/persistence boundaries | Boot and migrations plus positive/negative architecture checks |
 | 3a | Application public-data boundary alignment | Co-located DTOs/handlers, public-data/private-service rules and regressions |
 | 3b | CQRS/transactions | Shared HTTP/CLI use cases, validation and rollback |
-| 4 | Layered synchronous events | Postcommit best-effort subscribers, independent listener transactions, retained producer success, FIFO/bounds and recovery; required nested commands remain atomic |
-| 5 | Durable/optional async events | Separately designed outbox/atomic enqueue, delivery identity, worker, retry, crash and duplicate handling |
+| 4 | Layered events (historical; delivery superseded by 5b) | Retained event categories, public-data placement and optional Domain recording |
+| 5 | Durable events (historical; superseded by 5b) | See historical task record |
+| 5b | Native EventBus (accepted) | Immediate sync producer-transaction commit/rollback; global Doctrine switch; one-row atomic enqueue; current handlers, native retries/partial success, idempotency, worker crash/outage recovery and consumer isolation |
 | 6 | Authenticating: web | Provisioning, login/logout, throttling and CSRF |
 | 7 | Authenticating: JWT | Issuance, protected API identity, lifecycle and negative cases |
 | 8 | Authorizing: model/management | Roles, direct scoped grants and permission decisions |
@@ -42,11 +38,15 @@ Split a subtask further if discovery reveals that its scope is too broad.
 
 Task records include the approved design, security/performance review, exact
 verification commands/results and independent review findings. Documentation and
-checks evolve alongside the implementation. Forge-independent commands are the
-current CI interface; production deployment is a separate future scope.
+checks evolve alongside implementation. Forge-independent commands are the current
+CI interface; production deployment is a separate future scope.
 
-Subtask 4 supersedes the historical `Contract/Event` and precommit/full-subscriber-
-rollback direction. Public events now live in `Application/<UseCase>`; Domain and
-Infrastructure events stay internal. Primitives carry no metadata and current
-delivery has no outbox. `EventObserving` is a disposable verification module, not
-an additional production business module. See architecture for exact guarantees.
+Subtask 5b uses the same Application-only EventBus and ordinary listener attributes
+in both modes. `EVENT_TRANSPORT_DSN` chooses `sync://` by default or
+`doctrine://default` globally. Sync listeners share the producer transaction before
+final flush; async listener commands own their usual roots. Required invariants use
+explicit nested commands. Async consumers require module-owned idempotency; native
+partial-success stamps do not provide exactly-once effects or global ordering.
+See architecture for serializer/trust limits, queue compatibility and soft worker
+limits, and [README](../README.md#switch-event-delivery-and-run-the-worker) for supported
+shell exports and worker operations.

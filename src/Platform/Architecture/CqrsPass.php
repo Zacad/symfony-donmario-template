@@ -5,37 +5,30 @@ declare(strict_types=1);
 namespace App\Platform\Architecture;
 
 use App\Platform\Event\ApplicationEvent;
-use App\Platform\Messaging\ApplicationEventRecorder;
-use App\Platform\Messaging\BestEffortEventDispatcher;
 use App\Platform\Messaging\CommandBus;
 use App\Platform\Messaging\CommandTransactionMiddleware;
-use App\Platform\Messaging\EventDeliveryContext;
-use App\Platform\Messaging\EventListenerInvoker;
+use App\Platform\Messaging\EventBus;
 use App\Platform\Messaging\EventPolicyMiddleware;
 use App\Platform\Messaging\InvocationContext;
 use App\Platform\Messaging\InvocationMiddleware;
 use App\Platform\Messaging\MessagePolicyMiddleware;
 use App\Platform\Messaging\QueryBus;
-use Symfony\Component\Cache\Messenger\EarlyExpirationMessage;
-use Symfony\Component\Console\Messenger\RunCommandMessage;
 use Symfony\Component\DependencyInjection\Argument\IteratorArgument;
 use Symfony\Component\DependencyInjection\Argument\ServiceClosureArgument;
 use Symfony\Component\DependencyInjection\Compiler\CompilerPassInterface;
 use Symfony\Component\DependencyInjection\ContainerBuilder;
 use Symfony\Component\DependencyInjection\Definition;
 use Symfony\Component\DependencyInjection\Reference;
-use Symfony\Component\HttpClient\Messenger\PingWebhookMessage;
 use Symfony\Component\Messenger\Attribute\AsMessageHandler;
 use Symfony\Component\Messenger\Handler\BatchHandlerInterface;
 use Symfony\Component\Messenger\Handler\HandlerDescriptor;
 use Symfony\Component\Messenger\Handler\HandlersLocator;
-use Symfony\Component\Messenger\Message\RedispatchMessage;
 use Symfony\Component\Messenger\MessageBus;
 use Symfony\Component\Messenger\Middleware\AddBusNameStampMiddleware;
 use Symfony\Component\Messenger\Middleware\HandleMessageMiddleware;
+use Symfony\Component\Messenger\Middleware\SendMessageMiddleware;
 use Symfony\Component\Messenger\Middleware\TraceableMiddleware;
 use Symfony\Component\Messenger\Middleware\ValidationMiddleware;
-use Symfony\Component\Process\Messenger\RunProcessMessage;
 
 /** After Messenger/autowiring, before module edge checking and service removal. */
 final readonly class CqrsPass implements CompilerPassInterface
@@ -46,18 +39,17 @@ final readonly class CqrsPass implements CompilerPassInterface
 
     public function process(ContainerBuilder $container): void
     {
-        // Minimal architecture fixture kernels do not configure the application buses.
+        // Minimal architecture fixture kernels do not configure application buses.
         if (!$container->has('command.bus') && !$container->has('query.bus') && !$container->has('application.event.bus')) {
             return;
         }
         $this->busInventory($container);
+        $this->defaultConnection($container);
         $messages = $this->messages($container);
         $listeners = $this->listeners($container, $messages);
         $this->eventWiring($container, array_filter($messages, static fn (string $kind): bool => 'event' === $kind));
-        $seen = [];
-        $seenListeners = [];
-        $deferred = [];
-        foreach (['command' => CommandBus::class, 'query' => QueryBus::class, 'event' => ApplicationEventRecorder::class] as $kind => $facade) {
+        $seen = $seenListeners = [];
+        foreach (['command' => CommandBus::class, 'query' => QueryBus::class, 'event' => EventBus::class] as $kind => $facade) {
             $bus = 'event' === $kind ? 'application.event.bus' : $kind.'.bus';
             if ('event' !== $kind) {
                 $this->wiring($container, $kind, $facade);
@@ -69,8 +61,10 @@ final readonly class CqrsPass implements CompilerPassInterface
                 $this->fail('handlers', $bus.' requires a literal handler map.');
             }
             foreach ($mapping as $message => $handlers) {
-                if (in_array($message, [RedispatchMessage::class, EarlyExpirationMessage::class, RunCommandMessage::class, RunProcessMessage::class, PingWebhookMessage::class], true)) {
-                    continue; // Exact framework-only messages; runtime policy rejects them.
+                // Native FrameworkBundle handlers remain native. Runtime policy
+                // admits only the inventoried public application messages.
+                if (is_string($message) && str_starts_with($message, 'Symfony\\')) {
+                    continue;
                 }
                 if (!is_string($message) || !isset($messages[$message])) {
                     $this->fail('message', $bus.' has an unknown, internal or wildcard message registration.');
@@ -100,8 +94,7 @@ final readonly class CqrsPass implements CompilerPassInterface
                     $messageReflection = $container->getReflectionClass($message);
                     if (null === $reflection || null === $messageReflection
                         || ('event' !== $kind && $reflection->getNamespaceName() !== $messageReflection->getNamespaceName())
-                        || $reflection->implementsInterface(BatchHandlerInterface::class)
-                        || !$reflection->hasMethod('__invoke')) {
+                        || $reflection->implementsInterface(BatchHandlerInterface::class) || !$reflection->hasMethod('__invoke')) {
                         $this->fail('handler', $message.' requires a co-located, owning-module handler.');
                     }
                     $method = $reflection->getMethod('__invoke');
@@ -117,14 +110,10 @@ final readonly class CqrsPass implements CompilerPassInterface
                         if (!isset($listeners[$class]) || $listeners[$class]['message'] !== $message) {
                             $this->fail('listener', $class.' must be an inventoried Infrastructure/EventListener/*Listener.');
                         }
-                        if (isset($seenListeners[$class])) {
-                            $this->fail('registration', $class.' has duplicate listener registrations.');
-                        }
-                        if (($options['priority'] ?? 0) !== $listeners[$class]['priority']) {
-                            $this->fail('registration', $class.' must retain its declared listener priority.');
+                        if (isset($seenListeners[$class]) || ($options['priority'] ?? 0) !== $listeners[$class]['priority']) {
+                            $this->fail('registration', $class.' must retain its single declared listener registration and priority.');
                         }
                         $seenListeners[$class] = true;
-                        $deferred[] = [$descriptor, $class];
                     }
                     $seen[$message] = true;
                 }
@@ -139,20 +128,6 @@ final readonly class CqrsPass implements CompilerPassInterface
             if (!isset($seenListeners[$class])) {
                 $this->fail('listener_inventory', $class.' is missing its declared application-event registration.');
             }
-        }
-        // Never accept user-supplied wrappers/aliases as original registrations.
-        // All cardinality, signature, privacy and wiring checks above run first.
-        foreach ($deferred as [$descriptor, $class]) {
-            $reference = $descriptor->getArgument(0);
-            if (!$reference instanceof Reference) {
-                $this->fail('wiring', 'A deferred listener requires its original service reference.');
-            }
-            $options = $descriptor->getArgument(1);
-            if (!is_array($options)) {
-                $this->fail('registration', 'A deferred listener requires its checked descriptor options.');
-            }
-            $descriptor->setArgument(0, new Definition(EventListenerInvoker::class, [new ServiceClosureArgument($reference)]));
-            $descriptor->setArgument(1, $options + ['alias' => $class.'::__invoke']);
         }
     }
 
@@ -191,7 +166,7 @@ final readonly class CqrsPass implements CompilerPassInterface
         $scope = $this->definition($container, 'app.'.$kind.'_scope', InvocationMiddleware::class);
         $this->assertReference($container, $scope->getArgument(0), InvocationContext::class);
         $this->assertReference($container, $scope->getArgument(1), 'doctrine');
-        $this->assertReference($container, $scope->getArgument(3), BestEffortEventDispatcher::class);
+        $this->assertReference($container, $scope->getArgument(3), 'logger');
         $policy = $this->definition($container, 'app.'.$kind.'_policy', MessagePolicyMiddleware::class);
         if ($scope->getArgument(2) !== $kind || $policy->getArgument(0) !== $kind) {
             $this->fail('wiring', $bus.' has the wrong invocation/message policy.');
@@ -231,17 +206,10 @@ final readonly class CqrsPass implements CompilerPassInterface
 
     private function busInventory(ContainerBuilder $container): void
     {
-        $approved = ['command.bus', 'query.bus', 'application.event.bus'];
         foreach ($container->getDefinitions() as $id => $definition) {
-            if (($definition->hasTag('messenger.bus') || MessageBus::class === $definition->getClass()) && !in_array($id, $approved, true)) {
+            if (($definition->hasTag('messenger.bus') || MessageBus::class === $definition->getClass()) && !in_array($id, ['command.bus', 'query.bus', 'application.event.bus'], true)) {
                 $this->fail('bus', $id.' is an unapproved additional message bus.');
             }
-        }
-        if ([] !== $container->findTaggedServiceIds('messenger.receiver')) {
-            $this->fail('wiring', 'Synchronous application buses cannot configure transports.');
-        }
-        if ($container->has('messenger.senders_locator') && [] !== $container->findDefinition('messenger.senders_locator')->getArgument(0)) {
-            $this->fail('wiring', 'Synchronous application buses cannot configure transport routing.');
         }
     }
 
@@ -290,9 +258,6 @@ final readonly class CqrsPass implements CompilerPassInterface
                 $listeners[$reflection->name] = ['message' => $message, 'priority' => $attribute->priority];
                 $definitions = [];
                 foreach ($container->getDefinitions() as $id => $definition) {
-                    // Autoconfiguration leaves .abstract.instanceof definitions
-                    // carrying the concrete class. These are inheritance templates,
-                    // not additional runtime listeners.
                     if ($definition->isAbstract() || $definition->hasTag('container.excluded')) {
                         continue;
                     }
@@ -304,8 +269,7 @@ final readonly class CqrsPass implements CompilerPassInterface
                 if (1 !== count($definitions)) {
                     $this->fail('listener_inventory', $class.' requires one ordinary private listener service.');
                 }
-                $definition = reset($definitions);
-                $tags = $definition->getTag('messenger.message_handler');
+                $tags = reset($definitions)->getTag('messenger.message_handler');
                 $tag = $tags[0] ?? null;
                 if (1 !== count($tags) || !is_array($tag) || 'application.event.bus' !== ($tag['bus'] ?? null)
                     || [] !== array_diff(array_keys($tag), ['bus', 'priority', 'handles', 'method', 'from_transport', 'sign'])
@@ -324,49 +288,126 @@ final readonly class CqrsPass implements CompilerPassInterface
     private function eventWiring(ContainerBuilder $container, array $events): void
     {
         $bus = 'application.event.bus';
-        $this->definition($container, EventDeliveryContext::class, EventDeliveryContext::class);
-        $this->definition($container, InvocationContext::class, InvocationContext::class);
-        $recorder = $this->definition($container, ApplicationEventRecorder::class, ApplicationEventRecorder::class);
-        $this->assertReference($container, $recorder->getArgument(0), InvocationContext::class);
-        $recorder->setArgument(1, $events);
-        $dispatcher = $this->definition($container, BestEffortEventDispatcher::class, BestEffortEventDispatcher::class);
-        $this->assertReference($container, $dispatcher->getArgument(0), EventDeliveryContext::class);
-        $this->assertReference($container, $dispatcher->getArgument(1), $bus);
-        $this->assertReference($container, $dispatcher->getArgument(2), 'logger');
+        $facade = $this->definition($container, EventBus::class, EventBus::class);
+        $this->assertReference($container, $facade->getArgument(0), $bus);
+        $this->assertReference($container, $facade->getArgument(1), InvocationContext::class);
         $policy = $this->definition($container, EventPolicyMiddleware::class, EventPolicyMiddleware::class);
-        $this->assertReference($container, $policy->getArgument(0), EventDeliveryContext::class);
-        $this->assertReference($container, $policy->getArgument(1), InvocationContext::class);
-        $policy->setArgument(2, $events);
+        $policy->setArgument(0, $events);
         $definition = $this->definition($container, $bus, MessageBus::class);
         if ($definition->isPublic()) {
-            $this->fail('wiring', 'The application event bus must remain private.');
+            $this->fail('handler_visibility', 'The application event bus must remain private.');
         }
         foreach ($container->getAliases() as $id => $alias) {
             if ($alias->isPublic() && $container->findDefinition($id) === $definition) {
-                $this->fail('wiring', 'The application event bus cannot have a public alias.');
+                $this->fail('handler_visibility', 'The application event bus cannot have a public alias.');
             }
         }
         $middleware = $definition->getArgument(0);
-        $values = $middleware instanceof IteratorArgument ? $middleware->getValues() : [];
-        if ($container->getParameter('kernel.debug') && isset($values[0]) && $values[0] instanceof Reference && (string) $values[0] === $bus.'.middleware.traceable') {
-            $this->definition($container, $bus.'.middleware.traceable', TraceableMiddleware::class);
-            array_shift($values);
+        $references = $middleware instanceof IteratorArgument ? $middleware->getValues() : [];
+        $classes = [];
+        foreach ($references as $reference) {
+            $classes[] = $this->reference($container, $reference)->getClass();
         }
-        $expected = [EventPolicyMiddleware::class, $bus.'.middleware.add_bus_name_stamp_middleware', $bus.'.middleware.handle_message'];
-        if (count($values) !== count($expected)) {
-            $this->fail('middleware', $bus.' requires only delivery policy, bus stamp and ordinary handling.');
+        $position = array_search(EventPolicyMiddleware::class, $classes, true);
+        $send = array_search(SendMessageMiddleware::class, $classes, true);
+        $handle = array_search(HandleMessageMiddleware::class, $classes, true);
+        if (false === $position || false === $send || false === $handle || $position > $send || $position > $handle
+            || in_array(InvocationMiddleware::class, $classes, true) || in_array(CommandTransactionMiddleware::class, $classes, true)) {
+            $this->fail('middleware', $bus.' requires public-event policy before native sending/handling, without an outer command transaction.');
         }
-        foreach ($expected as $index => $id) {
-            $this->assertReference($container, $values[$index], $id);
-        }
-        $stamp = $this->definition($container, $bus.'.middleware.add_bus_name_stamp_middleware', AddBusNameStampMiddleware::class);
-        if ($stamp->getArgument(0) !== $bus) {
-            $this->fail('wiring', $bus.' requires its own bus-name stamp.');
-        }
-        $handling = $this->definition($container, $bus.'.middleware.handle_message', HandleMessageMiddleware::class);
-        $this->assertReference($container, $handling->getArgument(0), $bus.'.messenger.handlers_locator');
-        if (true !== $handling->getArgument(1)) {
+        $this->assertReference($container, $references[$position], EventPolicyMiddleware::class);
+        if (true !== $container->findDefinition($bus.'.middleware.handle_message')->getArgument(1)) {
             $this->fail('wiring', $bus.' must allow events with no listeners.');
+        }
+        $senders = $container->findDefinition('messenger.senders_locator');
+        if ([ApplicationEvent::class => ['events']] !== $senders->getArgument(0)) {
+            $this->fail('transport', 'Only public Application events may route to events.');
+        }
+        $senderMap = $this->reference($container, $senders->getArgument(1))->getArgument(0);
+        $sender = is_array($senderMap) ? ($senderMap['events'] ?? null) : null;
+        if ($sender instanceof ServiceClosureArgument) {
+            $sender = $sender->getValues()[0] ?? null;
+        }
+        $this->assertReference($container, $sender, 'messenger.transport.events');
+        foreach ($container->findTaggedServiceIds('messenger.receiver') as $id => $tags) {
+            if (!in_array($id, ['messenger.transport.events', 'messenger.transport.events_failed'], true)) {
+                $this->fail('transport', 'Only the native events and events_failed transports are supported.');
+            }
+        }
+        foreach (['events', 'events_failed'] as $name) {
+            $transport = $container->findDefinition('messenger.transport.'.$name);
+            $dsn = $container->resolveEnvPlaceholders($transport->getArgument(0), true);
+            if (!in_array($dsn, 'events' === $name ? ['sync://', 'doctrine://default'] : ['doctrine://default'], true)) {
+                $this->fail('transport', 'Events support sync:// or doctrine://default; failures require doctrine://default.');
+            }
+            $options = $transport->getArgument(1);
+            foreach (['table_name' => 'platform_messaging_message', 'queue_name' => $name, 'auto_setup' => false, 'use_notify' => false, 'redeliver_timeout' => 300] as $key => $value) {
+                if (!is_array($options) || ($options[$key] ?? null) !== $value) {
+                    $this->fail('transport', 'Native events require the owned queue table and configured queue options.');
+                }
+            }
+        }
+    }
+
+    private function defaultConnection(ContainerBuilder $container): void
+    {
+        $registry = $this->definition($container, 'doctrine', \Doctrine\Bundle\DoctrineBundle\Registry::class);
+        $arguments = $container->getParameterBag()->resolveValue($registry->getArguments());
+        if (!is_array($arguments) || 'default' !== ($arguments[3] ?? null) || 'default' !== ($arguments[4] ?? null)
+            || !is_array($arguments[1] ?? null) || 'doctrine.dbal.default_connection' !== ($arguments[1]['default'] ?? null)
+            || ['default' => 'doctrine.orm.default_entity_manager'] !== ($arguments[2] ?? null)) {
+            $this->fail('wiring', 'Command transactions and event transport require the canonical default Doctrine connection and manager.');
+        }
+        $id = 'doctrine.dbal.default_connection';
+        if (!$container->hasDefinition($id) || $container->hasAlias($id)) {
+            $this->fail('wiring', 'The default DBAL connection cannot be replaced by an alias or decorator.');
+        }
+        $connection = $container->getDefinition($id);
+        $factory = $connection->getFactory();
+        if (!is_array($factory) || [0, 1] !== array_keys($factory) || 'createConnection' !== $factory[1]
+            || null !== $connection->getDecoratedService() || $connection->isLazy()
+            || [0, 1, 2] !== array_keys($connection->getArguments())) {
+            $this->fail('wiring', 'The default DBAL connection requires its standard factory and lifecycle.');
+        }
+        $this->definition($container, 'doctrine.dbal.connection_factory', \Doctrine\Bundle\DoctrineBundle\ConnectionFactory::class);
+        $this->assertReference($container, $factory[0], 'doctrine.dbal.connection_factory');
+        $checked = clone $connection;
+        $checked->setFactory(null);
+        $this->assertDefinition($container, $checked, $id, \Doctrine\DBAL\Connection::class);
+        $options = $connection->getArgument(0);
+        if (!is_array($options) || \Doctrine\DBAL\Connection::class !== ($options['wrapperClass'] ?? \Doctrine\DBAL\Connection::class)) {
+            $this->fail('wiring', 'The default DBAL connection cannot select a replacement connection wrapper.');
+        }
+        $this->assertReference($container, $connection->getArgument(1), 'doctrine.dbal.default_connection.configuration');
+        $configuration = $container->findDefinition('doctrine.dbal.default_connection.configuration');
+        $checkedConfiguration = clone $configuration;
+        $checkedConfiguration->setMethodCalls([]);
+        $this->assertDefinition($container, $checkedConfiguration, 'default DBAL configuration', \Doctrine\DBAL\Configuration::class);
+        /** @var list<array{0: string, 1: array<int|string, mixed>, 2?: bool}> $calls */
+        $calls = $configuration->getMethodCalls();
+        foreach ($calls as [$method, $arguments]) {
+            if (!in_array($method, ['setMiddlewares', 'setSchemaManagerFactory', 'setSchemaAssetsFilter', 'setResultCache', 'setAutoCommit'], true)
+                || ('setAutoCommit' === $method && [true] !== $arguments)) {
+                $this->fail('wiring', 'The default DBAL configuration must preserve the owned transaction lifecycle: '.$method.'.');
+            }
+        }
+        $managerId = 'doctrine.orm.default_entity_manager';
+        if (!$container->hasDefinition($managerId) || $container->hasAlias($managerId)) {
+            $this->fail('wiring', 'The default EntityManager cannot be replaced by an alias or decorator.');
+        }
+        $manager = $container->getDefinition($managerId);
+        $configurator = $manager->getConfigurator();
+        if (!is_array($configurator) || [0, 1] !== array_keys($configurator) || 'configure' !== $configurator[1]
+            || null !== $manager->getDecoratedService() || [0, 1, 2] !== array_keys($manager->getArguments())) {
+            $this->fail('wiring', 'The default EntityManager requires the standard constructor/configurator lifecycle.');
+        }
+        $this->definition($container, 'doctrine.orm.default_manager_configurator', \Doctrine\Bundle\DoctrineBundle\ManagerConfigurator::class);
+        $this->assertReference($container, $configurator[0], 'doctrine.orm.default_manager_configurator');
+        $checkedManager = clone $manager;
+        $checkedManager->setConfigurator(null);
+        $this->assertDefinition($container, $checkedManager, $managerId, \Doctrine\ORM\EntityManager::class);
+        foreach (['doctrine.dbal.default_connection', 'doctrine.orm.default_configuration', 'doctrine.dbal.default_connection.event_manager'] as $index => $reference) {
+            $this->assertReference($container, $manager->getArgument($index), $reference);
         }
     }
 
@@ -405,8 +446,7 @@ final readonly class CqrsPass implements CompilerPassInterface
     {
         if ($definition->getClass() !== $class || !$definition->isShared() || $definition->isSynthetic() || null !== $definition->getFile()
             || null !== $definition->getFactory() || null !== $definition->getConfigurator()
-            || [] !== $definition->getProperties()
-            || !$this->supportedCalls($container, $definition, $class)) {
+            || [] !== $definition->getProperties() || !$this->supportedCalls($container, $definition, $class)) {
             $this->fail('wiring', $id.' must be the standard '.$class.' service.');
         }
     }
@@ -418,22 +458,12 @@ final readonly class CqrsPass implements CompilerPassInterface
         if ([] === $calls) {
             return true;
         }
-        // FrameworkBundle/Monolog's one ordinary logger setter is the sole
-        // supported post-construction call. In particular, never allow a second
-        // __construct() to replace a previously checked stack, map or descriptor.
-        if (HandleMessageMiddleware::class !== $class || 1 !== count($calls)
-            || 'setLogger' !== $calls[0][0] || [0] !== array_keys($calls[0][1])
-            || ($calls[0][2] ?? false) || !$calls[0][1][0] instanceof Reference) {
-            return false;
-        }
-        $logger = $this->reference($container, $calls[0][1][0]);
-        foreach (['logger', 'monolog.logger.messenger'] as $id) {
-            if ($container->has($id) && $logger === $container->findDefinition($id)) {
-                return true;
-            }
-        }
 
-        return false;
+        // Permit the standard logger setter, never a second constructor call.
+        return HandleMessageMiddleware::class === $class && 1 === count($calls)
+            && 'setLogger' === $calls[0][0] && [0] === array_keys($calls[0][1])
+            && !($calls[0][2] ?? false) && $calls[0][1][0] instanceof Reference
+            && is_a($this->reference($container, $calls[0][1][0])->getClass() ?? '', \Psr\Log\LoggerInterface::class, true);
     }
 
     private function assertPrivateHandler(ContainerBuilder $container, Definition $handler, string $class): void

@@ -42,6 +42,10 @@ final class CqrsTest extends TestCase
         yield 'missing validation middleware' => ['missing-validation', 'middleware'];
         yield 'miswired facade' => ['facade-bypass', 'wiring'];
         yield 'unshared invocation context' => ['unshared-context', 'wiring'];
+        yield 'transaction must use the invocation context' => ['transaction-context', 'wiring'];
+        yield 'manager must use the default connection' => ['manager-connection', 'wiring'];
+        yield 'registry must select the default connection' => ['default-connection', 'wiring'];
+        yield 'connection must preserve owned transactions' => ['connection-autocommit', 'wiring'];
         yield 'bus constructor reinitialization' => ['bus-constructor', 'wiring'];
         yield 'locator constructor reinitialization' => ['locator-constructor', 'wiring'];
         yield 'descriptor constructor reinitialization' => ['descriptor-constructor', 'wiring'];

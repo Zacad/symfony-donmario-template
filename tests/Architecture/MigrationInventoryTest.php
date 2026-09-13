@@ -96,7 +96,7 @@ final class MigrationInventoryTest extends TestCase
             $unowned = $foreign->addMigration('Invading', 'Version20350102000000');
             $factory = $fixture->factory(directories: $fixture->directories() + $foreign->directories());
             self::assertCount(2, $factory->getMigrationRepository()->getMigrations());
-            $this->assertInvalid($fixture, $factory, 'migration.inventory.unowned: '.$unowned.' does not match a module migration file.');
+            $this->assertInvalid($fixture, $factory, 'migration.inventory.unowned: '.$unowned.' does not match an owned migration file.');
         } finally {
             $fixture->cleanup();
             $foreign->cleanup();
@@ -113,7 +113,7 @@ final class MigrationInventoryTest extends TestCase
             $directories = array_map(static fn (string $directory): string => $external, $fixture->directories());
             $factory = $fixture->factory(directories: $directories);
             self::assertCount(1, $factory->getMigrationRepository()->getMigrations());
-            $this->assertInvalid($fixture, $factory, 'migration.inventory.unowned: '.$class.' does not match a module migration file.');
+            $this->assertInvalid($fixture, $factory, 'migration.inventory.unowned: '.$class.' does not match an owned migration file.');
         } finally {
             $fixture->cleanup();
         }
@@ -136,7 +136,7 @@ final class MigrationInventoryTest extends TestCase
     {
         $fixture = new MigrationFixture();
         try {
-            $this->assertInvalid($fixture, $fixture->factory(), 'migration.inventory.empty: no module migrations found.');
+            $this->assertInvalid($fixture, $fixture->factory(), 'migration.inventory.empty: no owned migrations found.');
         } finally {
             $fixture->cleanup();
         }
@@ -152,7 +152,7 @@ final class MigrationInventoryTest extends TestCase
             $filesystem = new Filesystem();
             $filesystem->mkdir(dirname($nested));
             $filesystem->rename($file, $nested);
-            $this->assertInvalid($fixture, $fixture->factory(), 'migration.layout: '.$nested.' must be directly inside its module migration directory.');
+            $this->assertInvalid($fixture, $fixture->factory(), 'migration.layout: '.$nested.' must be directly inside its owned migration directory.');
         } finally {
             $fixture->cleanup();
         }
@@ -174,6 +174,107 @@ final class MigrationInventoryTest extends TestCase
         } finally {
             $fixture->cleanup();
         }
+    }
+
+    public function testExactPlatformDirectoryParticipatesInChronologicalInventoryWithoutConnecting(): void
+    {
+        $fixture = new MigrationFixture();
+        try {
+            $later = $fixture->addMigration('Recording', 'Version20500102000000');
+            $platform = $this->platformMigration($fixture, 'Version20500101000000');
+            $factory = $fixture->factory(directories: $fixture->directories() + $platform);
+            $fixture->inventory($factory)->assertValid();
+            self::assertSame([
+                'App\\Platform\\Messaging\\Resources\\migrations\\Version20500101000000',
+                $later,
+            ], array_values(array_map(
+                static fn (AvailableMigration $migration): string => (string) $migration->getVersion(),
+                $factory->getMigrationPlanCalculator()->getMigrations()->getItems(),
+            )));
+            self::assertFalse($factory->getConnection()->isConnected());
+        } finally {
+            $fixture->cleanup();
+        }
+    }
+
+    public function testUnknownTechnicalNamespaceDoesNotGainMigrationOwnership(): void
+    {
+        $fixture = new MigrationFixture();
+        try {
+            $fixture->addMigration('Owning', 'Version20510101000000');
+            $foreign = $this->platformMigration($fixture, 'Version20510102000000', responsibility: 'Other');
+            $factory = $fixture->factory(directories: $fixture->directories() + $foreign);
+            $this->assertInvalid($fixture, $factory, 'migration.inventory.unowned: App\\Platform\\Other\\Resources\\migrations\\Version20510102000000 does not match an owned migration file.');
+        } finally {
+            $fixture->cleanup();
+        }
+    }
+
+    public function testPlatformMigrationMustBeRegistered(): void
+    {
+        $fixture = new MigrationFixture();
+        try {
+            $fixture->addMigration('Registering', 'Version20520101000000');
+            $this->platformMigration($fixture, 'Version20520102000000');
+            $this->assertInvalid($fixture, $fixture->factory(), 'migration.inventory.unregistered: App\\Platform\\Messaging\\Resources\\migrations\\Version20520102000000 is absent from configured migration paths.');
+        } finally {
+            $fixture->cleanup();
+        }
+    }
+
+    public function testPlatformAndModuleTimestampsShareTheSameUniquenessCheck(): void
+    {
+        $fixture = new MigrationFixture();
+        try {
+            $module = $fixture->addMigration('Duplicating', 'Version20530101000000');
+            $platform = $this->platformMigration($fixture, 'Version20530101000000');
+            $factory = $fixture->factory(directories: $fixture->directories() + $platform);
+            $this->assertInvalid($fixture, $factory, 'migration.duplicate: '.$module.' shares a timestamp with App\\Platform\\Messaging\\Resources\\migrations\\Version20530101000000.');
+        } finally {
+            $fixture->cleanup();
+        }
+    }
+
+    public function testPlatformNamespaceCannotSubstituteADifferentPhysicalPath(): void
+    {
+        $fixture = new MigrationFixture();
+        try {
+            $platform = $this->platformMigration($fixture, 'Version20540101000000');
+            $external = $fixture->modules->projectDir.'/external';
+            (new Filesystem())->copy(array_values($platform)[0].'/Version20540101000000.php', $external.'/Version20540101000000.php');
+            $factory = $fixture->factory(directories: array_map(static fn (): string => $external, $platform));
+            $this->assertInvalid($fixture, $factory, 'migration.inventory.unowned: App\\Platform\\Messaging\\Resources\\migrations\\Version20540101000000 does not match an owned migration file.');
+        } finally {
+            $fixture->cleanup();
+        }
+    }
+
+    public function testPlatformMigrationMustRemainTransactional(): void
+    {
+        $fixture = new MigrationFixture();
+        try {
+            $platform = $this->platformMigration($fixture, 'Version20550101000000', transactional: false);
+            $this->assertInvalid($fixture, $fixture->factory(directories: $platform), 'migration.transaction: App\\Platform\\Messaging\\Resources\\migrations\\Version20550101000000 must be transactional.');
+        } finally {
+            $fixture->cleanup();
+        }
+    }
+
+    /** @return array<string, string> */
+    private function platformMigration(MigrationFixture $fixture, string $version, string $responsibility = 'Messaging', bool $transactional = true): array
+    {
+        $namespace = 'App\\Platform\\'.$responsibility.'\\Resources\\migrations';
+        $directory = $fixture->modules->projectDir.'/src/Platform/'.$responsibility.'/Resources/migrations';
+        $filesystem = new Filesystem();
+        $source = strtr($filesystem->readFile(__DIR__.'/../Fixtures/Migrations/migration.php.fixture'), [
+            '{{namespace}}' => $namespace,
+            '{{version}}' => $version,
+            '{{transactional}}' => $transactional ? 'true' : 'false',
+            '{{statements}}' => '[]',
+        ]);
+        $filesystem->dumpFile($directory.'/'.$version.'.php', $source);
+
+        return [$namespace => $directory];
     }
 
     private function assertInvalid(MigrationFixture $fixture, DependencyFactory $factory, string $diagnostic): void

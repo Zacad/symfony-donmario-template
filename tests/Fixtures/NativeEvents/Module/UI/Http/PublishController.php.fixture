@@ -1,0 +1,32 @@
+<?php
+
+declare(strict_types=1);
+
+namespace App\Module\NativeObserving\UI\Http;
+
+use App\Module\NativeObserving\Application\Publish\PublishCommand;
+use App\Platform\Messaging\CommandBus;
+use Symfony\Component\HttpFoundation\JsonResponse;
+use Symfony\Component\HttpKernel\Attribute\AsController;
+use Symfony\Component\Routing\Attribute\Route;
+use Symfony\Component\Uid\Uuid;
+
+#[AsController]
+final readonly class PublishController
+{
+    public function __construct(private CommandBus $commands)
+    {
+    }
+
+    #[Route('/_native/{id}', methods: ['POST'])]
+    public function __invoke(string $id): JsonResponse
+    {
+        try {
+            $this->commands->dispatch(new PublishCommand(Uuid::fromString($id)));
+        } catch (\Throwable) {
+            return new JsonResponse(['error' => 'publication_failed'], 500);
+        }
+
+        return new JsonResponse(['id' => $id], 201);
+    }
+}

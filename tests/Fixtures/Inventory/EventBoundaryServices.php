@@ -44,6 +44,13 @@ namespace App\Module\EventChecking\Domain {
 }
 
 namespace App\Module\EventChecking\Infrastructure {
+    final class Adapter
+    {
+        public function __construct(public mixed $dependency = null)
+        {
+        }
+    }
+
     final class Repository implements \App\Module\EventChecking\Domain\RepositoryPort
     {
     }

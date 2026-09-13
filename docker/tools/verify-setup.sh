@@ -2,6 +2,9 @@
 set -eu
 umask 077
 
+# The clean-consumer journey has a fixed baseline, independent of operator mode.
+export EVENT_TRANSPORT_DSN=sync://
+
 # Exercise a consumer checkout, including first-use scripts, not just an image build.
 WORK=$(mktemp -d "${TMPDIR:-/tmp}/donmario-setup-XXXXXXXX")
 CHECKOUT=$WORK/application
@@ -26,7 +29,7 @@ cleanup() {
             rm -f "$WORK/containers.raw"
         elif [ "$status" = 0 ]; then status=1; fi
         docker compose --project-directory "$CHECKOUT" --env-file "$CHECKOUT/var/docker/local.env" \
-            --project-name "$project" --file "$CHECKOUT/compose.yaml" down --volumes --remove-orphans \
+            --project-name "$project" --file "$CHECKOUT/compose.yaml" --profile worker down --volumes --remove-orphans \
             || { if [ "$status" = 0 ]; then status=1; fi; }
         for candidate in "$image" "$project-database:local"; do
             if [ "$images_built" = 1 ] || docker image inspect "$candidate" >/dev/null 2>&1; then
@@ -44,8 +47,13 @@ trap cleanup EXIT
 trap 'exit 130' INT
 trap 'exit 143' TERM
 
-# git includes intended untracked files before the initial commit, while honoring ignores.
-git -C "$ROOT" ls-files -z --cached --others --exclude-standard > "$WORK/files"
+# Include intended untracked files and honor tracked working-tree deletions without
+# changing the index. NUL-delimited coreutils preserve spaces/newlines in paths.
+git -C "$ROOT" ls-files -z --cached --others --exclude-standard > "$WORK/candidates"
+git -C "$ROOT" ls-files -z --deleted > "$WORK/deleted"
+LC_ALL=C sort -zu "$WORK/candidates" > "$WORK/candidates.sorted"
+LC_ALL=C sort -zu "$WORK/deleted" > "$WORK/deleted.sorted"
+LC_ALL=C comm -z -23 "$WORK/candidates.sorted" "$WORK/deleted.sorted" > "$WORK/files"
 tar -C "$ROOT" --null --files-from "$WORK/files" -cf "$WORK/source.tar"
 tar -C "$CHECKOUT" -xf "$WORK/source.tar"
 test ! -e "$CHECKOUT/vendor"
@@ -61,6 +69,7 @@ test -n "$app"
 docker exec "$app" curl --fail --silent http://localhost:8080/ > "$WORK/home.html"
 docker exec "$app" php bin/console about > "$WORK/versions.log"
 docker exec "$app" php -r 'if (getenv("POSTGRES_PASSWORD") !== false || file_exists("/app/var/docker/local.env") || posix_geteuid() === 0) { exit(1); }'
+docker exec "$app" php -r 'if (getenv("EVENT_TRANSPORT_DSN") !== "sync://") { exit(1); }'
 original=$(cksum < "$CHECKOUT/var/docker/local.env")
 
 # The ORM marker is in this disposable DEVELOPMENT checkout only, never the caller's DB.
@@ -100,6 +109,7 @@ done
 
 # Injection from the caller's environment must not change test targets or credentials.
 DATABASE_URL=postgresql://wrong:wrong@invalid.invalid/app COMPOSE_PROJECT_NAME=wrong APP_SECRET=wrong \
+    EVENT_TRANSPORT_DSN=doctrine://default \
     sh "$CHECKOUT/bin/dev" test > "$WORK/isolated-test.log" 2>&1
 docker exec "$app" php docker/tools/consumer-task.php read >> "$WORK/marker.log"
 docker exec "$app" php bin/console app:architecture:check --database >> "$WORK/marker.log"

@@ -1,0 +1,23 @@
+<?php
+
+declare(strict_types=1);
+
+namespace App\Module\NativeObserving\Infrastructure\EventListener;
+
+use App\Module\NativeObserving\Application\Observe\ObserveCommand;
+use App\Module\NativeObserving\Application\Publish\PublishedEvent;
+use App\Platform\Messaging\CommandBus;
+use Symfony\Component\Messenger\Attribute\AsMessageHandler;
+
+#[AsMessageHandler(bus: 'application.event.bus')]
+final readonly class FirstListener
+{
+    public function __construct(private CommandBus $commands)
+    {
+    }
+
+    public function __invoke(PublishedEvent $event): void
+    {
+        $this->commands->dispatch(new ObserveCommand($event->id, 'first', json_encode([$event->at->format('Y-m-d\TH:i:s.uP'), $event->detail->id->toRfc4122(), $event->detail->text, $event->detail->count, $event->detail->enabled, $event->detail->optional], JSON_THROW_ON_ERROR)));
+    }
+}

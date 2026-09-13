@@ -6,6 +6,8 @@ services:
     environment:
       APP_ENV: test
       APP_DEBUG: '0'
+      # bin/dev pins the baseline; test phases explicitly export any override.
+      EVENT_TRANSPORT_DSN: ${EVENT_TRANSPORT_DSN:-sync://}
       DEFAULT_URI: http://app:8080
       E2E_BASE_URL: http://app:8080
     ports: !reset []
@@ -14,6 +16,10 @@ services:
     tmpfs:
       - /tmp
       - /home/app:uid=${LOCAL_UID},gid=${LOCAL_GID},mode=700
+  worker:
+    <<: *test_app
+    volumes: !override
+      - worker_runtime:/app/var
   runner:
     <<: *test_app
     init: true
@@ -21,6 +27,7 @@ services:
       APP_ENV: test
       APP_DEBUG: '0'
       APP_SECRET: ${APP_SECRET}
+      EVENT_TRANSPORT_DSN: ${EVENT_TRANSPORT_DSN:-sync://}
       DATABASE_URL: postgresql://app:${APP_DATABASE_PASSWORD}@database:5432/app_test?serverVersion=18&charset=utf8
       DEFAULT_URI: http://app:8080
       E2E_BASE_URL: http://app:8080

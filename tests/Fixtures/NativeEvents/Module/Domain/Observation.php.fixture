@@ -1,0 +1,20 @@
+<?php
+
+declare(strict_types=1);
+
+namespace App\Module\NativeObserving\Domain;
+
+use Doctrine\ORM\Mapping as ORM;
+
+#[ORM\Entity]
+#[ORM\Table(name: 'native_observing_observation', schema: 'public')]
+final class Observation
+{
+    public function __construct(
+        #[ORM\Id, ORM\Column(length: 48)] public string $id,
+        #[ORM\Column(length: 16)] public string $label,
+        #[ORM\Column(type: 'text')] public string $payload,
+        #[ORM\Column(length: 32)] public string $transaction,
+    ) {
+    }
+}

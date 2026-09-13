@@ -37,6 +37,13 @@ build_dev() {
 }
 
 load_settings() {
+    # Runtime selection is deliberately outside the strict credential-file parser.
+    EVENT_TRANSPORT_DSN=${EVENT_TRANSPORT_DSN-sync://}
+    case "$EVENT_TRANSPORT_DSN" in
+        sync://|doctrine://default) ;;
+        *) fail 'EVENT_TRANSPORT_DSN must be sync:// or doctrine://default.' ;;
+    esac
+    export EVENT_TRANSPORT_DSN
     # Never execute a settings file or inherit application credentials from the shell.
     unset PROJECT_ID LOCAL_UID LOCAL_GID APP_MODE APP_PORT APP_SECRET APP_DATABASE_NAME APP_DATABASE_PASSWORD POSTGRES_PASSWORD
     unset COMPOSE_FILE COMPOSE_PROJECT_NAME COMPOSE_PROFILES COMPOSE_ENV_FILES DATABASE_URL APP_ENV APP_DEBUG
@@ -99,8 +106,13 @@ command=${1:-help}
 if [ "$#" -gt 0 ]; then shift; fi
 case "$command" in
     help|-h|--help)
-        printf '%s\n' 'Usage: ./bin/dev {setup [port]|up|down|console ...|composer ...|check|test|verify-setup}'
+        printf '%s\n' 'Usage: ./bin/dev {setup [port]|up|down|worker {start|stop|status}|console ...|composer ...|check|test|verify-setup}'
+        printf '%s\n' 'Events default to sync://. For async: export EVENT_TRANSPORT_DSN=doctrine://default; ./bin/dev up; ./bin/dev worker start'
+        printf '%s\n' 'Keep this runtime selection out of var/docker/local.env. up recreates app when its environment changes.'
         exit 0 ;;
+    worker)
+        test "$#" = 1 || fail 'Usage: ./bin/dev worker {start|stop|status}'
+        case "$1" in start|stop|status) ;; *) fail 'Usage: ./bin/dev worker {start|stop|status}' ;; esac ;;
 esac
 test "$(uname -s)" = Linux && test "$(uname -m)" = x86_64 || fail 'Verified target: Linux x86_64 with a local Docker daemon.'
 test "$(id -u)" -gt 0 && test "$(id -g)" -gt 0 || fail 'Run as a non-root development user.'
@@ -122,18 +134,28 @@ case "$command" in
     setup) setup "$@" ;;
     test|check)
         # Separate snapshot and credentials: works even before development setup.
+        # Test phases choose modes explicitly rather than inheriting operator mode.
+        export EVENT_TRANSPORT_DSN=sync://
         export ROOT DEV_IMAGE CHECKOUT_ID
         exec sh "$ROOT/docker/tools/test.sh" "$command" ;;
     verify-setup)
         export ROOT
         exec sh "$ROOT/docker/tools/verify-setup.sh" ;;
-    up|down|console|composer)
+    up|down|worker|console|composer)
         load_settings
         RUNTIME_IMAGE=$DEV_IMAGE
         export RUNTIME_IMAGE
         case "$command" in
             up) compose up --detach --wait --wait-timeout 60 app ;;
-            down) compose down ;;
+            down) compose --profile worker down ;;
+            worker)
+                case "$1" in
+                    start)
+                        test "$EVENT_TRANSPORT_DSN" = doctrine://default || fail 'Worker start requires async events. Run: export EVENT_TRANSPORT_DSN=doctrine://default; ./bin/dev up; ./bin/dev worker start'
+                        compose --profile worker up --detach --wait --wait-timeout 60 worker ;;
+                    stop) compose --profile worker stop worker ;;
+                    status) compose --profile worker ps --all worker ;;
+                esac ;;
             console) compose run --rm --no-deps app php bin/console "$@" ;;
             composer) lock_setup; compose run --rm --no-deps app composer "$@" ;;
         esac ;;

@@ -1,5 +1,6 @@
 #!/bin/sh
 set -eu
+export EVENT_TRANSPORT_DSN=sync://
 
 # Focused fault injection. No real Docker daemon or PostgreSQL process is used here;
 # the real installation/database/HTTP journeys are covered by the E2E commands.
@@ -33,7 +34,10 @@ case "$1" in
                 config) printf '%s\n' '{}'; exit 0 ;;
                 doctrine:migrations:migrate) if [ "${STUB_FAULT:-}" = migrations ]; then exit 44; fi ;;
             esac
-        done ;;
+        done
+        if [ "${STUB_MODE:-}" = events ]; then
+            printf 'event-mode=%s\n' "${EVENT_TRANSPORT_DSN-unset}" >> "$STUB_LOG"
+        fi ;;
     run)
         for arg do
             case "$arg" in
@@ -77,6 +81,64 @@ test "$result" = 44
 ! grep -q 'up --detach --wait --wait-timeout 60 app' "$STUB_LOG"
 grep -q 'down --volumes --remove-orphans' "$STUB_LOG"
 
+# Runtime mode survives credential loading and reaches every development adapter.
+settings_checksum=$(cksum < "$checkout/var/docker/local.env")
+for selection in sync:// doctrine://default; do
+    for operation in setup up console composer; do
+        : > "$STUB_LOG"
+        PATH="$work/bin:$PATH" STUB_MODE=events EVENT_TRANSPORT_DSN=$selection \
+            sh "$checkout/bin/dev" "$operation" > "$work/event-mode.log" 2>&1
+        grep -q "^event-mode=$selection$" "$STUB_LOG"
+        if grep -q 'up .* worker$' "$STUB_LOG"; then exit 1; fi
+    done
+done
+test "$settings_checksum" = "$(cksum < "$checkout/var/docker/local.env")"
+# An unset mode defaults to sync; stop/status remain usable without the async export.
+for operation in up 'worker stop' 'worker status'; do
+    : > "$STUB_LOG"
+    (unset EVENT_TRANSPORT_DSN; PATH="$work/bin:$PATH" STUB_MODE=events sh "$checkout/bin/dev" $operation) \
+        > "$work/event-default.log" 2>&1
+    grep -q '^event-mode=sync://$' "$STUB_LOG"
+done
+for selection in '' invalid 'doctrine://other' 'doctrine://default?queue_name=override'; do
+    : > "$STUB_LOG"
+    if PATH="$work/bin:$PATH" EVENT_TRANSPORT_DSN=$selection sh "$checkout/bin/dev" up > "$work/event-invalid.log" 2>&1; then
+        printf '%s\n' 'Invalid event mode accepted.' >&2; exit 1
+    fi
+    grep -q '^EVENT_TRANSPORT_DSN must be sync:// or doctrine://default\.$' "$work/event-invalid.log"
+    if grep -q 'up --detach' "$STUB_LOG"; then exit 1; fi
+done
+: > "$STUB_LOG"
+if (unset EVENT_TRANSPORT_DSN; PATH="$work/bin:$PATH" sh "$checkout/bin/dev" worker start) > "$work/event-worker.log" 2>&1; then
+    printf '%s\n' 'Synchronous worker start accepted.' >&2; exit 1
+fi
+grep -q '^Worker start requires async events\.' "$work/event-worker.log"
+if grep -q 'up .* worker$' "$STUB_LOG"; then exit 1; fi
+PATH="$work/bin:$PATH" STUB_MODE=events EVENT_TRANSPORT_DSN=doctrine://default \
+    sh "$checkout/bin/dev" worker start > "$work/event-worker.log" 2>&1
+grep -q '^event-mode=doctrine://default$' "$STUB_LOG"
+grep -q -- '--profile worker up --detach --wait --wait-timeout 60 worker$' "$STUB_LOG"
+
+# DSNs cannot be smuggled into the credential file, even when valid at runtime.
+cp "$checkout/var/docker/local.env" "$work/event-settings.baseline"
+printf '%s\n' 'EVENT_TRANSPORT_DSN=doctrine://default' >> "$checkout/var/docker/local.env"
+if PATH="$work/bin:$PATH" sh "$checkout/bin/dev" up > "$work/event-settings.log" 2>&1; then exit 1; fi
+grep -q '^Invalid settings key\.' "$work/event-settings.log"
+cp "$work/event-settings.baseline" "$checkout/var/docker/local.env"
+
+# The real test/check entrypoints reset caller mode before test Compose invocation.
+mkdir -p "$checkout/docker/tools"
+cp docker/tools/test.sh "$checkout/docker/tools/test.sh"
+for operation in test check; do
+    : > "$STUB_LOG"
+    result=0
+    PATH="$work/bin:$PATH" STUB_MODE=events STUB_FAULT=migrations EVENT_TRANSPORT_DSN=doctrine://default \
+        sh "$checkout/bin/dev" "$operation" > "$work/event-tests.log" 2>&1 || result=$?
+    case "$operation" in test) test "$result" = 44 ;; check) test "$result" = 0 ;; esac
+    grep -q '^event-mode=sync://$' "$STUB_LOG"
+    if grep -q '^event-mode=doctrine://default$' "$STUB_LOG"; then exit 1; fi
+done
+
 # A failed setup that writes replacement settings must fail verification.
 printf '%s\n' 'Existing development volumes found without credentials.' > "$work/refused.log"
 sh docker/tools/assert-settings-refusal.sh missing "$work/settings" "$work/unused" "$work/refused.log" 1
@@ -117,4 +179,4 @@ chmod +x "$work/bin/psql"
 PATH="$work/bin:$PATH" POSTGRES_USER=postgres APP_DATABASE_NAME=app_test APP_DATABASE_PASSWORD=synthetic-sentinel \
     sh docker/postgres/10-application.sh > "$work/initialization.log" 2>&1
 ! grep -q synthetic-sentinel "$work/initialization.log"
-printf '%s\n' 'Shell contracts passed: endpoint precedence, migration failures, settings refusal, cleanup failures, and credential argv isolation.'
+printf '%s\n' 'Shell contracts passed: endpoint precedence, migration failures, settings refusal, cleanup failures, credential argv isolation, event mode propagation and worker refusal.'

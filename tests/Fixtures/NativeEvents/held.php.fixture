@@ -1,0 +1,64 @@
+<?php
+
+declare(strict_types=1);
+
+use App\Module\NativeObserving\Application\Probe\ProbeQuery;
+use App\Module\NativeObserving\Application\Publish\DetailEvent;
+use App\Module\NativeObserving\Application\Publish\PublishCommand;
+use Symfony\Component\Uid\Uuid;
+
+$kernel = require __DIR__.'/bootstrap.php';
+$container = $kernel->getContainer();
+$commands = $container->get('test.native.commands');
+$queries = $container->get('test.native.queries');
+$events = $container->get('test.native.events');
+$repository = $container->get('test.native.observations');
+$manager = $container->get('doctrine.orm.default_entity_manager');
+$db = $container->get('doctrine.dbal.default_connection');
+if ('app_test' !== $db->fetchOne('SELECT current_database()')) {
+    throw new LogicException('Fixture requires isolated test database.');
+}
+$rejected = 0;
+foreach ([static fn () => $events->dispatch(new DetailEvent(Uuid::v7(), 'outside', 0, false, null)), static fn () => $queries->ask(new ProbeQuery())] as $operation) {
+    try {
+        $operation();
+    } catch (Throwable) {
+        ++$rejected;
+    }
+}
+$modes = ['query', 'lifecycle', 'flush-failure'];
+if ('doctrine://default' !== getenv('EVENT_TRANSPORT_DSN')) {
+    $modes[] = 'listener-failure';
+}
+foreach ($modes as $mode) {
+    file_put_contents(__DIR__.'/mode.txt', $mode);
+    if ('flush-failure' === $mode) {
+        $db->executeStatement("ALTER TABLE native_observing_observation ADD CONSTRAINT native_reject_producer CHECK (label <> 'producer') NOT VALID");
+    }
+    $id = Uuid::v7();
+    try {
+        $commands->dispatch(new PublishCommand($id, true, 'query' === $mode));
+        throw new LogicException('Expected caught event failure to invalidate producer.');
+    } catch (Throwable $failure) {
+        if ($failure instanceof LogicException && str_starts_with($failure->getMessage(), 'Expected')) {
+            throw $failure;
+        }
+        ++$rejected;
+    } finally {
+        if ('flush-failure' === $mode) {
+            $db->executeStatement('ALTER TABLE native_observing_observation DROP CONSTRAINT native_reject_producer');
+        }
+    }
+    if (0 !== $db->fetchOne('SELECT count(*) FROM native_observing_observation WHERE id LIKE ?', [$id->toRfc4122().'%'])) {
+        throw new LogicException('Caught failure committed writes.');
+    }
+    if (0 !== $db->fetchOne("SELECT count(*) FROM platform_messaging_message WHERE queue_name = 'events' AND body LIKE ?", ['%'.$id->toRfc4122().'%'])) {
+        throw new LogicException('Caught failure retained a native event.');
+    }
+    file_put_contents(__DIR__.'/mode.txt', 'success');
+    $commands->dispatch(new PublishCommand(Uuid::v7()));
+    if ($repository !== $container->get('test.native.observations') || $manager !== $container->get('doctrine.orm.default_entity_manager') || !$manager->isOpen()) {
+        throw new LogicException('Held references did not recover.');
+    }
+}
+print json_encode(['rejected' => $rejected, 'recovered' => true], JSON_THROW_ON_ERROR);

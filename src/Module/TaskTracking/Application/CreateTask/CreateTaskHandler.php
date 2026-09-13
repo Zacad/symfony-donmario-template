@@ -7,14 +7,14 @@ namespace App\Module\TaskTracking\Application\CreateTask;
 use App\Module\TaskTracking\Domain\Event\TaskCreatedEvent as DomainTaskCreatedEvent;
 use App\Module\TaskTracking\Domain\Task;
 use App\Module\TaskTracking\Domain\TaskRepository;
-use App\Platform\Messaging\ApplicationEventRecorder;
+use App\Platform\Messaging\EventBus;
 use Symfony\Component\Messenger\Attribute\AsMessageHandler;
 use Symfony\Component\Uid\Uuid;
 
 #[AsMessageHandler(bus: 'command.bus')]
 final readonly class CreateTaskHandler
 {
-    public function __construct(private TaskRepository $tasks, private ApplicationEventRecorder $events)
+    public function __construct(private TaskRepository $tasks, private EventBus $events)
     {
     }
 
@@ -24,7 +24,7 @@ final readonly class CreateTaskHandler
         $this->tasks->add($task);
         foreach ($task->releaseEvents() as $event) {
             if ($event instanceof DomainTaskCreatedEvent) {
-                $this->events->record(new TaskCreatedEvent($event->taskId));
+                $this->events->dispatch(new TaskCreatedEvent($event->taskId));
             }
         }
 

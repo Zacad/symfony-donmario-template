@@ -4,9 +4,8 @@ declare(strict_types=1);
 
 namespace App\Platform\Architecture;
 
-use App\Platform\Messaging\ApplicationEventRecorder;
 use App\Platform\Messaging\CommandBus;
-use App\Platform\Messaging\EventListenerInvoker;
+use App\Platform\Messaging\EventBus;
 use App\Platform\Messaging\QueryBus;
 use Doctrine\Bundle\DoctrineBundle\Registry;
 use Doctrine\Bundle\DoctrineBundle\Repository\ContainerRepositoryFactory;
@@ -18,16 +17,12 @@ use Doctrine\Persistence\ManagerRegistry;
 use Doctrine\Persistence\ObjectManager;
 use Psr\Container\ContainerInterface;
 use Symfony\Component\DependencyInjection\Argument\ArgumentInterface;
-use Symfony\Component\DependencyInjection\Argument\IteratorArgument;
-use Symfony\Component\DependencyInjection\Argument\ServiceClosureArgument;
 use Symfony\Component\DependencyInjection\Compiler\CompilerPassInterface;
 use Symfony\Component\DependencyInjection\ContainerBuilder;
 use Symfony\Component\DependencyInjection\Definition;
 use Symfony\Component\DependencyInjection\ParameterBag\ContainerBag;
 use Symfony\Component\DependencyInjection\Reference;
 use Symfony\Component\DependencyInjection\ServiceLocator;
-use Symfony\Component\Messenger\Handler\HandlerDescriptor;
-use Symfony\Component\Messenger\Handler\HandlersLocator;
 
 /**
  * Register at TYPE_BEFORE_REMOVING, after wiring resolution and before removal/inlining.
@@ -93,13 +88,6 @@ final class ModuleServicesPass implements CompilerPassInterface
         $class = $this->className($definition);
         $this->assertServiceClass($class, $id);
         if ($definition->isAbstract()) {
-            return;
-        }
-        if (null === $module && EventListenerInvoker::class === $class) {
-            if (!$this->isDeferredEventListener($definition, $id, $source)) {
-                throw new \LogicException('module.services.event_invoker: '.$id.' must be the exact inline, application-event descriptor wrapper.');
-            }
-
             return;
         }
         if (ContractTypes::isOwnEventListener($class)) {
@@ -227,12 +215,15 @@ final class ModuleServicesPass implements CompilerPassInterface
         if (null !== $owner && $owner !== $module) {
             throw new \LogicException(sprintf('module.services.foreign: "%s" (%s) -> "%s" [%s] (%s); cross-module service dependencies are forbidden.', $source, $module, $id, $class, $owner));
         }
+        if (ContractTypes::isOwnEventListener($class)) {
+            throw new \LogicException(sprintf('module.services.listener_target: "%s" (%s) -> "%s" [%s]; event listeners are invoked through Messenger, not injected into module services.', $source, $module, $id, $class));
+        }
         if (self::PLATFORM !== $module && str_starts_with($class, 'App\\Platform\\')) {
             $application = 'Application' === ModuleMap::layer($this->injectionClass) && !ContractTypes::isDataCandidate($this->injectionClass);
             $bus = in_array($class, [CommandBus::class, QueryBus::class], true)
                 && ($application || 'UI' === ModuleMap::layer($this->injectionClass) || ContractTypes::isOwnEventListener($this->injectionClass));
-            $recorder = ApplicationEventRecorder::class === $class && $application;
-            if ($id !== $class || (!$bus && !$recorder)) {
+            $events = EventBus::class === $class && $application;
+            if ($id !== $class || (!$bus && !$events)) {
                 throw new \LogicException(sprintf('module.services.platform: "%s" (%s) -> "%s" [%s]; Platform is not a module-facing facade.', $source, $module, $id, $class));
             }
         }
@@ -406,91 +397,6 @@ final class ModuleServicesPass implements CompilerPassInterface
         $prototype = $this->container->findDefinition($prototypeId);
 
         return ServiceLocator::class === $this->className($prototype) && null === $prototype->getFactory() && $prototype->hasTag('container.service_locator');
-    }
-
-    private function isDeferredEventListener(Definition $invoker, string $id, string $source): bool
-    {
-        // This is an exact compiler-generated edge, not a transparent Platform
-        // wrapper permission. Module consumers still take the ordinary checks.
-        if ($id !== $source.' (inline '.EventListenerInvoker::class.')' || !$this->container->hasDefinition($source)
-            || $invoker->isPublic() || !$invoker->isShared() || $invoker->isSynthetic()
-            || null !== $invoker->getFile() || null !== $invoker->getFactory() || null !== $invoker->getConfigurator()
-            || [] !== $invoker->getMethodCalls() || [] !== $invoker->getProperties() || [] !== $invoker->getTags()
-            || [0] !== array_keys($invoker->getArguments()) || in_array($invoker, $this->container->getDefinitions(), true)) {
-            return false;
-        }
-        $closure = $invoker->getArgument(0);
-        if (!$closure instanceof ServiceClosureArgument || [0] !== array_keys($closure->getValues())) {
-            return false;
-        }
-        $reference = $closure->getValues()[0];
-        if (!$reference instanceof Reference || !$this->container->has((string) $reference)) {
-            return false;
-        }
-        $target = $this->container->findDefinition((string) $reference);
-        $class = $this->className($target);
-        if (!ContractTypes::isOwnEventListener($class) || $target->isAbstract() || $target->isPublic()
-            || $target->isSynthetic() || null !== $target->getFactory() || null !== $target->getConfigurator() || null !== $target->getFile()) {
-            return false;
-        }
-        $instances = 0;
-        foreach ($this->container->getDefinitions() as $candidate) {
-            if (!$candidate->isAbstract() && !$candidate->hasTag('container.excluded')
-                && 0 === strcasecmp(ltrim($candidate->getClass() ?? '', '\\'), $class)) {
-                ++$instances;
-            }
-        }
-        if (1 !== $instances) {
-            return false;
-        }
-        $locatorId = 'application.event.bus.messenger.handlers_locator';
-        if (!$this->container->has($locatorId)) {
-            return false;
-        }
-        $locator = $this->container->findDefinition($locatorId);
-        $mapping = $locator->getArguments()[0] ?? null;
-        if (HandlersLocator::class !== $locator->getClass() || !is_array($mapping)) {
-            return false;
-        }
-        foreach ($mapping as $event => $handlers) {
-            if (!is_string($event) || !ContractTypes::isEventData($event) || !$handlers instanceof IteratorArgument) {
-                continue;
-            }
-            foreach ($handlers->getValues() as $descriptorReference) {
-                if (!$descriptorReference instanceof Reference || !$this->container->has((string) $descriptorReference)) {
-                    continue;
-                }
-                $descriptor = $this->container->findDefinition((string) $descriptorReference);
-                $arguments = $descriptor->getArguments();
-                $options = $arguments[1] ?? null;
-                if ($descriptor !== $this->container->getDefinition($source)
-                    || HandlerDescriptor::class !== $descriptor->getClass() || ($arguments[0] ?? null) !== $invoker
-                    || [0, 1] !== array_keys($arguments) || $descriptor->isPublic() || !$descriptor->isShared() || $descriptor->isSynthetic()
-                    || null !== $descriptor->getFactory() || null !== $descriptor->getConfigurator() || null !== $descriptor->getFile()
-                    || [] !== $descriptor->getMethodCalls() || [] !== $descriptor->getProperties()
-                    || !is_array($options) || 'application.event.bus' !== ($options['bus'] ?? null)
-                    || $class.'::__invoke' !== ($options['alias'] ?? null)
-                    || [] !== array_diff(array_keys($options), ['bus', 'priority', 'method', 'alias'])
-                    || '__invoke' !== ($options['method'] ?? '__invoke')) {
-                    continue;
-                }
-                $reflection = $this->container->getReflectionClass($class);
-                if (null === $reflection || !$reflection->hasMethod('__invoke')) {
-                    return false;
-                }
-                $method = $reflection->getMethod('__invoke');
-                $parameters = $method->getParameters();
-                $type = ($parameters[0] ?? null)?->getType();
-                $return = $method->getReturnType();
-
-                return $method->isPublic() && !$method->isStatic() && 1 === count($parameters)
-                    && $type instanceof \ReflectionNamedType && $type->getName() === $event && !$type->allowsNull()
-                    && !$parameters[0]->isVariadic() && !$parameters[0]->isPassedByReference()
-                    && $return instanceof \ReflectionNamedType && 'void' === $return->getName();
-            }
-        }
-
-        return false;
     }
 
     private function isStandardDoctrineProvider(string $id, string $class): bool

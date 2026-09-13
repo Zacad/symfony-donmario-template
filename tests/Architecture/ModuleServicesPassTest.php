@@ -643,6 +643,36 @@ final class ModuleServicesPassTest extends TestCase
         $this->compileFails($container, 'module.services.listener_private: public.alias exposes consumer.');
     }
 
+    /** @return iterable<string, array{class-string, string}> */
+    public static function listenerConsumers(): iterable
+    {
+        foreach ([\App\Module\EventChecking\UI\Http\Controller::class, \App\Module\EventChecking\Infrastructure\Adapter::class] as $consumer) {
+            foreach (['alias', 'closure', 'locator', 'inline wrapper'] as $wiring) {
+                yield $consumer.' '.$wiring => [$consumer, $wiring];
+            }
+        }
+    }
+
+    /** @param class-string $consumer */
+    #[DataProvider('listenerConsumers')]
+    public function testSameModuleServicesCannotBypassMessengerByInjectingListeners(string $consumer, string $wiring): void
+    {
+        $container = $this->container();
+        $container->register('listener', ObservedListener::class);
+        $container->setAlias('friendly.listener', 'listener');
+        $reference = new Reference('friendly.listener');
+        $argument = match ($wiring) {
+            'closure' => new ServiceClosureArgument($reference),
+            'locator' => $this->locator($container, $reference),
+            'inline wrapper' => (new Definition(\stdClass::class))->setProperty('callback', $reference),
+            default => $reference,
+        };
+        $container->register('consumer', $consumer)->setArgument(0, $argument);
+        $this->expectException(\LogicException::class);
+        $this->expectExceptionMessage('module.services.listener_target:');
+        $container->compile();
+    }
+
     public function testExplicitAbstractPrimitiveRegistrationIsStillData(): void
     {
         $container = $this->container();
@@ -808,7 +838,7 @@ final class ModuleServicesPassTest extends TestCase
     }
 
     /** @return iterable<string, array{string}> */
-    public static function recorderConsumers(): iterable
+    public static function eventBusConsumers(): iterable
     {
         yield 'Domain' => [RepositoryPolicy::class];
         yield 'Infrastructure' => [DoctrineConsumer::class];
@@ -816,15 +846,15 @@ final class ModuleServicesPassTest extends TestCase
         yield 'UI' => [\App\Module\EventChecking\UI\Http\Controller::class];
     }
 
-    #[DataProvider('recorderConsumers')]
-    public function testRecorderIsForbiddenOutsideApplicationImplementation(string $consumer): void
+    #[DataProvider('eventBusConsumers')]
+    public function testEventBusIsForbiddenOutsideApplicationImplementation(string $consumer): void
     {
         $container = $this->container();
-        $recorder = \App\Platform\Messaging\ApplicationEventRecorder::class;
-        $container->register($recorder);
-        $container->register('consumer', $consumer)->setArgument(0, new Reference($recorder));
+        $events = \App\Platform\Messaging\EventBus::class;
+        $container->register($events);
+        $container->register('consumer', $consumer)->setArgument(0, new Reference($events));
         $module = ModuleMap::owner($consumer);
-        $this->compileFails($container, sprintf('module.services.platform: "consumer" (%s) -> "%s" [%s]; Platform is not a module-facing facade.', $module, $recorder, $recorder));
+        $this->compileFails($container, sprintf('module.services.platform: "consumer" (%s) -> "%s" [%s]; Platform is not a module-facing facade.', $module, $events, $events));
     }
 
     public function testResolvedEventClassificationRequiresTheDirectMatchingCategory(): void

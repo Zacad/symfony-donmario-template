@@ -1,0 +1,12 @@
+<?php
+
+declare(strict_types=1);
+
+namespace App\Module\NativeObserving\Domain;
+
+use Symfony\Component\Uid\Uuid;
+
+interface ObservationRepository
+{
+    public function record(Uuid $id, string $label, string $payload): void;
+}

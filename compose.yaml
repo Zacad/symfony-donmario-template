@@ -9,6 +9,7 @@ services:
       APP_ENV: dev
       APP_DEBUG: '1'
       APP_SECRET: ${APP_SECRET:-}
+      EVENT_TRANSPORT_DSN: ${EVENT_TRANSPORT_DSN:-sync://}
       DATABASE_URL: postgresql://app:${APP_DATABASE_PASSWORD:-}@database:5432/${APP_DATABASE_NAME:-app}?serverVersion=18&charset=utf8
       DEFAULT_URI: http://localhost:${APP_PORT:-8080}
     ports:
@@ -26,6 +27,33 @@ services:
       timeout: 5s
       retries: 30
       start_period: 5s
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+
+  worker:
+    profiles: [worker]
+    image: ${RUNTIME_IMAGE:-donmario-dev:local}
+    user: '${LOCAL_UID:-1000}:${LOCAL_GID:-1000}'
+    init: true
+    restart: unless-stopped
+    stop_grace_period: 30s
+    dns_opt: ['timeout:1', 'attempts:1']
+    environment:
+      APP_ENV: dev
+      APP_DEBUG: '1'
+      APP_SECRET: ${APP_SECRET:-}
+      EVENT_TRANSPORT_DSN: ${EVENT_TRANSPORT_DSN:-sync://}
+      DATABASE_URL: postgresql://app:${APP_DATABASE_PASSWORD:-}@database:5432/${APP_DATABASE_NAME:-app}?serverVersion=18&charset=utf8
+      DEFAULT_URI: http://localhost:${APP_PORT:-8080}
+    command: ['php', 'bin/console', 'messenger:consume', 'events', '--time-limit=3600', '--memory-limit=128M', '--limit=1000', '--sleep=1', '--no-interaction']
+    volumes:
+      - .:/app:z
+      - worker_runtime:/app/var
+    depends_on:
+      database:
+        condition: service_healthy
+    healthcheck:
+      disable: true
     cap_drop: [ALL]
     security_opt: [no-new-privileges:true]
 
@@ -48,6 +76,10 @@ services:
     stop_grace_period: 30s
 
 volumes:
+  worker_runtime:
+    labels:
+      com.donmario.checkout: ${CHECKOUT_ID:-unknown}
+      com.donmario.environment: ${APP_MODE:-dev}
   runtime:
     labels:
       com.donmario.checkout: ${CHECKOUT_ID:-unknown}

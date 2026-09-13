@@ -76,6 +76,22 @@ final class SourceRulesTest extends TestCase
         $this->assertSourceDiagnostic('source.config', 'src/Module/TaskTracking/Resources/config/services.php');
     }
 
+    public function testExactMessagingMigrationLayoutIsAccepted(): void
+    {
+        $this->writeClass('App\\Platform\\Messaging\\Resources\\migrations\\Version20260912000200', 'final class Version20260912000200 {}');
+
+        self::assertSame([], (new SourceRules())->violations($this->root));
+    }
+
+    public function testMessagingMigrationExceptionDoesNotPermitOtherResourceNamespaces(): void
+    {
+        foreach (['App\\Platform\\Other\\Resources\\migrations\\Version20260912000200', 'App\\Platform\\Messaging\\Resources\\migrations\\Helper'] as $class) {
+            $name = substr($class, (int) strrpos($class, '\\') + 1);
+            $this->writeClass($class, 'final class '.$name.' {}');
+            $this->assertSourceDiagnostic('source.layout', $class);
+        }
+    }
+
     #[DataProvider('invalidContracts')]
     public function testContractShapeAndDataTypesAreEnforced(string $declaration, string $rule): void
     {
@@ -153,7 +169,7 @@ final class SourceRulesTest extends TestCase
         }
         $this->writeClass('App\\Module\\TaskTracking\\Domain\\Observer', 'final class Observer { public function observe(\\App\\Platform\\Event\\DomainEvent $event): void {} }');
         $this->writeClass('App\\Module\\TaskTracking\\Infrastructure\\EventListener\\ObservedListener', 'use Symfony\\Component\\Messenger\\Attribute\\AsMessageHandler; #[AsMessageHandler(bus: "event.bus")] final class ObservedListener { public function __construct(private \\App\\Platform\\Messaging\\CommandBus $commands) {} public function __invoke(\\App\\Module\\TaskTracking\\Application\\Observe\\ObservedEvent $event): void {} }');
-        $this->writeClass('App\\Module\\TaskTracking\\Application\\Observe\\ObserveHandler', 'final class ObserveHandler { public function __construct(private \\App\\Platform\\Messaging\\ApplicationEventRecorder $recorder) {} }');
+        $this->writeClass('App\\Module\\TaskTracking\\Application\\Observe\\ObserveHandler', 'final class ObserveHandler { public function __construct(private \\App\\Platform\\Messaging\\EventBus $events) {} }');
         $this->writeClass('App\\Module\\TaskTracking\\Infrastructure\\Framework\\Doctrine\\EventListener\\FlushListener', 'final class FlushListener { public function __construct(private \\Doctrine\\ORM\\EntityManagerInterface $manager) {} }');
         self::assertSame([], (new SourceRules())->violations($this->root));
         $process = $this->deptrac();
@@ -614,11 +630,11 @@ final class SourceRulesTest extends TestCase
         foreach (['Domain\\Task' => 'Domain', 'Application\\Observe\\ObserveHandler' => 'Application', 'Infrastructure\\Repository' => 'Internal', 'Domain\\Event\\ObservedEvent' => 'DomainEventData', 'Infrastructure\\Event\\ObservedEvent' => 'InfrastructureEventData'] as $target => $layer) {
             yield 'own listener cannot reach '.$target => ['App\\Module\\TaskTracking\\Infrastructure\\EventListener\\ObservedListener', 'App\\Module\\TaskTracking\\'.$target, 'TaskTracking.EventListener on TaskTracking.'.$layer];
         }
-        foreach (['Doctrine\\ORM\\EntityManagerInterface' => 'PersistenceRuntime', 'Symfony\\Component\\Messenger\\MessageBusInterface' => 'MessagingRuntime', 'Symfony\\Component\\Messenger\\Exception\\ValidationFailedException' => 'MessagingDeclarations', 'Psr\\Log\\LoggerInterface' => 'Vendor', 'App\\Platform\\Messaging\\ApplicationEventRecorder' => 'ApplicationEventRecorder', 'App\\Platform\\Messaging\\InvocationContext' => 'Platform'] as $target => $layer) {
+        foreach (['Doctrine\\ORM\\EntityManagerInterface' => 'PersistenceRuntime', 'Symfony\\Component\\Messenger\\MessageBusInterface' => 'MessagingRuntime', 'Symfony\\Component\\Messenger\\Exception\\ValidationFailedException' => 'MessagingDeclarations', 'Psr\\Log\\LoggerInterface' => 'Vendor', 'App\\Platform\\Messaging\\EventBus' => 'EventBus', 'App\\Platform\\Messaging\\InvocationContext' => 'Platform'] as $target => $layer) {
             yield 'own listener restricted dependency '.$target => ['App\\Module\\TaskTracking\\Infrastructure\\EventListener\\ObservedListener', $target, 'TaskTracking.EventListener on '.$layer];
         }
         foreach (['UI\\Http\\Leak' => 'UI', 'Infrastructure\\Leak' => 'Internal', 'Domain\\Leak' => 'Domain', 'Application\\Observe\\ObservedEvent' => 'EventData', 'Application\\Observe\\ObserveResult' => 'ApplicationData'] as $source => $layer) {
-            yield 'recorder only Application implementation '.$source => ['App\\Module\\TaskTracking\\'.$source, 'App\\Platform\\Messaging\\ApplicationEventRecorder', 'TaskTracking.'.$layer.' on ApplicationEventRecorder'];
+            yield 'event bus only Application implementation '.$source => ['App\\Module\\TaskTracking\\'.$source, 'App\\Platform\\Messaging\\EventBus', 'TaskTracking.'.$layer.' on EventBus'];
         }
         yield 'framework listener has no own listener facade permission' => ['App\\Module\\TaskTracking\\Infrastructure\\Framework\\Doctrine\\EventListener\\FlushListener', 'App\\Platform\\Messaging\\CommandBus', 'TaskTracking.FrameworkEventListener on MessagingFacades'];
     }

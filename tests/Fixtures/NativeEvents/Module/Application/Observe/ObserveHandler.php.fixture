@@ -1,0 +1,21 @@
+<?php
+
+declare(strict_types=1);
+
+namespace App\Module\NativeObserving\Application\Observe;
+
+use App\Module\NativeObserving\Domain\ObservationRepository;
+use Symfony\Component\Messenger\Attribute\AsMessageHandler;
+
+#[AsMessageHandler(bus: 'command.bus')]
+final readonly class ObserveHandler
+{
+    public function __construct(private ObservationRepository $observations)
+    {
+    }
+
+    public function __invoke(ObserveCommand $command): void
+    {
+        $this->observations->record($command->id, $command->label, $command->payload);
+    }
+}

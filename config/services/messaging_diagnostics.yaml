@@ -1,0 +1,38 @@
+services:
+    _defaults:
+        autowire: false
+        autoconfigure: false
+
+    App\Platform\Messaging\Diagnostics\SafeMessengerLogger:
+        decorates: monolog.logger.messenger
+        arguments: ['@.inner']
+
+    App\Platform\Messaging\Diagnostics\ConsoleErrorSubscriber:
+        arguments: ['@App\Platform\Messaging\InvocationContext']
+        tags: ['kernel.event_subscriber']
+
+    # Keep stock service IDs and constructor positions: FrameworkExtension and
+    # MessengerPass supply the native failure receiver name and service locator.
+    console.command.messenger_failed_messages_show:
+        class: App\Platform\Messaging\Diagnostics\SafeFailedMessagesShowCommand
+        arguments: [events_failed, null, null]
+        tags: ['console.command']
+
+    console.command.messenger_failed_messages_remove:
+        class: App\Platform\Messaging\Diagnostics\SafeFailedMessagesRemoveCommand
+        arguments: [events_failed, null, null]
+        tags: ['console.command']
+
+    console.command.messenger_failed_messages_retry:
+        class: App\Platform\Messaging\Diagnostics\SafeFailedMessagesRetryCommand
+        arguments:
+            - events_failed
+            - null
+            - '@messenger.routable_message_bus'
+            - '@event_dispatcher'
+            - '@logger'
+            - null
+            - null
+        tags:
+            - { name: console.command }
+            - { name: monolog.logger, channel: messenger }

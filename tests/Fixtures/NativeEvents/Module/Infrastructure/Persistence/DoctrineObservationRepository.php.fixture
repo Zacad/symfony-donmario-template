@@ -1,0 +1,35 @@
+<?php
+
+declare(strict_types=1);
+
+namespace App\Module\NativeObserving\Infrastructure\Persistence;
+
+use App\Module\NativeObserving\Domain\Observation;
+use App\Module\NativeObserving\Domain\ObservationRepository;
+use Doctrine\ORM\EntityManagerInterface;
+use Symfony\Component\Uid\Uuid;
+
+final readonly class DoctrineObservationRepository implements ObservationRepository
+{
+    public function __construct(private EntityManagerInterface $manager, private string $fixtureRoot)
+    {
+    }
+
+    public function record(Uuid $id, string $label, string $payload): void
+    {
+        $db = $this->manager->getConnection();
+        $key = $id->toRfc4122().':'.$label;
+        $transaction = $db->fetchOne('SELECT txid_current()::text');
+        if ('producer' === $label) {
+            $this->manager->persist(new Observation($key, $label, $payload, $transaction));
+
+            return;
+        }
+        // A module-owned unique business key handles races and repeat delivery.
+        $db->executeStatement('INSERT INTO native_observing_observation (id, label, payload, transaction) VALUES (?, ?, ?, ?) ON CONFLICT (id) DO NOTHING', [$key, $label, $payload, $transaction]);
+        file_put_contents($this->fixtureRoot.'/attempts.jsonl', json_encode(['id' => $key, 'label' => $label, 'transaction' => $transaction, 'depth' => $db->getTransactionNestingLevel(), 'local' => $db->fetchOne('SELECT count(*) FROM native_observing_observation WHERE id = ?', [$key])], JSON_THROW_ON_ERROR)."\n", FILE_APPEND | LOCK_EX);
+        if ('second' === $label && 'listener-failure' === trim(file_get_contents($this->fixtureRoot.'/mode.txt'))) {
+            throw new \RuntimeException('NATIVE_PRIVATE_FAILURE INSERT INTO secret password');
+        }
+    }
+}

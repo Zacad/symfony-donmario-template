@@ -23,7 +23,7 @@ Open **http://127.0.0.1:8080**. For a different port on first setup:
 ```
 
 Setup installs `composer.lock`, generates local credentials once, starts PostgreSQL,
-validates/applies pending module migrations, and waits for the application. It can
+validates/applies pending module and Platform Messaging migrations, and waits for the application. It can
 be rerun without replacing credentials or resetting the database. A migration
 failure returns nonzero before the success message. Symfony was originally scaffolded using Symfony CLI;
 ordinary checkout setup uses that existing application.
@@ -33,8 +33,9 @@ ordinary checkout setup uses that existing application.
 | Command | Purpose |
 | --- | --- |
 | `./bin/dev setup [port]` | Build images, install dependencies, migrate and start |
-| `./bin/dev up` | Start services and wait for readiness |
+| `./bin/dev up` | Start/recreate the app with current environment and wait for readiness |
 | `./bin/dev down` | Stop services, retaining persistent volumes |
+| `./bin/dev worker start\|stop\|status` | Manage the optional native async-event consumer |
 | `./bin/dev console about` | Run Symfony console commands |
 | `./bin/dev composer require package/name` | Manage dependencies inside the container |
 | `./bin/dev composer exec -- php-cs-fixer fix --sequential` | Apply the Symfony coding standard |
@@ -53,6 +54,88 @@ go to stderr. To inspect running containers without displaying credentials:
 docker ps --filter label=com.docker.compose.project=PROJECT
 docker logs CONTAINER
 ```
+
+### Switch event delivery and run the worker
+
+[Subtask 5b](docs/tasks/05b-native-event-bus.md) implements a thin EventBus with one
+global transport switch. Implementation, container/PostgreSQL verification and
+fresh independent reviews are complete, and the user accepted 5b on 2026-09-13; exact evidence
+and resolved findings are in the task record.
+
+Events default to **`sync://`**. To use PostgreSQL-backed asynchronous delivery,
+after `./bin/dev setup` has installed dependencies and applied migrations:
+
+```sh
+export EVENT_TRANSPORT_DSN=doctrine://default
+./bin/dev up             # Recreates the app when its environment changes
+./bin/dev worker start
+./bin/dev worker status
+```
+
+Export the setting in every shell used for these commands. The wrapper passes it
+to Compose app/CLI, worker and runner environments; `check`/`test` select their own
+isolated test modes. **Do not add it to `var/docker/local.env`**: that file has a
+strict settings/credentials schema. Changing an export alone does not update an
+already-running app. After source changes, reload the long-running worker with:
+
+```sh
+./bin/dev worker stop
+./bin/dev worker start
+```
+
+After draining pending, in-flight and failed events, switch back with:
+
+```sh
+./bin/dev worker stop
+export EVENT_TRANSPORT_DSN=sync://
+./bin/dev up
+```
+
+Use the supported `./bin/dev worker` wrapper: **start refuses sync mode**. Raw
+Symfony `messenger:consume` silently skips a synchronous receiver, so it is not a
+mode-validation substitute. The optional worker profile is absent from ordinary
+setup/up startup; `down` also removes its container while retaining database volumes.
+The async worker's configured command is:
+
+```sh
+php bin/console messenger:consume events --time-limit=3600 --memory-limit=128M --limit=1000 --sleep=1 --no-interaction
+```
+
+Consumption is sequential with service resets between messages. The **3600-second,
+128M and 1000-message limits are soft**, checked between messages; Compose restarts
+the worker after exit. The **300-second lease has no keepalive** or hard per-handler
+deadline. Module-owned idempotency must tolerate overlapping long-running redelivery
+as well as crash/retry duplicates. The worker uses non-root application credentials,
+no published ports, PCNTL signal handling and a 30-second stop grace period. Test
+app, runner and worker use isolated credentials/resources and separate runtime caches.
+
+The native `events` and `events_failed` queues share the retained
+`public.platform_messaging_message` table and migration. Preflight found the old
+queues empty. Old rows are neither converted nor deleted; new workers ignore old
+opaque rows. A checkout with legacy rows must drain them using compatible old code
+before upgrading. See [schema and compatibility](docs/architecture.md#schema-and-compatibility).
+
+### Failed events
+
+Ordinary failures get **three retries after the initial attempt**, delayed by
+**1, 2 and 4 seconds**, without jitter. Symfony's recoverable/unrecoverable exception
+classification remains native. Exhausted or unrecoverable messages stay in
+`events_failed` until an operator retries or removes them:
+
+```sh
+./bin/dev console messenger:failed:show --transport=events_failed --max=50
+./bin/dev console messenger:failed:show ID --transport=events_failed
+./bin/dev console messenger:failed:retry ID --transport=events_failed --force
+./bin/dev console messenger:failed:remove ID --transport=events_failed --force
+```
+
+These are native operator commands with redacted message displays. **Retry can run
+handlers inline in the console process**; it has native retry/ACK semantics. Native
+`HandledStamp` partial-success tracking is retained, and consumers still need
+at-least-once idempotency. Diagnostics expose fixed metadata, not payloads or arbitrary
+exception details. Queue/database access is trusted: stored events are sensitive,
+and malformed-message failure storage may retain original wire data. Restrict access
+to that storage and its backups; output redaction does not sanitize stored payloads.
 
 ## Runtime and local configuration
 
@@ -152,7 +235,8 @@ independent of Application DTOs and public events. Subtask 4 adds internal
 `Domain/Event/*Event` facts explicitly translated by Application to public events;
 public payloads cannot carry command/query/result DTOs or module internals. There is
 no current `Contract` directory. See [architecture](docs/architecture.md) for exact
-data restrictions and [Subtask 4](docs/tasks/04-synchronous-events.md) for current status.
+data restrictions and [Subtask 5b](docs/tasks/05b-native-event-bus.md) for the active
+native-event design and verification status.
 
 `add()` schedules persistence; flushing and committing belong to the application
 transaction boundary. The entity uses Doctrine mapping attributes but never names
@@ -195,43 +279,116 @@ wiring. Raw Messenger services are internal infrastructure, not module-facing AP
 The standard framework messages visible in `debug:messenger` are rejected by the
 application message policy; command/query helpers dispatch only their inventoried DTOs.
 
-### Synchronous events
+### Publish and handle Application events
 
-Subtask 4, including opt-in recording, is **implemented, verified, independently
-reviewed and accepted by the user**. Required effects use explicit nested commands
-inside the root transaction. Public Application events are delivered best effort,
-synchronously **after confirmed commit and root ORM/context cleanup**. Each listener
-command has a fresh independent transaction. Listener failures retain producer success
-and earlier committed effects, log safe metadata and allow remaining delivery to continue.
+Application handlers inject `App\Platform\Messaging\EventBus` and call
+`dispatch(ApplicationEvent $event): void` during healthy owned command-handler
+execution. UI, queries, Domain and ORM lifecycle callbacks cannot publish through
+this API. Required invariants use explicit nested command orchestration.
 
-`Task` records a Domain TaskCreatedEvent; its handler maps it to the public
-`Application/CreateTask/TaskCreatedEvent` with the Task UUID and records it through
-the Application-only `Platform/Messaging/ApplicationEventRecorder`. Recording is
-restricted to healthy owned command-handler execution, never queries or ORM lifecycle
-callbacks. See architecture for the stack-based detection's exact limitations.
+| Global transport | Behavior |
+| --- | --- |
+| `sync://` (default) | Listeners execute immediately, **inside the producer transaction and before its final flush**. Listener commands join that transaction. Event failure invalidates the root even if caught. |
+| `doctrine://default` | Dispatch stores **one native event row** on the same default DBAL connection/transaction. Producer writes and enqueue commit or roll back together. Workers use current registered handlers; listener commands own their usual root transactions. |
 
-Domain objects opt into recording through `RecordsDomainEvents` and
-`RecordsDomainEventsTrait` under `Platform/Event/Recording`. The trait provides
-protected `recordDomainEvent()` and public `releaseEvents()`, which returns and
-clears the object's pending Domain facts. Application explicitly selects facts to
-translate. This capability adds no base entity, shared ID mapping, optimistic version
-or automatic collection; the interface/trait are excluded from Symfony services.
+Sync listeners must not assume pending producer writes are SQL-visible. Async
+delivery has no outer event transaction: earlier successful listener commands can
+remain committed after another listener fails. Messenger retains `HandledStamp`s
+for completed handlers during retries; crashes and partially completed listeners
+still require module-owned idempotent commands backed by transactional uniqueness.
+There is no global ordering or exactly-once external-effect guarantee.
 
-Concrete events directly extend their exact empty abstract readonly category under
-`Platform/Event`: `BaseEvent -> DomainEvent, ApplicationEvent, InfrastructureEvent`.
-These are data-only exceptions, not general Domain access to Platform. Primitives
-contain no event IDs or metadata. Our internal `Infrastructure/Event/*Event` and
-private `Infrastructure/EventListener/*Listener` are distinct from vendor adapters
-under `Infrastructure/Framework/<Library>/EventListener`. Our listeners receive exact
-public events and dispatch commands/queries through the approved helpers.
+The installed producer explicitly translates selected Domain facts:
 
-FIFO delivery accepts at most 100 events per root buffer and 100 per delivery session;
-valid overflow is dropped and diagnosed. Caps do not bound payload bytes or handler
-runtime. Cleanup failure disables further messaging/recording on that runtime and
-skips unsafe delivery while preserving an already committed producer result. Logging
-failure cannot replace that result. There is no outbox, durable retry or replay;
-process failure may lose in-memory events. The `EventObserving` subscriber module is
-a disposable test fixture, not a production business module.
+```php
+<?php
+
+declare(strict_types=1);
+
+namespace App\Module\TaskTracking\Application\CreateTask;
+
+use App\Module\TaskTracking\Domain\Event\TaskCreatedEvent as DomainTaskCreatedEvent;
+use App\Module\TaskTracking\Domain\Task;
+use App\Module\TaskTracking\Domain\TaskRepository;
+use App\Platform\Messaging\EventBus;
+use Symfony\Component\Messenger\Attribute\AsMessageHandler;
+use Symfony\Component\Uid\Uuid;
+
+#[AsMessageHandler(bus: 'command.bus')]
+final readonly class CreateTaskHandler
+{
+    public function __construct(private TaskRepository $tasks, private EventBus $events)
+    {
+    }
+
+    public function __invoke(CreateTaskCommand $command): Uuid
+    {
+        $task = new Task($command->title);
+        $this->tasks->add($task);
+        foreach ($task->releaseEvents() as $event) {
+            if ($event instanceof DomainTaskCreatedEvent) {
+                $this->events->dispatch(new TaskCreatedEvent($event->taskId));
+            }
+        }
+
+        return $task->id();
+    }
+}
+```
+
+For a new `ActivityTracking` module, the listener below goes in
+`src/Module/ActivityTracking/Infrastructure/EventListener/TaskCreatedListener.php`.
+First implement that module's public `RecordTaskCreationCommand(Uuid $taskId)` and
+co-located idempotent handler, and register the module normally (see “Add a module”).
+This example module is not installed in the template.
+
+```php
+<?php
+
+declare(strict_types=1);
+
+namespace App\Module\ActivityTracking\Infrastructure\EventListener;
+
+use App\Module\ActivityTracking\Application\RecordTaskCreation\RecordTaskCreationCommand;
+use App\Module\TaskTracking\Application\CreateTask\TaskCreatedEvent;
+use App\Platform\Messaging\CommandBus;
+use Symfony\Component\Messenger\Attribute\AsMessageHandler;
+
+#[AsMessageHandler(bus: 'application.event.bus')]
+final readonly class TaskCreatedListener
+{
+    public function __construct(private CommandBus $commands)
+    {
+    }
+
+    public function __invoke(TaskCreatedEvent $event): void
+    {
+        $this->commands->dispatch(new RecordTaskCreationCommand($event->taskId));
+    }
+}
+```
+
+The same producer/listener code works in both modes. Ordinary private, autowired,
+autoconfigured listener services use the normal attribute above. Their dependencies
+are limited to public data, approved immutable values and exact command/query helpers.
+
+Domain objects may opt into `RecordsDomainEvents`/`RecordsDomainEventsTrait` under
+`Platform/Event/Recording`: protected `recordDomainEvent()` collects internal facts;
+public `releaseEvents()` returns and clears them. Application selects facts to
+translate explicitly. This pure support adds no base entity, shared identity,
+optimistic version or automatic collection. Concrete events directly extend their
+empty abstract readonly category under `Platform/Event`:
+`BaseEvent -> DomainEvent, ApplicationEvent, InfrastructureEvent`. All event data
+and recording support are excluded from services.
+
+Async payloads use native Symfony JSON serialization, standard `UuidNormalizer`
+and microsecond-preserving `DateTimeNormalizer` configuration. UUID, immutable date
+and known concrete nested-event round-trips are tested; arbitrary object-union or
+polymorphic payload round-trips are not guaranteed. See
+[architecture](docs/architecture.md#native-application-events-5b) for compatibility,
+trust and boundary-check limits.
+
+### Add a module
 
 To add a module:
 
@@ -335,13 +492,15 @@ Subtask 2 implements module/persistence boundaries; Subtask 3a aligns public dat
 with Application use-case co-location. These subtasks are accepted.
 [Subtask 3b](docs/tasks/03-cqrs-transactions.md#3b--approved-design-and-implementation)
 implements synchronous CQRS/transactions and is also accepted; its verification,
-review and acceptance evidence are in the task record. [Subtask 4](docs/tasks/04-synchronous-events.md)
-implements the approved revised layered events and postcommit delivery design. Full
-verification and fresh independent reviews are complete, with all findings resolved,
-and the user accepted the result including the recording refactor. Next is separate
-Subtask 5 discovery/design, with approval required before implementation.
-Durable/async events, authentication, authorization and the reusable initializer
-retain their subsequent approval gates.
+review and acceptance evidence are in the task record.
+[Subtask 4](docs/tasks/04-synchronous-events.md) and
+[Subtask 5](docs/tasks/05-durable-events.md) are historical records whose delivery
+designs are **superseded by [Subtask 5b](docs/tasks/05b-native-event-bus.md)**.
+The native implementation is verified and independently reviewed: **496 check-suite
+tests / 3226 assertions** and **88 PostgreSQL E2E tests / 1270 assertions** passed,
+alongside fresh consumer verification. The user accepted 5b on 2026-09-13.
+Authentication, authorization and the reusable initializer retain their subsequent
+approval gates.
 
 For dependency updates, use containerized Composer, review recipe/lock changes,
 refresh image digests and CLI archive hashes deliberately, then run the checks

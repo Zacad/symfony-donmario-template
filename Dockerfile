@@ -10,7 +10,7 @@ ARG APP_GID=1000
 RUN apt-get update \
     && apt-get install -y --no-install-recommends git unzip curl libcap2-bin \
     && rm -rf /var/lib/apt/lists/* \
-    && install-php-extensions pdo_pgsql intl zip mbstring
+    && install-php-extensions pdo_pgsql intl zip mbstring pcntl
 
 # Only Linux amd64 is supported and verified by this initial template.
 RUN test "$TARGETARCH" = amd64 \

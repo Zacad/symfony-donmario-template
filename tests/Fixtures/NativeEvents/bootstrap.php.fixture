@@ -1,0 +1,63 @@
+<?php
+
+declare(strict_types=1);
+
+use App\Module\NativeObserving\Application\Publish\DetailEvent;
+use App\Tests\Fixtures\NativeEvents\NativeEventsFixture;
+use App\Tests\Fixtures\NativeEvents\NativeEventsKernel;
+use Composer\Autoload\ClassLoader;
+use Doctrine\DBAL\Connection;
+use Doctrine\ORM\Event\PostFlushEventArgs;
+use Doctrine\ORM\Events;
+use Symfony\Component\Messenger\Event\WorkerMessageHandledEvent;
+use Symfony\Component\Uid\Uuid;
+
+require_once '__SOURCE_ROOT__/vendor/autoload.php';
+$loader = new ClassLoader();
+$loader->addPsr4('App\\Module\\', __DIR__.'/src/Module');
+$loader->register(true);
+
+function nativeBarrier(Connection $connection): void
+{
+    $connection->executeQuery('SELECT pg_advisory_lock(?)', [NativeEventsFixture::LOCK]);
+    $connection->executeQuery('SELECT pg_advisory_unlock(?)', [NativeEventsFixture::LOCK]);
+}
+
+$kernel = new NativeEventsKernel(__DIR__);
+$kernel->boot();
+$container = $kernel->getContainer();
+$manager = $container->get('doctrine.orm.default_entity_manager');
+// Runtime fault probes are outside the module and installed only after compilation.
+$manager->getEventManager()->addEventListener([Events::postFlush], new class($container->get('test.native.events')) {
+    public function __construct(private readonly App\Platform\Messaging\EventBus $events)
+    {
+    }
+
+    public function postFlush(PostFlushEventArgs $event): void
+    {
+        $db = $event->getObjectManager()->getConnection();
+        $mode = trim(file_get_contents(__DIR__.'/mode.txt'));
+        file_put_contents(__DIR__.'/flush.jsonl', json_encode([
+            'rows' => $db->fetchAllAssociative('SELECT label, transaction FROM native_observing_observation'),
+            'jobs' => $db->fetchFirstColumn("SELECT xmin::text FROM platform_messaging_message WHERE queue_name = 'events'"),
+            'transaction' => $db->fetchOne('SELECT txid_current()::text'),
+        ], JSON_THROW_ON_ERROR)."\n", FILE_APPEND | LOCK_EX);
+        if ('precommit' === $mode) {
+            nativeBarrier($db);
+        }
+        if ('lifecycle' === $mode) {
+            try {
+                $this->events->dispatch(new DetailEvent(Uuid::v7(), 'lifecycle', 0, false, null));
+            } catch (Throwable) {
+                file_put_contents(__DIR__.'/lifecycle-caught', 'caught');
+            }
+        }
+    }
+});
+$container->get('event_dispatcher')->addListener(WorkerMessageHandledEvent::class, static function () use ($container): void {
+    if ('before-ack' === trim(file_get_contents(__DIR__.'/mode.txt'))) {
+        nativeBarrier($container->get('doctrine.dbal.default_connection'));
+    }
+}, 4096);
+
+return $kernel;

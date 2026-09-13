@@ -25,10 +25,9 @@ services:
             - '../src/Platform/Architecture/*Pass.php'
             - '../src/Platform/Messaging/InvocationMiddleware.php'
             - '../src/Platform/Messaging/MessagePolicyMiddleware.php'
-            - '../src/Platform/Messaging/ApplicationEventRecorder.php'
-            - '../src/Platform/Messaging/BestEffortEventDispatcher.php'
-            - '../src/Platform/Messaging/EventDeliveryContext.php'
             - '../src/Platform/Messaging/EventPolicyMiddleware.php'
+            - '../src/Platform/Messaging/Diagnostics/'
+            - '../src/Platform/Messaging/Resources/'
 
     # add more service definitions when explicit configuration is needed
     # please note that last definitions always *replace* previous ones

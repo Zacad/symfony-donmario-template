@@ -78,6 +78,71 @@ final class PersistenceBoundariesTest extends DatabaseTestCase
             ['CREATE TABLE public.doctrine_migration_versions_extra (id integer PRIMARY KEY)'],
             'persistence.database.unexpected_table: public.doctrine_migration_versions_extra has no mapped owner.',
         ];
+        yield 'technical prefix alone does not confer ownership' => [
+            ['CREATE TABLE public.platform_messaging_message_extra (id integer PRIMARY KEY)'],
+            'persistence.database.unexpected_table: public.platform_messaging_message_extra has no mapped owner.',
+        ];
+        yield 'transport table is required' => [
+            ['DROP TABLE public.platform_messaging_message'],
+            'persistence.database.missing_table: public.platform_messaging_message owned by Platform Messaging is missing.',
+        ];
+        yield 'unlogged transport table cannot retain durable obligations after a crash' => [
+            ['ALTER TABLE public.platform_messaging_message SET UNLOGGED'],
+            'persistence.database.transport_durability: public.platform_messaging_message must be a permanent logged table.',
+        ];
+        foreach ([
+            'missing body' => 'DROP COLUMN body',
+            'changed body type' => 'ALTER COLUMN body TYPE VARCHAR(100000)',
+            'changed queue length' => 'ALTER COLUMN queue_name TYPE VARCHAR(191)',
+            'changed nullability' => 'ALTER COLUMN headers DROP NOT NULL',
+            'changed timestamp precision' => 'ALTER COLUMN created_at TYPE TIMESTAMP(6) WITHOUT TIME ZONE',
+            'changed timestamp timezone' => 'ALTER COLUMN available_at TYPE TIMESTAMP(0) WITH TIME ZONE',
+            'unexpected default' => "ALTER COLUMN queue_name SET DEFAULT 'boundary-secret-default'",
+            'extra column' => 'ADD COLUMN boundary_extra integer',
+            'missing identity' => 'ALTER COLUMN id DROP IDENTITY',
+            'changed identity mode' => 'ALTER COLUMN id SET GENERATED ALWAYS',
+        ] as $case => $change) {
+            yield 'transport '.$case => [
+                ['ALTER TABLE public.platform_messaging_message '.$change],
+                'persistence.database.transport_columns: public.platform_messaging_message differs from the approved transport columns.',
+            ];
+        }
+        yield 'missing transport primary key' => [
+            ['ALTER TABLE public.platform_messaging_message DROP CONSTRAINT platform_messaging_message_pkey'],
+            'persistence.database.transport_indexes: public.platform_messaging_message differs from the approved transport indexes.',
+        ];
+        yield 'missing transport queue index' => [
+            ['DROP INDEX public.platform_messaging_message_queue_idx'],
+            'persistence.database.transport_indexes: public.platform_messaging_message differs from the approved transport indexes.',
+        ];
+        foreach ([
+            'missing queue index column' => '(queue_name, available_at, delivered_at)',
+            'changed queue index order' => '(available_at, queue_name, delivered_at, id)',
+            'partial queue index' => '(queue_name, available_at, delivered_at, id) WHERE delivered_at IS NULL',
+            'expression queue index' => '(lower(queue_name), available_at, delivered_at, id)',
+        ] as $case => $definition) {
+            yield 'transport '.$case => [
+                [
+                    'DROP INDEX public.platform_messaging_message_queue_idx',
+                    'CREATE INDEX platform_messaging_message_queue_idx ON public.platform_messaging_message '.$definition,
+                ],
+                'persistence.database.transport_indexes: public.platform_messaging_message differs from the approved transport indexes.',
+            ];
+        }
+        foreach ([
+            'business to transport' => ['task_tracking_task', 'BIGINT', 'platform_messaging_message', 'id'],
+            'transport to business' => ['platform_messaging_message', 'UUID', 'task_tracking_task', 'id'],
+            'history to transport' => ['doctrine_migration_versions', 'BIGINT', 'platform_messaging_message', 'id'],
+            'transport to history' => ['platform_messaging_message', 'VARCHAR(191)', 'doctrine_migration_versions', 'version'],
+        ] as $case => [$source, $type, $target, $column]) {
+            yield 'technical foreign key '.$case => [
+                [
+                    'ALTER TABLE public.'.$source.' ADD COLUMN boundary_foreign_id '.$type,
+                    'ALTER TABLE public.'.$source.' ADD CONSTRAINT boundary_technical_fk FOREIGN KEY (boundary_foreign_id) REFERENCES public.'.$target.' ('.$column.') NOT VALID',
+                ],
+                'persistence.database.foreign_key.unowned: boundary_technical_fk links public.'.$source.' to public.'.$target.' without two mapped owners.',
+            ];
+        }
         yield 'partitioned table is inventoried' => [
             ['CREATE TABLE public.boundary_partitioned (id integer) PARTITION BY RANGE (id)'],
             'persistence.database.unexpected_table: public.boundary_partitioned has no mapped owner.',

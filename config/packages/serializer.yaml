@@ -1,0 +1,5 @@
+framework:
+    serializer:
+        default_context:
+            # Native DateTimeNormalizer must retain microseconds across the queue.
+            datetime_format: 'Y-m-d\TH:i:s.uP'

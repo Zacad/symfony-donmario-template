@@ -12,6 +12,7 @@ php vendor/bin/deptrac analyse --no-cache --report-uncovered --fail-on-uncovered
 php bin/console app:architecture:check
 php bin/console app:migrations:check
 php vendor/bin/phpunit tests/Architecture
+php vendor/bin/phpunit tests/Unit
 php vendor/bin/phpstan analyse --no-progress --memory-limit=256M
 php vendor/bin/php-cs-fixer fix --dry-run --diff --sequential
 find src tests docker/tools config -name '*.php' ! -name reference.php -exec php -l '{}' +

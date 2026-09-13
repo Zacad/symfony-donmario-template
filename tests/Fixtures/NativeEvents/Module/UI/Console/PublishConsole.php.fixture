@@ -1,0 +1,30 @@
+<?php
+
+declare(strict_types=1);
+
+namespace App\Module\NativeObserving\UI\Console;
+
+use App\Module\NativeObserving\Application\Publish\PublishCommand;
+use App\Platform\Messaging\CommandBus;
+use Symfony\Component\Console\Attribute\Argument;
+use Symfony\Component\Console\Attribute\AsCommand;
+use Symfony\Component\Uid\Uuid;
+
+#[AsCommand(name: 'app:native:publish')]
+final readonly class PublishConsole
+{
+    public function __construct(private CommandBus $commands)
+    {
+    }
+
+    public function __invoke(#[Argument] string $id): int
+    {
+        try {
+            $this->commands->dispatch(new PublishCommand(Uuid::fromString($id)));
+        } catch (\Throwable) {
+            return 1;
+        }
+
+        return 0;
+    }
+}

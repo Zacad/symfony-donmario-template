@@ -22,7 +22,8 @@ container/PostgreSQL/consumer verification, independent reviews and resolution o
 both boundary findings. The user requested a handoff for a fresh session.
 **Current continuation: [Subtask 4](04-synchronous-events.md), including the opt-in
 recording refactor, is implemented, verified, independently reviewed and user-accepted.
-Next is separate Subtask 5 discovery/design, requiring approval before implementation.**
+The subsequent native EventBus [Subtask 5b](05b-native-event-bus.md) is implemented,
+verified, independently reviewed and user-accepted. Next is Subtask 6 discovery/design.**
 
 The 3a/3b decisions and evidence below are historical. Subtask 4 supersedes their
 `Contract/Event` direction and extends the two-helper boundary with exact event-category,

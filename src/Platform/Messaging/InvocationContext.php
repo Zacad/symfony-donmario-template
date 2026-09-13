@@ -14,9 +14,6 @@ final class InvocationContext
     private bool $handlerTime = false;
     private bool $unusable = false;
     private ?\Closure $invalidateTransaction = null;
-    /** @var list<object> */
-    private array $events = [];
-    private int $dropped = 0;
 
     public function isRoot(): bool
     {
@@ -80,26 +77,14 @@ final class InvocationContext
         $this->handlerTime = $active;
     }
 
-    public function record(object $event): void
+    public function assertEventDispatchAllowed(): void
     {
         $this->assertUsable();
         $this->assertNotLifecycle();
         if (!$this->transaction || !$this->handlerTime || in_array('query', $this->stack, true) || 'command' !== end($this->stack)) {
-            throw new \LogicException('event.scope: recording requires an owned command handler.');
+            throw new \LogicException('event.scope: dispatch requires an owned command handler.');
         }
         $this->assertHealthy();
-        if (100 === count($this->events)) {
-            ++$this->dropped;
-
-            return;
-        }
-        $this->events[] = $event;
-    }
-
-    /** @return array{list<object>, int} */
-    public function pendingEvents(): array
-    {
-        return [$this->events, $this->dropped];
     }
 
     public function markUnusable(): void
@@ -114,14 +99,19 @@ final class InvocationContext
         }
     }
 
+    public function isUsable(): bool
+    {
+        return !$this->unusable;
+    }
+
     private function assertNotLifecycle(): void
     {
-        // Explicit handler-time recording only, including callbacks triggered by
+        // Explicit handler-time dispatch only, including callbacks triggered by
         // persist/load while the handler is still on the stack. No ORM hooks.
         foreach (debug_backtrace(DEBUG_BACKTRACE_IGNORE_ARGS) as $frame) {
             if (('Doctrine\\ORM\\Event\\ListenersInvoker' === ($frame['class'] ?? '') && 'invoke' === $frame['function'])
                 || (is_a($frame['class'] ?? '', 'Doctrine\\Common\\EventManager', true) && 'dispatchEvent' === $frame['function'])) {
-                throw new \LogicException('cqrs.phase: ORM lifecycle callbacks cannot record or dispatch.');
+                throw new \LogicException('cqrs.phase: ORM lifecycle callbacks cannot dispatch.');
             }
         }
     }
@@ -133,7 +123,5 @@ final class InvocationContext
         $this->transaction = false;
         $this->handlerTime = false;
         $this->invalidateTransaction = null;
-        $this->events = [];
-        $this->dropped = 0;
     }
 }

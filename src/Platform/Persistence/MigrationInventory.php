@@ -22,8 +22,13 @@ final readonly class MigrationInventory
     {
         $files = [];
         $timestamps = [];
+        $directories = [
+            'App\\Platform\\Messaging\\Resources\\migrations' => $this->modules->projectDir.'/src/Platform/Messaging/Resources/migrations',
+        ];
         foreach ($this->modules->modules() as $module) {
-            $directory = $this->modules->path($module).'/Resources/migrations';
+            $directories['App\\Module\\'.$module.'\\Resources\\migrations'] = $this->modules->path($module).'/Resources/migrations';
+        }
+        foreach ($directories as $namespace => $directory) {
             if (!is_dir($directory)) {
                 continue;
             }
@@ -34,9 +39,9 @@ final readonly class MigrationInventory
                 }
                 $file = $entry->getPathname();
                 if (dirname($file) !== $directory) {
-                    throw new \LogicException('migration.layout: '.$file.' must be directly inside its module migration directory.');
+                    throw new \LogicException('migration.layout: '.$file.' must be directly inside its owned migration directory.');
                 }
-                $class = 'App\\Module\\'.$module.'\\Resources\\migrations\\'.basename($file, '.php');
+                $class = $namespace.'\\'.basename($file, '.php');
                 $timestamp = TimestampComparator::timestamp($class);
                 if (isset($timestamps[$timestamp])) {
                     throw new \LogicException('migration.duplicate: '.$class.' shares a timestamp with '.$timestamps[$timestamp].'.');
@@ -46,13 +51,13 @@ final readonly class MigrationInventory
             }
         }
         if ([] === $files) {
-            throw new \LogicException('migration.inventory.empty: no module migrations found.');
+            throw new \LogicException('migration.inventory.empty: no owned migrations found.');
         }
         $registered = [];
         foreach ($this->factory->getMigrationRepository()->getMigrations()->getItems() as $migration) {
             $class = (string) $migration->getVersion();
             if (!isset($files[$class]) || (new \ReflectionObject($migration->getMigration()))->getFileName() !== $files[$class]) {
-                throw new \LogicException('migration.inventory.unowned: '.$class.' does not match a module migration file.');
+                throw new \LogicException('migration.inventory.unowned: '.$class.' does not match an owned migration file.');
             }
             if (!$migration->getMigration()->isTransactional()) {
                 throw new \LogicException('migration.transaction: '.$class.' must be transactional.');

@@ -1,3 +1,6 @@
+imports:
+    - { resource: messaging_diagnostics.yaml }
+
 services:
     _defaults:
         autowire: true
@@ -19,20 +22,6 @@ services:
         class: App\Platform\Messaging\MessagePolicyMiddleware
         arguments: [query, []]
 
-    App\Platform\Messaging\ApplicationEventRecorder:
-        # CqrsPass supplies the concrete public Application-event inventory.
-        arguments: ['@App\Platform\Messaging\InvocationContext', []]
-
-    App\Platform\Messaging\EventDeliveryContext: ~
-
-    App\Platform\Messaging\BestEffortEventDispatcher:
-        arguments:
-            $context: '@App\Platform\Messaging\EventDeliveryContext'
-            $bus: '@application.event.bus'
-            $logger: '@logger'
-
     App\Platform\Messaging\EventPolicyMiddleware:
-        arguments:
-            - '@App\Platform\Messaging\EventDeliveryContext'
-            - '@App\Platform\Messaging\InvocationContext'
-            - []
+        # CqrsPass supplies the concrete public Application-event inventory.
+        arguments: [[]]
