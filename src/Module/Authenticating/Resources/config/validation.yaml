@@ -1,0 +1,22 @@
+App\Module\Authenticating\Application\RegisterAccount\RegisterAccountCommand:
+    properties:
+        email:
+            - NotBlank: { message: 'Email is required.' }
+        password:
+            - Sequentially:
+                constraints:
+                    - NotBlank: { message: 'Password is required.' }
+                    - Length: { max: 4096, countUnit: bytes, maxMessage: 'Password must contain at most 4096 bytes.' }
+
+App\Module\Authenticating\Application\UpgradePasswordHash\UpgradePasswordHashCommand:
+    properties:
+        accountId:
+            - Uuid: { message: 'Account ID must be a valid UUID.' }
+        expectedPasswordHash:
+            - Sequentially: &password_hash
+                constraints:
+                    - NotBlank: { message: 'Password hash must use a supported bounded format.' }
+                    - Length: { max: 255, countUnit: bytes, maxMessage: 'Password hash must use a supported bounded format.' }
+                    - Regex: { pattern: '/\A(?:\$2[aby]\$(?:0[4-9]|[12][0-9]|3[01])\$[.\/A-Za-z0-9]{53}|\$argon2(?:id|i)\$v=19\$m=[1-9][0-9]{0,8},t=[1-9][0-9]{0,8},p=[1-9][0-9]{0,8}\$[A-Za-z0-9+\/]{16,86}\$[A-Za-z0-9+\/]{32,86})\z/D', message: 'Password hash must use a supported bounded format.' }
+        newPasswordHash:
+            - Sequentially: *password_hash

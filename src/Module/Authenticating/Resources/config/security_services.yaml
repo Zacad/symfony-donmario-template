@@ -1,0 +1,49 @@
+services:
+    _defaults:
+        autowire: true
+        autoconfigure: true
+        public: false
+
+    # Explicit native services: no build/cache-derived namespace or directory.
+    authenticating.limiter_cache:
+        class: Symfony\Component\Cache\Adapter\FilesystemAdapter
+        arguments:
+            $namespace: authenticating_login
+            $defaultLifetime: 0
+            $directory: '%kernel.project_dir%/var/security/%kernel.environment%/limiter'
+
+    authenticating.limiter_storage:
+        class: Symfony\Component\RateLimiter\Storage\CacheStorage
+        arguments:
+            $pool: '@authenticating.limiter_cache'
+
+    authenticating.limiter_lock_store:
+        class: Symfony\Component\Lock\Store\FlockStore
+        arguments:
+            $lockPath: '%kernel.project_dir%/var/security/%kernel.environment%/locks'
+
+    authenticating.limiter_lock_factory:
+        class: Symfony\Component\Lock\LockFactory
+        arguments:
+            $store: '@authenticating.limiter_lock_store'
+
+    authenticating.login_global:
+        class: Symfony\Component\RateLimiter\RateLimiterFactory
+        arguments:
+            $config: { id: authenticating_login_global, policy: sliding_window, limit: 25, interval: '5 minutes' }
+            $storage: '@authenticating.limiter_storage'
+            $lockFactory: '@authenticating.limiter_lock_factory'
+
+    authenticating.login_local:
+        class: Symfony\Component\RateLimiter\RateLimiterFactory
+        arguments:
+            $config: { id: authenticating_login_local, policy: sliding_window, limit: 5, interval: '1 minute' }
+            $storage: '@authenticating.limiter_storage'
+            $lockFactory: '@authenticating.limiter_lock_factory'
+
+    authenticating.login_limiter:
+        class: Symfony\Component\Security\Http\RateLimiter\DefaultLoginRateLimiter
+        arguments:
+            $globalFactory: '@authenticating.login_global'
+            $localFactory: '@authenticating.login_local'
+            $secret: '%env(APP_SECRET)%'

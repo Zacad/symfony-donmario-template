@@ -1,0 +1,66 @@
+security:
+    password_hashers:
+        authenticating.password: auto
+
+    providers:
+        authenticating.accounts:
+            id: App\Module\Authenticating\UI\Http\Security\AccountUserProvider
+        authenticating.bearer_accounts:
+            id: App\Module\Authenticating\UI\Http\Security\BearerAccountUserProvider
+
+    firewalls:
+        api_documentation:
+            pattern: ^/api/docs\.json$
+            security: false
+
+        api_login:
+            pattern: ^/api/login$
+            stateless: true
+            provider: authenticating.accounts
+            entry_point: App\Module\Authenticating\Infrastructure\Framework\Symfony\Security\ApiAuthenticationFailureHandler
+            access_denied_handler: App\Module\Authenticating\Infrastructure\Framework\Symfony\Security\ApiAuthenticationFailureHandler
+            json_login:
+                check_path: /api/login
+                username_path: email
+                password_path: password
+                failure_handler: App\Module\Authenticating\Infrastructure\Framework\Symfony\Security\ApiAuthenticationFailureHandler
+            login_throttling:
+                limiter: authenticating.login_limiter
+
+        api:
+            pattern: ^/api(?:/|$)
+            stateless: true
+            provider: authenticating.bearer_accounts
+            jwt: ~
+            entry_point: App\Module\Authenticating\Infrastructure\Framework\Symfony\Security\ApiAuthenticationFailureHandler
+            access_denied_handler: App\Module\Authenticating\Infrastructure\Framework\Symfony\Security\ApiAuthenticationFailureHandler
+
+        main:
+            pattern: ^/(?!api(?:/|$))
+            lazy: true
+            provider: authenticating.accounts
+            form_login:
+                login_path: authenticating_login
+                check_path: authenticating_login
+                post_only: true
+                form_only: true
+                enable_csrf: true
+                csrf_token_id: authenticate
+                default_target_path: /account
+                always_use_default_target_path: true
+                use_referer: false
+                failure_handler: App\Module\Authenticating\Infrastructure\Framework\Symfony\Security\LoginFailureHandler
+            login_throttling:
+                limiter: authenticating.login_limiter
+            logout:
+                path: authenticating_logout
+                target: /login
+                enable_csrf: true
+                csrf_parameter: _csrf_token
+                csrf_token_id: logout
+                invalidate_session: true
+
+    access_control:
+        - { path: ^/api/docs\.json$, roles: PUBLIC_ACCESS, methods: [GET, HEAD] }
+        - { path: ^/api(?:/|$), roles: IS_AUTHENTICATED_FULLY }
+        - { path: ^/account$, roles: IS_AUTHENTICATED_FULLY }

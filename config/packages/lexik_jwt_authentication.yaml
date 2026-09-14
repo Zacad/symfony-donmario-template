@@ -1,0 +1,20 @@
+lexik_jwt_authentication:
+    # Native lazy file loading: no PEM resolution during container compilation.
+    secret_key: /app/var/jwt/active/private.pem
+    public_key: /app/var/jwt/active/public.pem
+    additional_public_keys: []
+    pass_phrase: ''
+    token_ttl: 900
+    clock_skew: 0
+    allow_no_expiration: false
+    user_id_claim: sub
+    encoder:
+        signature_algorithm: RS256
+    token_extractors:
+        authorization_header: { enabled: true, prefix: Bearer, name: Authorization }
+        cookie: { enabled: false }
+        query_parameter: { enabled: false }
+        split_cookie: { enabled: false }
+    set_cookies: []
+    blocklist_token: { enabled: false }
+    api_platform: { enabled: false }

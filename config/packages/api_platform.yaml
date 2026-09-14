@@ -1,0 +1,31 @@
+api_platform:
+    title: DonMario API
+    version: 1.0.0
+    mapping:
+        paths:
+            - '%kernel.project_dir%/src/Module/Authenticating/UI/Api'
+    formats:
+        json: ['application/json']
+    docs_formats:
+        jsonopenapi: ['application/json', 'application/vnd.openapi+json']
+    error_formats:
+        json: ['application/json']
+    patch_formats: []
+    enable_swagger_ui: false
+    enable_re_doc: false
+    enable_scalar: false
+    enable_entrypoint: false
+    doctrine:
+        enabled: false
+    swagger:
+        http_auth:
+            bearerAuth:
+                scheme: bearer
+                bearerFormat: JWT
+    defaults:
+        stateless: true
+        pagination_enabled: false
+        cache_headers:
+            max_age: 0
+            shared_max_age: 0
+            vary: ['Authorization']

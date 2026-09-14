@@ -1,0 +1,16 @@
+parameters:
+    env(JWT_VERIFICATION_FILE): '/app/var/jwt/verification.json'
+    authenticating.jwt.no_additional_keys: []
+    authenticating.jwt.issuer: 'urn:donmario:%env(APP_INSTANCE_ID)%:%kernel.environment%'
+    authenticating.jwt.audience: 'urn:donmario:%env(APP_INSTANCE_ID)%:%kernel.environment%:api'
+
+services:
+    # Lexik's configuration tree requires a compile-time array. Inject the native
+    # loader's array argument lazily instead so key rotation never rewrites config.
+    lexik_jwt_authentication.key_loader.raw:
+        class: Lexik\Bundle\JWTAuthenticationBundle\Services\KeyLoader\RawKeyLoader
+        arguments:
+            $signingKey: /app/var/jwt/active/private.pem
+            $publicKey: /app/var/jwt/active/public.pem
+            $passphrase: ''
+            $additionalPublicKeys: '%env(default:authenticating.jwt.no_additional_keys:json:file:JWT_VERIFICATION_FILE)%'

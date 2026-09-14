@@ -1,0 +1,13 @@
+api_platform:
+    resource: .
+    type: api_platform
+    prefix: /api
+
+# Replace API Platform's variable-format documentation route with one JSON URL.
+api_doc:
+    path: /api/docs.json
+    controller: api_platform.action.documentation
+    methods: [GET]
+    defaults:
+        _format: jsonopenapi
+        _api_respond: true

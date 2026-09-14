@@ -1,0 +1,33 @@
+imports:
+    - { resource: security_services.yaml }
+    - { resource: jwt_services.yaml }
+
+services:
+    _defaults:
+        autowire: true
+        autoconfigure: true
+        public: false
+
+    App\Module\Authenticating\:
+        resource: '../..'
+        exclude:
+            - '../../Application/*/*Command.php'
+            - '../../Application/*/*Query.php'
+            - '../../Application/*/*Result.php'
+            - '../../Application/*/*Event.php'
+            - '../../Domain/'
+            - '../../Infrastructure/Event/'
+            - '../../Infrastructure/Framework/Symfony/Security/AccountPrincipal.php'
+            - '../../UI/Api/AccountIdentityResource.php'
+            - '../../Resources/'
+
+    App\Module\Authenticating\Domain\AccountRepository:
+        alias: App\Module\Authenticating\Infrastructure\Persistence\DoctrineAccountRepository
+
+    App\Module\Authenticating\Domain\PasswordHasher:
+        alias: App\Module\Authenticating\Infrastructure\Framework\Symfony\Security\SymfonyPasswordHasher
+
+    App\Module\Authenticating\UI\Api\AuthenticationOpenApiFactory:
+        decorates: api_platform.openapi.factory
+        arguments:
+            $decorated: '@App\Module\Authenticating\UI\Api\AuthenticationOpenApiFactory.inner'

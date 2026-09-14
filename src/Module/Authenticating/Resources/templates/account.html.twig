@@ -1,0 +1,15 @@
+{% extends 'base.html.twig' %}
+
+{% block title %}Your account{% endblock %}
+
+{% block body %}
+    <h1>Your account</h1>
+    <dl>
+        <dt>Account ID</dt><dd id="account-id">{{ account_id }}</dd>
+        <dt>Email</dt><dd id="account-email">{{ account_email }}</dd>
+    </dl>
+    <form method="post" action="{{ path('authenticating_logout') }}">
+        <input type="hidden" name="_csrf_token" value="{{ csrf_token('logout') }}">
+        <button type="submit">Sign out</button>
+    </form>
+{% endblock %}
