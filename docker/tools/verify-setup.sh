@@ -12,22 +12,66 @@ mkdir "$CHECKOUT"
 project=
 image=
 images_built=0
+PEER=$WORK/peer
+peer_project=
+peer_image=
+
+consumer_logs() {
+    capture_root=$1
+    capture_project=$2
+    capture_image=$3
+    capture_label=$4
+    capture_status=0
+    docker compose --project-directory "$capture_root" --env-file "$capture_root/var/docker/local.env" \
+        --project-name "$capture_project" --file "$capture_root/compose.yaml" --profile worker stop \
+        > "$WORK/$capture_label.raw" 2>&1 || capture_status=1
+    docker compose --project-directory "$capture_root" --env-file "$capture_root/var/docker/local.env" \
+        --project-name "$capture_project" --file "$capture_root/compose.yaml" --profile worker logs --no-color \
+        >> "$WORK/$capture_label.raw" 2>&1 || capture_status=1
+    for presentation in check redact; do
+        presentation_arg=
+        if [ "$presentation" = redact ]; then presentation_arg=--redact; fi
+        if ! docker run --rm -i --read-only --network none --cap-drop ALL --security-opt no-new-privileges:true \
+            --entrypoint php --env APP_ENV=dev --volume "$capture_root:/app:ro,z" \
+            --volume "${capture_project}_runtime:/app/var:ro" --volume "${capture_project}_jwt_keys:/app/var/jwt:ro" \
+            "$capture_image" docker/tools/authenticating-log-check.php --consumer $presentation_arg \
+            < "$WORK/$capture_label.raw" > "$WORK/$capture_label-$presentation.raw" 2>&1; then
+            capture_status=1
+            if [ "$presentation" = redact ]; then
+                printf '%s\n' 'Consumer log redaction failed; raw evidence withheld.' > "$WORK/$capture_label-redact.raw"
+            fi
+        fi
+    done
+    if ! docker run --rm -i --entrypoint php --volume "$capture_root:/workspace:ro,z" "$capture_image" \
+        /workspace/docker/tools/redact.php /workspace/var/docker/local.env \
+        < "$WORK/$capture_label-redact.raw" > "$WORK/$capture_label.log"; then capture_status=1; fi
+    rm -f "$WORK/$capture_label.raw" "$WORK/$capture_label-check.raw" "$WORK/$capture_label-redact.raw"
+    printf 'Consumer generation %s: collection/secrecy/redaction exit=%s\n' "$capture_label" "$capture_status"
+    return "$capture_status"
+}
+
 cleanup() {
     status=$?
     trap - EXIT INT TERM
     set +e
+    if [ -n "$peer_project" ]; then
+        if [ -f "$PEER/var/docker/local.env" ]; then
+            consumer_logs "$PEER" "$peer_project" "$peer_image" peer-containers || { if [ "$status" = 0 ]; then status=1; fi; }
+            docker compose --project-directory "$PEER" --env-file "$PEER/var/docker/local.env" \
+                --project-name "$peer_project" --file "$PEER/compose.yaml" --profile worker down --volumes --remove-orphans \
+                || { if [ "$status" = 0 ]; then status=1; fi; }
+        fi
+        for candidate in "$peer_image" "$peer_project-database:local"; do
+            if docker image inspect "$candidate" >/dev/null 2>&1; then
+                docker image rm "$candidate" >> "$WORK/image-cleanup.log" 2>&1 || { if [ "$status" = 0 ]; then status=1; fi; }
+            fi
+        done
+    fi
     if [ -f "$WORK/settings.backup" ]; then
         mv "$WORK/settings.backup" "$CHECKOUT/var/docker/local.env" || { if [ "$status" = 0 ]; then status=1; fi; }
     fi
     if [ -n "$project" ]; then
-        docker compose --project-directory "$CHECKOUT" --env-file "$CHECKOUT/var/docker/local.env" \
-            --project-name "$project" --file "$CHECKOUT/compose.yaml" logs --no-color > "$WORK/containers.raw" 2>&1 \
-            || { if [ "$status" = 0 ]; then status=1; fi; }
-        if [ -f "$CHECKOUT/var/docker/local.env" ] && docker run --rm -i --entrypoint php \
-            --volume "$CHECKOUT:/workspace:ro,z" "$image" /workspace/docker/tools/redact.php /workspace/var/docker/local.env \
-            < "$WORK/containers.raw" > "$WORK/containers.log"; then
-            rm -f "$WORK/containers.raw"
-        elif [ "$status" = 0 ]; then status=1; fi
+        consumer_logs "$CHECKOUT" "$project" "$image" containers || { if [ "$status" = 0 ]; then status=1; fi; }
         docker compose --project-directory "$CHECKOUT" --env-file "$CHECKOUT/var/docker/local.env" \
             --project-name "$project" --file "$CHECKOUT/compose.yaml" --profile worker down --volumes --remove-orphans \
             || { if [ "$status" = 0 ]; then status=1; fi; }
@@ -74,12 +118,25 @@ original=$(cksum < "$CHECKOUT/var/docker/local.env")
 
 # The ORM marker is in this disposable DEVELOPMENT checkout only, never the caller's DB.
 docker exec "$app" php docker/tools/consumer-task.php create > "$WORK/marker.log"
+docker exec "$app" php docker/tools/consumer-authenticating.php create > "$WORK/authenticating.log"
+docker exec "$app" php docker/tools/consumer-jwt.php create > "$WORK/jwt.log"
+test -f "$CHECKOUT/var/docker/jwt-initialized"
+key_marker=$(cksum < "$CHECKOUT/var/docker/jwt-initialized")
+python3 "$CHECKOUT/docker/tools/authenticating-terminal.py" --self-test >> "$WORK/authenticating.log" 2>&1
+python3 "$CHECKOUT/docker/tools/authenticating-terminal.py" "$CHECKOUT" "$app" >> "$WORK/authenticating.log" 2>&1
 sh "$CHECKOUT/bin/dev" setup > "$WORK/repeat-setup.log" 2>&1
+app=$(docker ps --quiet --filter "label=com.docker.compose.project=$project" --filter label=com.docker.compose.service=app)
+test -n "$app"
 test "$original" = "$(cksum < "$CHECKOUT/var/docker/local.env")"
+test "$key_marker" = "$(cksum < "$CHECKOUT/var/docker/jwt-initialized")"
+docker exec "$app" php docker/tools/consumer-jwt.php read >> "$WORK/jwt.log"
+consumer_logs "$CHECKOUT" "$project" "$image" before-recreation
 sh "$CHECKOUT/bin/dev" down > "$WORK/down-up.log" 2>&1
 sh "$CHECKOUT/bin/dev" up >> "$WORK/down-up.log" 2>&1
 app=$(docker ps --quiet --filter "label=com.docker.compose.project=$project" --filter label=com.docker.compose.service=app)
 docker exec "$app" php docker/tools/consumer-task.php read >> "$WORK/marker.log"
+docker exec "$app" php docker/tools/consumer-authenticating.php read >> "$WORK/authenticating.log"
+docker exec "$app" php docker/tools/consumer-jwt.php read >> "$WORK/jwt.log"
 docker exec "$app" php bin/console app:architecture:check --database >> "$WORK/marker.log"
 
 # Missing credentials must never be silently replaced while persistent state exists.
@@ -112,6 +169,28 @@ DATABASE_URL=postgresql://wrong:wrong@invalid.invalid/app COMPOSE_PROJECT_NAME=w
     EVENT_TRANSPORT_DSN=doctrine://default \
     sh "$CHECKOUT/bin/dev" test > "$WORK/isolated-test.log" 2>&1
 docker exec "$app" php docker/tools/consumer-task.php read >> "$WORK/marker.log"
+docker exec "$app" php docker/tools/consumer-authenticating.php read >> "$WORK/authenticating.log"
+docker exec "$app" php docker/tools/consumer-jwt.php read >> "$WORK/jwt.log"
+test "$key_marker" = "$(cksum < "$CHECKOUT/var/docker/jwt-initialized")"
 docker exec "$app" php bin/console app:architecture:check --database >> "$WORK/marker.log"
 test "$original" = "$(cksum < "$CHECKOUT/var/docker/local.env")"
-printf '%s\n' 'Verified clean checkout, HTTP, repeat setup, persistence, missing/incomplete-settings refusal, dev/test and build-context isolation; cleaning up.'
+
+# A second disposable checkout publishes another random port on the same host.
+# Its generated identity, credentials and all volumes are independent of both the
+# first consumer and the caller's development environment.
+mkdir "$PEER"
+tar -C "$PEER" -xf "$WORK/source.tar"
+peer_checksum=$(printf '%s' "$PEER" | cksum)
+peer_project=dm-${peer_checksum%% *}
+peer_image=$peer_project-dev:local
+sh "$PEER/bin/dev" setup 0 > "$WORK/peer-setup.log" 2>&1
+peer_app=$(docker ps --quiet --filter "label=com.docker.compose.project=$peer_project" --filter label=com.docker.compose.service=app)
+test -n "$peer_app"
+consumer_key=$(docker exec "$app" php docker/tools/consumer-jwt.php fingerprint)
+peer_key=$(docker exec "$peer_app" php docker/tools/consumer-jwt.php fingerprint)
+test "$consumer_key" != "$peer_key"
+address=$(docker compose --project-directory "$CHECKOUT" --env-file "$CHECKOUT/var/docker/local.env" --project-name "$project" --file "$CHECKOUT/compose.yaml" port app 8080)
+peer_address=$(docker compose --project-directory "$PEER" --env-file "$PEER/var/docker/local.env" --project-name "$peer_project" --file "$PEER/compose.yaml" port app 8080)
+python3 "$CHECKOUT/docker/tools/authenticating-consumers.py" "$CHECKOUT" "$PEER" "$address" "$peer_address" >> "$WORK/authenticating.log" 2>&1
+docker exec "$app" php docker/tools/consumer-authenticating.php read >> "$WORK/authenticating.log"
+printf '%s\n' 'Verified clean checkout, HTTP, repeat setup, persistence, terminal/pipe provisioning, native authentication, JWT key retention and cross-consumer rejection, two-consumer cookie isolation, missing/incomplete-settings refusal, dev/test and build-context isolation; cleaning up.'

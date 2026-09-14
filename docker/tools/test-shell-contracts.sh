@@ -17,6 +17,7 @@ case "$1" in
         case " $* " in *' remote '*) printf '%s\n' ssh://invalid.example ;;
             *) printf '%s\n' unix:///validated.sock ;; esac ;;
     volume) exit 0 ;;
+    ps) if [ "${STUB_FAULT:-}" = jwt-running ]; then printf '%s\n' running-app; fi ;;
     build)
         if [ "${STUB_MODE:-}" = endpoint ]; then
             test "$DOCKER_HOST" = unix:///validated.sock
@@ -43,6 +44,8 @@ case "$1" in
             case "$arg" in
                 docker/tools/redact.php) cat; exit 0 ;;
                 docker/tools/verify-test-config.php) cat >/dev/null; exit 0 ;;
+                /tools/jwt-keys.php)
+                    if [ "${STUB_FAULT:-}" = jwt ]; then exit 45; fi ;;
             esac
         done ;;
 esac
@@ -93,6 +96,21 @@ for selection in sync:// doctrine://default; do
     done
 done
 test "$settings_checksum" = "$(cksum < "$checkout/var/docker/local.env")"
+# Key loss/invalid state blocks startup; rotation requires explicit stopped apps.
+: > "$STUB_LOG"
+result=0
+PATH="$work/bin:$PATH" STUB_FAULT=jwt sh "$checkout/bin/dev" up > "$work/jwt.log" 2>&1 || result=$?
+test "$result" = 45
+if grep -q 'up --detach' "$STUB_LOG"; then exit 1; fi
+for operation in rotate rotate-emergency retire; do
+    : > "$STUB_LOG"
+    if PATH="$work/bin:$PATH" STUB_FAULT=jwt-running sh "$checkout/bin/dev" jwt-keys "$operation" > "$work/jwt.log" 2>&1; then exit 1; fi
+    if grep -q '/tools/jwt-keys.php' "$STUB_LOG"; then exit 1; fi
+    : > "$STUB_LOG"
+    PATH="$work/bin:$PATH" sh "$checkout/bin/dev" jwt-keys "$operation" > "$work/jwt.log" 2>&1
+    grep -q "/tools/jwt-keys.php $operation " "$STUB_LOG"
+    if grep -q 'up --detach' "$STUB_LOG"; then exit 1; fi
+done
 # An unset mode defaults to sync; stop/status remain usable without the async export.
 for operation in up 'worker stop' 'worker status'; do
     : > "$STUB_LOG"
@@ -179,4 +197,5 @@ chmod +x "$work/bin/psql"
 PATH="$work/bin:$PATH" POSTGRES_USER=postgres APP_DATABASE_NAME=app_test APP_DATABASE_PASSWORD=synthetic-sentinel \
     sh docker/postgres/10-application.sh > "$work/initialization.log" 2>&1
 ! grep -q synthetic-sentinel "$work/initialization.log"
-printf '%s\n' 'Shell contracts passed: endpoint precedence, migration failures, settings refusal, cleanup failures, credential argv isolation, event mode propagation and worker refusal.'
+sh docker/tools/jwt-keys-contract.sh
+printf '%s\n' 'Shell contracts passed: endpoint precedence, migration failures, settings refusal, cleanup failures, credential argv isolation, event mode propagation, worker refusal and stopped-only JWT rotation.'

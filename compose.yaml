@@ -9,6 +9,7 @@ services:
       APP_ENV: dev
       APP_DEBUG: '1'
       APP_SECRET: ${APP_SECRET:-}
+      APP_INSTANCE_ID: ${PROJECT_ID:-local}
       EVENT_TRANSPORT_DSN: ${EVENT_TRANSPORT_DSN:-sync://}
       DATABASE_URL: postgresql://app:${APP_DATABASE_PASSWORD:-}@database:5432/${APP_DATABASE_NAME:-app}?serverVersion=18&charset=utf8
       DEFAULT_URI: http://localhost:${APP_PORT:-8080}
@@ -18,6 +19,7 @@ services:
       - .:/app:z
       # Also masks host var/docker/local.env from app and console containers.
       - runtime:/app/var
+      - jwt_keys:/app/var/jwt:ro
     depends_on:
       database:
         condition: service_healthy
@@ -42,6 +44,7 @@ services:
       APP_ENV: dev
       APP_DEBUG: '1'
       APP_SECRET: ${APP_SECRET:-}
+      APP_INSTANCE_ID: ${PROJECT_ID:-local}
       EVENT_TRANSPORT_DSN: ${EVENT_TRANSPORT_DSN:-sync://}
       DATABASE_URL: postgresql://app:${APP_DATABASE_PASSWORD:-}@database:5432/${APP_DATABASE_NAME:-app}?serverVersion=18&charset=utf8
       DEFAULT_URI: http://localhost:${APP_PORT:-8080}
@@ -76,6 +79,10 @@ services:
     stop_grace_period: 30s
 
 volumes:
+  jwt_keys:
+    labels:
+      com.donmario.checkout: ${CHECKOUT_ID:-unknown}
+      com.donmario.environment: ${APP_MODE:-dev}
   worker_runtime:
     labels:
       com.donmario.checkout: ${CHECKOUT_ID:-unknown}

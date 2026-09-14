@@ -4,7 +4,7 @@ declare(strict_types=1);
 
 namespace App\Platform\Architecture;
 
-/** Shared public-data vocabulary for source, dependency and container checks. */
+/** Shared data vocabulary for source, dependency and container checks. */
 final class ContractTypes
 {
     private const string NAME = '[A-Z][A-Za-z0-9]*';
@@ -14,6 +14,18 @@ final class ContractTypes
     public static function isPublic(string $class): bool
     {
         return self::isApplicationData($class) || self::isEventData($class);
+    }
+
+    /** Exact internal runtime data exception, never a public contract or service. */
+    public static function isAuthenticationPrincipal(string $class): bool
+    {
+        return 'App\\Module\\Authenticating\\Infrastructure\\Framework\\Symfony\\Security\\AccountPrincipal' === $class;
+    }
+
+    /** Exact UI metadata-bearing data, not public Application data or a service. */
+    public static function isApiResource(string $class): bool
+    {
+        return 'App\\Module\\Authenticating\\UI\\Api\\AccountIdentityResource' === $class;
     }
 
     public static function isApplicationData(string $class): bool

@@ -58,7 +58,7 @@ final readonly class ModuleInventoryPass implements CompilerPassInterface
                     }
                     $class = 'App\\Module\\'.$module.'\\'.str_replace('/', '\\', substr($file->getPathname(), \strlen($root) + 1, -4));
                     $reflection = $container->getReflectionClass($class);
-                    if (null === $reflection || ContractTypes::isPublic($reflection->name) || ContractTypes::isAnyEventData($reflection->name) || $reflection->isSubclassOf('App\\Platform\\Event\\BaseEvent') || $reflection->isInterface() || $reflection->isTrait() || $reflection->isAbstract() || $reflection->isEnum()) {
+                    if (null === $reflection || ContractTypes::isAuthenticationPrincipal($reflection->name) || ContractTypes::isApiResource($reflection->name) || ContractTypes::isPublic($reflection->name) || ContractTypes::isAnyEventData($reflection->name) || $reflection->isSubclassOf('App\\Platform\\Event\\BaseEvent') || $reflection->isInterface() || $reflection->isTrait() || $reflection->isAbstract() || $reflection->isEnum()) {
                         continue;
                     }
                     $config = $root.'/Resources/config/services.yaml';
@@ -83,6 +83,12 @@ final readonly class ModuleInventoryPass implements CompilerPassInterface
             if (is_string($name) && str_starts_with(strtolower(ltrim($name, '\\')), 'app\\')) {
                 $reflection = $container->getReflectionClass(ltrim($name, '\\'), false);
                 $class = $reflection->name ?? ltrim($name, '\\');
+                if (ContractTypes::isAuthenticationPrincipal($class)) {
+                    throw new \LogicException('module.inventory.data: '.$class.' is authentication principal data and must be excluded from service registration.');
+                }
+                if (ContractTypes::isApiResource($class)) {
+                    throw new \LogicException('module.inventory.data: '.$class.' is API resource data and must be excluded from service registration.');
+                }
                 if (ContractTypes::isEventRecordingSupport($class)) {
                     throw new \LogicException('module.inventory.support: '.$class.' is Domain event recording support and must be excluded from service registration.');
                 }

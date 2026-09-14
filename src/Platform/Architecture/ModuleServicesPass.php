@@ -86,7 +86,13 @@ final class ModuleServicesPass implements CompilerPassInterface
         }
 
         $class = $this->className($definition);
-        $this->assertServiceClass($class, $id);
+        // #[CurrentUser] creates a deferred autowiring-error placeholder in the
+        // controller argument locator. Symfony throws its error instead of ever
+        // constructing a principal. Keep checking its declared wiring below;
+        // module references still go through assertServiceClass() in dependency().
+        if (!ContractTypes::isAuthenticationPrincipal($class) || !str_starts_with($id, '.errored..service_locator.') || !$definition->hasErrors() || [] === $definition->getErrors()) {
+            $this->assertServiceClass($class, $id);
+        }
         if ($definition->isAbstract()) {
             return;
         }
@@ -314,6 +320,8 @@ final class ModuleServicesPass implements CompilerPassInterface
         }
         $reflection = $this->container->getReflectionClass($class, false);
         $kind = match (true) {
+            ContractTypes::isAuthenticationPrincipal($class) => 'authentication principal',
+            ContractTypes::isApiResource($class) => 'API resource',
             ContractTypes::isDataCandidate($class),
             true === $reflection?->isSubclassOf('App\\Platform\\Event\\BaseEvent') => 'contract',
             [] !== ($reflection?->getAttributes(Entity::class) ?? []) => 'entity',

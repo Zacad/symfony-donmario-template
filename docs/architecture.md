@@ -8,17 +8,42 @@ Single tenancy by default. Linux-first Docker Compose development/testing.
 Symfony 8.1 initialized with Symfony CLI, PostgreSQL, Twig/AssetMapper, HTMX when
 useful, and API Platform for application APIs. Exact dependencies live in the locks.
 
-Subtasks 1, 2, 3a, 3b and 4 are accepted. The delivery designs in historical
+Subtasks 1, 2, 3a, 3b, 4, 5b, 6 (including the registration correction) and 7 are accepted.
+The delivery designs in historical
 [Subtask 4](tasks/04-synchronous-events.md) and [Subtask 5](tasks/05-durable-events.md)
 are **superseded by approved [Subtask 5b](tasks/05b-native-event-bus.md)**.
 The native implementation is verified in containers/PostgreSQL and independently
-reviewed with all findings resolved and accepted by the user on 2026-09-13. Later features
-retain their own approval gates.
+reviewed with all findings resolved and accepted by the user on 2026-09-13.
+[Subtask 6](tasks/06-web-authentication.md) includes the approved 2026-09-13 registration
+correction and is **VERIFIED, REVIEWED and USER ACCEPTED on 2026-09-13.**
+Post-correction setup passed; check passed **610 tests / 3942 assertions** with
+Deptrac **1031 allowed / 0 violations / 0 uncovered** (`var/test-runs/run-eTQK6EAr/`);
+HTTP/PostgreSQL E2E passed **137 tests / 1991 assertions** (`var/test-runs/run-xaiXVV3r/`).
+Fresh consumer `/tmp/opencode/donmario-setup-fej1lSca/` passed with embedded **137 tests /
+1990 assertions** at `application/var/test-runs/run-1pN3Ocj1/`. Fresh independent
+correction reviewer `ses_f64339484ffeQjNteclNnjAlvj` approved after inspecting code/evidence,
+with no concrete findings. Earlier approvals cover the unmodified native web-authentication
+scope. [Subtask 7](tasks/07-jwt-authentication.md) was approved with “i accept, proceed”,
+including the correction requiring `/api/me` to use QueryBus. It is **IMPLEMENTED,
+VERIFIED, REVIEWED and USER ACCEPTED on 2026-09-14**. Verification and reviews
+completed on 2026-09-13. Final setup retained RSA3072 keys,
+dependencies and current migration with app/database healthy. Check passed **695
+tests / 4385 assertions**, Deptrac **1246 allowed / 0 violations / 0 uncovered**
+(`var/test-runs/run-VU1J5W0M/`); E2E passed **201 tests / 4606 assertions**, all 38
+phases (`var/test-runs/run-Dk8kGEH0/`). Consumer `/tmp/opencode/donmario-setup-tr7xoQb4/`
+passed with embedded **201 tests / 4607 assertions**, all 38 phases, at
+`application/var/test-runs/run-KkpCT8uO/`. Fresh authentication/runtime reviewers
+approved after inspecting code/evidence, without rerunning suites; task 7 records
+their identities and exact conclusions. Subtask 6's evidence above remains its
+accepted historical checkpoint. Next fresh session: **Subtask 8 — Authorizing:
+model/management DISCOVERY/DESIGN ONLY**. Present a bounded design, acceptance criteria
+and explicit security/performance review before seeking implementation approval.
+Subtask 8 has not started.
 
 ## Modules and data ownership
 
 Planned business modules are **Authenticating**, **Authorizing** and
-**TaskTracking**; TaskTracking is currently installed. Names end in `-ing` and
+**TaskTracking**; Authenticating and TaskTracking are currently installed. Names end in `-ing` and
 describe the responsibility.
 
 ```text
@@ -179,6 +204,12 @@ runtime-persistence dependencies.
   claim a port by alias name. Port types are not inferred from arrays, generic
   locators, factory arguments or inline adapters. Inline module definitions retain
   their own layer; transparent vendor definitions/locators retain consumer context.
+- **Exact API resource data:**
+  `Authenticating/UI/Api/AccountIdentityResource` is non-service UI transport data.
+  Its API Platform metadata and scalar readonly fields have a narrow exact
+  inventory/container classification; this does not exempt arbitrary UI resources
+  or Application DTOs. The neighboring provider remains a required private service
+  and uses QueryBus. There is no direct-principal query-projection exception.
 - **Metadata/schema:** all attribute entities in module Domain directories must be
   mapped. Entity/repository, association, inheritance, embeddable, table and join-table
   ownership are checked offline. Actual PostgreSQL public tables and outgoing foreign
@@ -399,17 +430,223 @@ build-time guard's scope.
 
 ## Authenticating and Authorizing
 
-Authenticating initially provides CLI account provisioning, email/password web
-login/logout, and Symfony Security integration. Structure it so self-service and
-OIDC can add adapters/use cases later. Safe principal identities cross boundaries.
+### Web authentication (Subtask 6)
 
-Twig/HTMX web routes use sessions and CSRF protection. **The SPA-facing API uses
-stateless bearer JWTs, shipped in the initial template.** The web session cannot
-authenticate API requests. Token issuance and an API Platform identity endpoint
-must be tested. JWT lifecycle, renewal, logout/revocation, account-disable behavior,
-issuer/audience, rotation and browser handling are explicit JWT-subtask decisions.
-Keys are application-specific and generated locally. LexikJWTAuthenticationBundle
-is the proposed maintained integration, subject to dependency/runtime verification.
+This section records the approved Subtask 6 design, including the user's 2026-09-13
+correction, and implemented behavior. Correction verification and fresh independent
+review are complete; Subtask 6 including the correction is **USER ACCEPTED on
+2026-09-13**. Exact evidence and review status live in the
+[task record](tasks/06-web-authentication.md).
+
+- **Ownership and writes:** Authenticating owns Account (UUID, canonical email,
+  password hash), Domain repository ports and `public.authenticating_account`, with
+  module migration `Version20260913010000`. CLI provisioning dispatches raw email and
+  plaintext password in `Application/RegisterAccount/RegisterAccountCommand(email, password)`
+  and returns the UUID. The handler calls `EmailAddress::normalize`, then
+  `PasswordPolicy::validate`, hashes through the Domain `PasswordHasher` port, constructs
+  the Account and calls repository `add`. `SymfonyPasswordHasher` only delegates to
+  the named native hasher; it does not own business validation. The existing command
+  transaction wraps registration validation, hashing and persistence. Database
+  uniqueness prevents duplicate/case-variant overwrites.
+  Native Symfony computes a password-migration replacement before dispatching
+  `Application/UpgradePasswordHash/UpgradePasswordHashCommand(accountId, expectedPasswordHash, newPasswordHash)`.
+  This command remains hash-only. Conditional module-local SQL (CAS) prevents stale hash overwrites under the ordinary
+  owned command transaction. These synchronous writes use CommandBus; repositories
+  never flush/commit. Both command types are sensitive data.
+- **Native read exception:** Symfony `form_login` owns login and verification;
+  `UI/Http/Security/AccountUserProvider` directly reads detached module-local Domain
+  credential snapshots for email login and UUID-based session refresh. This explicit
+  exception has no `LoginCommand`, public credential query/result, forwarding handler
+  or custom authenticator. It grants no general business-adapter repository policy.
+  Domain has no Symfony Security dependency.
+- **Exact principal exception:**
+  `Authenticating/Infrastructure/Framework/Symfony/Security/AccountPrincipal` is internal
+  runtime data, with no entity or service references. Inventory/DI excludes this exact
+  class from services and permits Symfony's excluded/deferred `#[CurrentUser]`
+  diagnostic placeholder, not an instantiable principal service. It is not a general
+  exemption for `UserInterface` implementations or Infrastructure data. Module service
+  injection, aliases and inline definitions still cannot register the principal.
+  Serialization replaces the reusable password hash with Symfony's documented crc32c
+  fingerprint. Changed hashes and deleted accounts invalidate older sessions on refresh.
+- **Input:** email is validated ASCII, trimmed of outer ASCII whitespace, lowercased
+  and at most 254 bytes, with no provider-specific rewriting. Passwords are valid
+  UTF-8, at least 15 Unicode characters and at most 4096 bytes; spaces are preserved,
+  NUL and line breaks rejected. A named native `auto` hasher serves provisioning and
+  verification. CLI hidden password/confirmation fails without hidden-input support;
+  explicit `--password-stdin --no-interaction` bounds input and removes only one
+  optional final LF/CRLF as transport framing. CLI responsibilities are secure input,
+  confirmation, framing, raw email/password dispatch and fixed-error presentation;
+  it performs no business validation and injects no hasher. Passwords never belong in argv, environment, URL queries or
+  diagnostics; command/request/passport/exception payloads must not be logged.
+- **HTTP/session behavior:** GET `/login` renders the form; native CSRF-protected POST
+  `/login` targets `/account`, which requires full authentication. Failure and native
+  POST/CSRF logout target `/login`; caller-controlled redirects are ignored. GET/HEAD
+  cannot log out. Invalid login CSRF preserves an existing authenticated session.
+  Password migration happens after token setup: conflict/operational failure explicitly
+  clears the token and invalidates the session. The principal receives its new hash
+  only after successful persistence. Login rotates the session; logout invalidates it.
+- **Lifetime/storage:** native files live in `var/sessions/<env>` outside cache.
+  Cookies are `dm_<PROJECT_ID>_<env>` (Compose passes PROJECT_ID as APP_INSTANCE_ID),
+  host-only, path `/`, HttpOnly, SameSite=Lax and Secure=auto. Browser-session cookies
+  and GC (`gc_maxlifetime=86400`, probability 1/100) do not impose a hard idle/absolute
+  TTL. Separate project identities isolate cookies even on different same-host ports.
+- **Throttling:** native `DefaultLoginRateLimiter` uses 5 failures/minute per normalized
+  identifier/IP and 25/IP/5 minutes, dedicated filesystem cache and flock storage under
+  `var/security/<env>`, fixed namespaces and stable APP_SECRET keying. Cache rebuilds
+  retain state. Native empty flock files can be 0666 beneath owner-only 0700 directories;
+  session/limiter data remains private. Lock files accumulate and must not be unlinked
+  while authentication processes are active.
+
+#### Security/performance bounds
+
+Caddy rejects authentication POST Content-Length above **16 KiB with 413**, and
+unframed/streamed requests with **411** before PHP parsing. External `/index.php`
+and `/index.php/*` aliases return **404** before internal front-controller rewriting,
+closing the ingress bypass. Bounded scalar validation runs before the firewall.
+Fixed errors and no-store responses avoid credential payload diagnostics; generic
+unknown/wrong-password errors do not promise constant-time account concealment.
+
+Registration email/password-policy validation and native hashing run **inside the
+existing command transaction**, increasing transaction duration by the hashing cost.
+Native login verification and replacement-hash computation remain Symfony-owned,
+before the separate hash-only upgrade/CAS command transaction. Indexed credential reads
+return detached snapshots. Native session locks serialize requests sharing a session. Limiter locks
+protect counter operations, not the whole in-flight login: concurrent attempts can
+exceed sequential thresholds. Native filesystem I/O is **not guaranteed fail-closed**.
+This is a single-host baseline, not distributed limiting or edge DoS protection;
+there is no arbitrary forwarded-IP trust. Home/liveness remain database-independent,
+including with auth cookies. Actual storage/log canaries and per-generation log
+collection verify exercised paths; they are not universal secrecy guarantees. Each
+generation is stopped first, then its raw logs, including shutdown output, are
+collected/checked/redacted before recreation or removal.
+
+Registration plaintext is not persisted, queued or logged, but its public readonly
+command and Messenger envelope contain it in memory; validation-exception objects
+can retain that command/envelope too. Unsetting a CLI local does not guarantee
+erasure of those references or string storage. No public credential query/result/event
+is introduced. Fixed output and sensitive-parameter annotations do not make object
+dumps safe.
+
+The web firewall excludes `/api`; no session-authenticated API is introduced.
+Self-registration, reset/disable administration, remember-me, MFA and OIDC are
+outside Subtask 6. Business authorization remains a later subtask.
+
+### JWT authentication (Subtask 7)
+
+The approved implementation includes the user's identity-query correction. It is
+**IMPLEMENTED, VERIFIED, REVIEWED and USER ACCEPTED on 2026-09-14**; verification
+and fresh independent reviews completed on 2026-09-13.
+[Task 7](tasks/07-jwt-authentication.md) owns the acceptance criteria, completed
+verification evidence and two fresh independent review approvals.
+
+- **Native login ordering:** POST `/api/login` uses native Symfony `json_login`,
+  the existing email credential provider, password hasher and hash-only CAS upgrade
+  command. It has no success handler: only after native authentication and all late
+  password-migration listeners finish does the fully authenticated thin
+  `UI/Api/LoginController` issue through Lexik. Database, signing or migration failure
+  produces no JWT. There is no LoginCommand or custom password authenticator.
+- **Stateless isolation:** exact login and bearer firewalls precede the web firewall.
+  API requests neither create/invalidate sessions nor accept web-cookie identity.
+  The exact `/api/docs.json` firewall has `security: false`, so even an invalid bearer
+  header does not require authentication there; the public JSON OpenAPI contract
+  describes login and `/api/me` with bearer security. API Platform's browser
+  documentation UIs, entrypoint and Doctrine resource integration are disabled.
+- **Live identity:** after signature/claim validation,
+  `UI/Http/Security/BearerAccountUserProvider` performs a UUID credential lookup via
+  the owning Domain repository, extending the explicit native authentication-read
+  exception. Domain/Application remain Security-independent. For `/api/me`,
+  `UI/Api/AccountIdentityProvider` takes only the trusted principal UUID and calls
+  `QueryBus::ask(new GetAccountIdentityQuery($id))`. The co-located
+  `Application/GetAccountIdentity/GetAccountIdentityHandler` calls Domain
+  `AccountRepository::findIdentityById(Uuid): ?AccountIdentity` and maps the safe
+  Domain snapshot to `GetAccountIdentityResult(Uuid $id, string $email)|null`.
+  The provider maps that result to `AccountIdentityResource(string $id, string $email)`.
+  No credentials cross the public query/result contract; the response is not a
+  projection of principal email. This approved **second indexed read** returns current
+  identity. Missing account during authentication is 401; deletion between the first
+  read and query is 404, with unit coverage for that deletion race. Actual
+  HTTP/PostgreSQL instrumentation verifies exactly two account reads and an email
+  change visible through the second query rather than principal projection. No
+  account identity cache is introduced.
+- **Cryptography and claims:** installed Lexik **3.2.0** / Lcobucci **5.6.0** perform
+  native cryptography; API Platform Symfony is **4.3.19**. RSA 3072 / RS256, 900-second
+  TTL and zero clock skew are fixed. Issued tokens have `typ: JWT` and exactly six
+  payload claims: UUID `sub`, `iss`, `aud`, `iat`, `nbf`, `exp`. Issuer is
+  `urn:donmario:<APP_INSTANCE_ID>:<env>`, audience adds `:api`; APP_INSTANCE_ID comes
+  from PROJECT_ID in Compose. Validate normalized UUID, exact issuer/audience,
+  nonfuture nonnegative iat, `nbf = iat`, unexpired exp and **`exp - iat = 900`**
+  before account lookup. Native normalized NumericDates are accepted, not an original
+  JSON-wire integer guarantee. No email, password-derived value or business permission
+  is placed in the token.
+  Malformed NumericDate null/array/boolean values can raise Lcobucci 5.6 `TypeError`
+  beyond Lexik 3.2's `Exception`-only catch. Narrow `Parser::convertDate` origin
+  handling maps these to fixed 401 without a raw JWT parser; real HTTP negatives
+  verify this classification rather than an operational 503.
+- **Transport:** Authorization Bearer header only, bounded before parsing to an
+  8 KiB token plus the 7-byte prefix. No cookie/query/body extraction, token cookies
+  or blocklist. Caddy extends the framed 16 KiB authentication POST guard to JSON
+  login and preserves front-controller alias rejection. Login requires JSON with
+  exactly string email/password fields and no query string; bounded validation and
+  normalization precede the native limiter. Web/API share the existing limiter
+  service/storage and stable APP_SECRET keying. API errors are fixed and responses
+  use no-store, including late failures without session cleanup.
+- **Lifetime/browser contract:** no refresh token or disabled-account state. Re-login
+  is required after expiry. Deletion denies subsequent authentication, but password
+  changes/rehashes and web logout do not revoke existing JWTs. Client logout discards
+  its copy; replay remains possible until expiry or signing-key trust removal.
+  Same-origin clients hold tokens in memory, never persistent browser storage; reload
+  requires login. HTTPS is required outside loopback development. Payloads are readable,
+  and memory-only storage does not protect against active XSS.
+
+#### Key lifecycle and operational boundary
+
+The project-specific `jwt_keys` volume holds owner-only unencrypted PKCS8 keys
+(0700 directories / 0600 files), mounted read-only to app/console. Test app and runner
+read only that run's isolated test keys; worker has no key mount. Independent host
+`var/docker/jwt-initialized` metadata matches volume `.identity`, detecting initialized
+key loss. Setup generates once, validates/retains on reruns and refuses partial,
+mismatched or corrupt state; `up` validates before startup. No build/cache/request/
+worker key generation occurs. APP_SECRET, project identity, keys and environment
+namespaces remain independently initialized for development, tests and consumers.
+
+The network-disabled native OpenSSL helper exposes `initialize`, `validate`, `rotate`,
+`rotate-emergency` and `retire` through `./bin/dev jwt-keys`. Generation files and
+manifest are persisted before atomic publication through a `current` symlink; the
+helper prunes obsolete generations. Lexik's configuration keeps a literal empty
+`additional_public_keys` array, while the **native RawKeyLoader service argument**
+resolves the additional array lazily from `/app/var/jwt/verification.json` using
+Symfony env processors. This permits keyless compilation and worker startup without
+rewriting configuration during rotation.
+
+Switch operations require stopped key users. Planned rotation retains at most one
+old **public** key; another overlap rotation requires retirement first. The operator
+must remove previous-key trust **within 900 seconds of stopping old-key issuance**,
+including downtime; there is no automatic retirement. Emergency rotation retains no
+old trust after restart; actual HTTP verification rejects a still-unexpired prior
+token and confirms new issuance. Interrupted first initialization can complete the external
+marker only when a valid generation and `.identity` already exist; otherwise it
+fails preserving state for restore or an explicitly disposable first-init reset.
+UID/GID changes require independent key-volume/metadata ownership repair, never
+treating valuable signing keys as disposable cache. Exact stop/switch/start and
+recovery procedures are in [README](../README.md#jwt-key-operations).
+
+#### Security/performance review
+
+Login adds one signature to native verification and possible rehash/CAS work. Each
+valid bearer request costs signature validation and an indexed UUID read; `/api/me`
+deliberately adds its QueryBus identity read. At most two keys are tried, with no
+password hashing or session locks on bearer requests. Existing limiter filesystem
+I/O/concurrency limits still apply; this is not distributed DoS protection. Actual
+negative/outage/recovery verification passed. Three-sample local HTTP observations
+gave median issuance **527.04 ms** and identity **21.27 ms**; consumer observations
+were **525.65 ms / 21.56 ms**. These are local measurements, not an SLA. Task 7
+records the evidence; token/key/password canaries establish exercised secrecy paths only.
+
+### Later authorization design
+
+The following architectural direction retains separate discovery/implementation gates.
+Self-service and OIDC can add authentication adapters/use cases later. Safe principal
+identities cross boundaries; business API operations are not yet implemented.
 
 Authorizing owns code-defined permission/role bundles, persisted assignments and
 direct global/resource grants. Deny by default. Effective permissions are the union

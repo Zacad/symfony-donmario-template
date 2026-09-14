@@ -8,5 +8,27 @@
 :8080 {
     root * /app/public
     encode zstd gzip
-    php_server
+    @authenticationPost {
+        method POST
+        path /login /login/* /logout /logout/* /api/login /api/login/*
+    }
+    route {
+        # Match the external path before php_server's internal front-controller
+        # rewrite; aliases must not bypass the authentication ingress guard.
+        @frontController path /index.php /index.php/*
+        respond @frontController "Not Found" 404
+        route @authenticationPost {
+            # FrankenPHP does not propagate a MaxBytesReader error as 413.
+            # Native browser forms send Content-Length. Require that framing so
+            # every authentication body is bounded before PHP parses any input.
+            @unframed not header Content-Length *
+            respond @unframed "Length Required" 411
+            @oversized expression `int({http.request.header.Content-Length}) > 16384`
+            respond @oversized "Payload Too Large" 413
+            request_body {
+                max_size 16KiB
+            }
+        }
+        php_server
+    }
 }

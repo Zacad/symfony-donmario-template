@@ -15,6 +15,7 @@ foreach ($services as $name) {
         || $eventTransportDsn !== ($service['environment']['EVENT_TRANSPORT_DSN'] ?? null)
         || !str_contains($service['environment']['DATABASE_URL'], '@database:5432/app_test?')
         || empty($service['environment']['APP_SECRET']) || isset($service['environment']['POSTGRES_PASSWORD'])
+        || ($config['name'] ?? null) !== ($service['environment']['APP_INSTANCE_ID'] ?? null)
         || !empty($service['ports']) || !empty($service['env_file']) || empty($service['read_only'])
         || empty($service['init']) || !in_array('ALL', $service['cap_drop'] ?? [], true)
         || !in_array('no-new-privileges:true', $service['security_opt'] ?? [], true)
@@ -26,6 +27,26 @@ foreach ($services as $name) {
             throw new RuntimeException('Test source must be an image snapshot, not a host mount.');
         }
     }
+    $runtime = match ($name) {
+        'app' => 'runtime',
+        'runner' => 'runner',
+        'worker' => 'worker_runtime',
+    };
+    $expectedMounts = 'worker' === $name ? 1 : 2;
+    if ($expectedMounts !== count($service['volumes']) || $runtime !== $service['volumes'][0]['source']
+        || '/app/var' !== $service['volumes'][0]['target'] || !empty($service['volumes'][0]['read_only'])) {
+        throw new RuntimeException('Session and limiter storage must remain private to each service.');
+    }
+    if ('worker' !== $name) {
+        $keys = $service['volumes'][1];
+        if ('jwt_keys' !== $keys['source'] || '/app/var/jwt' !== $keys['target'] || true !== ($keys['read_only'] ?? false)) {
+            throw new RuntimeException('App and negative-token fixtures require only read-only isolated test JWT keys.');
+        }
+    }
+}
+if (($config['name'] ?? '').'_jwt_keys' !== ($config['volumes']['jwt_keys']['name'] ?? null)
+    || !empty($config['volumes']['jwt_keys']['external'])) {
+    throw new RuntimeException('JWT keys must belong to this unique test project.');
 }
 if (isset($config['services']['worker'])) {
     $worker = $config['services']['worker'];

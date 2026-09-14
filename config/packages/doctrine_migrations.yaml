@@ -1,5 +1,6 @@
 doctrine_migrations:
     migrations_paths:
+        'App\Module\Authenticating\Resources\migrations': '%kernel.project_dir%/src/Module/Authenticating/Resources/migrations'
         'App\Module\TaskTracking\Resources\migrations': '%kernel.project_dir%/src/Module/TaskTracking/Resources/migrations'
         'App\Platform\Messaging\Resources\migrations': '%kernel.project_dir%/src/Platform/Messaging/Resources/migrations'
     enable_profiler: false

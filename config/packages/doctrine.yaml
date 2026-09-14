@@ -18,6 +18,11 @@ doctrine:
                 connection: default
                 auto_mapping: false
                 mappings:
+                    Authenticating:
+                        type: attribute
+                        is_bundle: false
+                        dir: '%kernel.project_dir%/src/Module/Authenticating/Domain'
+                        prefix: 'App\Module\Authenticating\Domain'
                     TaskTracking:
                         type: attribute
                         is_bundle: false

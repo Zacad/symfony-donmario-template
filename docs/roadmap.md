@@ -1,15 +1,24 @@
 # Approval-gated delivery
 
-General design and Subtasks **1, 2, 3a, 3b, 4 and 5b** have user acceptance. Historical
+General design and Subtasks **1, 2, 3a, 3b, 4, 5b, 6 (including the registration
+correction) and 7** have user acceptance. Historical
 [Subtask 4](tasks/04-synchronous-events.md) and [Subtask 5](tasks/05-durable-events.md)
 delivery designs are **superseded by approved [Subtask 5b](tasks/05b-native-event-bus.md)**.
 Their records retain historical evidence; current behavior is documented in
 [architecture](architecture.md#native-application-events-5b).
 
-**5b is implemented, verified and independently reviewed**, with all findings
-resolved. **The user accepted 5b on 2026-09-13.** Next: separate Subtask 6
-web-authentication discovery/design in a fresh session. Its implementation requires
-design approval. Reconcile the dated
+**The user accepted 5b on 2026-09-13.** Accepted
+[Subtask 6](tasks/06-web-authentication.md) includes the approved 2026-09-13 correction
+making registration responsible for password-policy validation and hashing. It is
+implemented; no new design gate is needed for that correction. **Subtask 6 including
+the correction is VERIFIED, REVIEWED and USER ACCEPTED on 2026-09-13.**
+Post-correction setup/check/test, consumer verification and fresh independent review
+are complete. **Subtask 7 is IMPLEMENTED, VERIFIED, REVIEWED and USER ACCEPTED on
+2026-09-14**, including `/api/me` through QueryBus. Full verification and two fresh
+independent reviews passed on 2026-09-13. **Next fresh session: Subtask 8 — Authorizing:
+model/management DISCOVERY/DESIGN ONLY.** Present a bounded design, acceptance criteria
+and explicit security/performance review; obtain approval before implementation.
+Subtask 8 has not started. Reconcile the dated
 [session handoff](handoff.md) with the active task record and subsequent instructions.
 Later subtasks require their own discovery, design and approval before edits.
 Split a subtask further if discovery reveals that its scope is too broad.
@@ -23,9 +32,9 @@ Split a subtask further if discovery reveals that its scope is too broad.
 | 4 | Layered events (historical; delivery superseded by 5b) | Retained event categories, public-data placement and optional Domain recording |
 | 5 | Durable events (historical; superseded by 5b) | See historical task record |
 | 5b | Native EventBus (accepted) | Immediate sync producer-transaction commit/rollback; global Doctrine switch; one-row atomic enqueue; current handlers, native retries/partial success, idempotency, worker crash/outage recovery and consumer isolation |
-| 6 | Authenticating: web | Provisioning, login/logout, throttling and CSRF |
-| 7 | Authenticating: JWT | Issuance, protected API identity, lifecycle and negative cases |
-| 8 | Authorizing: model/management | Roles, direct scoped grants and permission decisions |
+| 6 | [Authenticating: web](tasks/06-web-authentication.md) (including correction: verified, reviewed and user accepted 2026-09-13) | Hidden CLI/stdin provisioning, registration-owned password-policy validation/hashing, native login/refresh and POST/CSRF logout, hash-only CAS upgrade commands, sessions/throttling, outage/recovery and consumer isolation |
+| 7 | [Authenticating: JWT](tasks/07-jwt-authentication.md) (implemented, verified, reviewed and user accepted 2026-09-14) | Native JSON issuance, QueryBus-backed API Platform identity, stateless isolation, exact JWT lifecycle, key setup/rotation/recovery and negative cases |
+| 8 | Authorizing: model/management (next fresh session: discovery/design only) | Roles, direct scoped grants and permission decisions |
 | 9 | Authorization enforcement | Entry-point enforcement, revocation and restricted administration |
 | 10 | TaskTracking use cases/CLI | Create/list/complete, ownership and invariants |
 | 11 | TaskTracking events | Completion activity through CQRS in both delivery modes |
@@ -50,3 +59,65 @@ partial-success stamps do not provide exactly-once effects or global ordering.
 See architecture for serializer/trust limits, queue compatibility and soft worker
 limits, and [README](../README.md#switch-event-delivery-and-run-the-worker) for supported
 shell exports and worker operations.
+
+Subtask 6 keeps native Symfony login/refresh as an explicit module-local Domain-read
+exception, with no `LoginCommand`; registration and conditional hash upgrades write
+through CommandBus. `RegisterAccountCommand(email, password)` carries plaintext;
+the handler normalizes email, validates `PasswordPolicy`, hashes through the Domain
+`PasswordHasher` port and adds the Account, all inside the existing registration
+transaction. `SymfonyPasswordHasher` delegates only to the native hasher. The CLI
+handles bounded secure input, confirmation, optional terminal LF/CRLF framing and
+fixed errors, dispatching raw email/password with no business validation or hasher.
+Native Symfony computes a replacement hash before the separate hash-only
+`UpgradePasswordHashCommand` transaction, which retains CAS protection. Plaintext
+is not persisted, queued or logged, but public readonly command/envelope and
+validation-exception objects can retain it in memory; unsetting a CLI local does
+not guarantee erasure. No public credential query/result/event exists.
+Its exact internal non-service principal exception does not
+permit general `UserInterface` services. Domain remains Security-independent. Native
+session GC has no hard TTL; dedicated filesystem throttling is single-host with
+documented I/O/concurrency limits. `/api` is excluded from the web firewall.
+
+Subtask 7 adds native JSON login and Lexik RS256/RSA3072 tokens with exact 900-second
+lifetime, zero skew and project/environment issuer/audience. `/api/me` authenticates
+with a live UUID credential lookup, then uses `GetAccountIdentityQuery` through
+QueryBus and the Domain safe-identity lookup to return `GetAccountIdentityResult`:
+the approved second indexed read. `/api/docs.json` is the exact public OpenAPI route.
+Dedicated key storage, separate initialization evidence and stopped-user rotation
+support at most one old public key with operator retirement within 900 seconds.
+There are no API sessions, refresh tokens, disabled-account state or per-token
+revocation; password/rehash/web logout do not revoke JWTs. See task 7 and README for
+contracts, recovery and security/performance limits. Final `./bin/dev setup` passed
+retaining RSA3072 keys, with dependencies unchanged, migration current and app/database
+healthy. `./bin/dev check` passed **695 tests / 4385 assertions**, Deptrac **1246 allowed /
+0 violations / 0 uncovered**, at `var/test-runs/run-VU1J5W0M/`. `./bin/dev test` passed
+**201 tests / 4606 assertions**, all 38 phases, at `var/test-runs/run-Dk8kGEH0/`.
+`TMPDIR=/tmp/opencode ./bin/dev verify-setup` passed in
+`/tmp/opencode/donmario-setup-tr7xoQb4/`, with embedded **201 tests / 4607 assertions**,
+all 38 phases, at `application/var/test-runs/run-KkpCT8uO/`. Fresh authentication
+reviewer `ses_f63a1e74affeszKsYM4RJDMnZS` and runtime reviewer
+`ses_f63a1e72bffePxCpnh11QTnL9Q` **APPROVED** after inspecting code/evidence; they did
+not rerun suites. Verification/reviews completed on 2026-09-13; task 7 records exact
+conclusions and **user acceptance on 2026-09-14**.
+Authorizing and business API adapters retain their later approval gates.
+
+**Subtask 6 final post-correction evidence:** `./bin/dev setup` passed with dependencies/migration
+unchanged and app/database healthy. `./bin/dev check` passed **610 tests / 3942 assertions**,
+Deptrac **1031 allowed / 0 violations / 0 uncovered**, at `var/test-runs/run-eTQK6EAr/`.
+`./bin/dev test` passed **137 tests / 1991 assertions**, all 21 PHPUnit phases, at
+`var/test-runs/run-xaiXVV3r/`. `TMPDIR=/tmp/opencode ./bin/dev verify-setup` passed in
+`/tmp/opencode/donmario-setup-fej1lSca/` with embedded **137 tests / 1990 assertions**
+at `application/var/test-runs/run-1pN3Ocj1/`, all 21 invocations. Fresh independent
+correction reviewer `ses_f64339484ffeQjNteclNnjAlvj` inspected code/evidence and
+**APPROVED** with no concrete findings. The earlier two approvals cover the unmodified
+native web-authentication scope; the correction's fresh review is now complete.
+
+**Pre-correction historical evidence only:** `./bin/dev setup` passed with Authenticating migration
+`Version20260913010000` current; `./bin/dev check` passed **588 tests / 3738 assertions**
+and Deptrac **1033 allowed / 0 violations / 0 uncovered** after all tooling changes
+(`var/test-runs/run-hsi0IoyH/`); `./bin/dev test` passed
+**120 tests / 1744 assertions** (`var/test-runs/run-qeu9uWzb/`); fresh `verify-setup`
+passed in `/tmp/opencode/donmario-setup-RBWCh0mQ/` with embedded **120 tests /
+1745 assertions**. Earlier reviewer approvals cover that snapshot, not the latest
+correction. See the task record for exact historical evidence and the completed
+post-correction verification/review and user acceptance on 2026-09-13.

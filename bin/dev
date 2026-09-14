@@ -25,7 +25,7 @@ trap 'exit 143' TERM
 lock_setup() {
     mkdir -p "$ROOT/var/docker"
     if ! mkdir "$ROOT/var/docker/setup.lock" 2>/dev/null; then
-        fail 'Setup/Composer is already running, or a stale setup.lock exists. See README recovery.'
+        fail 'Setup, Composer, console or key tooling is already running, or a stale setup.lock exists. See README recovery.'
     fi
     LOCK=$ROOT/var/docker/setup.lock
 }
@@ -74,6 +74,23 @@ compose() {
         --project-name "$PROJECT_ID" --file "$ROOT/compose.yaml" "$@"
 }
 
+jwt_keys() {
+    key_operation=$1
+    key_access=ro
+    if [ "$key_operation" != validate ]; then key_access=rw; fi
+    # Only this short-lived helper can write the dedicated key volume. Its image
+    # seeds the empty mount with the non-root app UID and mode 0700.
+    docker volume create --label "com.donmario.checkout=$CHECKOUT_ID" \
+        --label "com.docker.compose.project=$PROJECT_ID" --label com.docker.compose.volume=jwt_keys \
+        --label com.donmario.environment=dev "${PROJECT_ID}_jwt_keys" >/dev/null
+    docker run --rm --read-only --cap-drop ALL --security-opt no-new-privileges:true \
+        --network none --entrypoint php \
+        --volume "${PROJECT_ID}_jwt_keys:/app/var/jwt:$key_access" \
+        --volume "$ROOT/docker/tools:/tools:ro,z" \
+        --volume "$ROOT/var/docker:/metadata:$key_access,z" \
+        "$DEV_IMAGE" /tools/jwt-keys.php "$key_operation" /app/var/jwt /metadata/jwt-initialized
+}
+
 setup() {
     port=${1:-8080}
     validate_port "$port"
@@ -94,6 +111,7 @@ setup() {
     load_settings
     RUNTIME_IMAGE=$DEV_IMAGE
     export RUNTIME_IMAGE
+    jwt_keys initialize
     compose run --rm --no-deps app composer install --no-interaction --prefer-dist
     compose up --detach --wait --wait-timeout 60 database
     compose run --rm --no-deps app php bin/console doctrine:migrations:migrate --no-interaction
@@ -106,10 +124,13 @@ command=${1:-help}
 if [ "$#" -gt 0 ]; then shift; fi
 case "$command" in
     help|-h|--help)
-        printf '%s\n' 'Usage: ./bin/dev {setup [port]|up|down|worker {start|stop|status}|console ...|composer ...|check|test|verify-setup}'
+        printf '%s\n' 'Usage: ./bin/dev {setup [port]|up|down|jwt-keys {initialize|validate|rotate|rotate-emergency|retire}|worker {start|stop|status}|console ...|composer ...|check|test|verify-setup}'
         printf '%s\n' 'Events default to sync://. For async: export EVENT_TRANSPORT_DSN=doctrine://default; ./bin/dev up; ./bin/dev worker start'
         printf '%s\n' 'Keep this runtime selection out of var/docker/local.env. up recreates app when its environment changes.'
         exit 0 ;;
+    jwt-keys)
+        test "$#" = 1 || fail 'Usage: ./bin/dev jwt-keys {initialize|validate|rotate|rotate-emergency|retire}'
+        case "$1" in initialize|validate|rotate|rotate-emergency|retire) ;; *) fail 'Unknown JWT key operation.' ;; esac ;;
     worker)
         test "$#" = 1 || fail 'Usage: ./bin/dev worker {start|stop|status}'
         case "$1" in start|stop|status) ;; *) fail 'Usage: ./bin/dev worker {start|stop|status}' ;; esac ;;
@@ -141,13 +162,24 @@ case "$command" in
     verify-setup)
         export ROOT
         exec sh "$ROOT/docker/tools/verify-setup.sh" ;;
-    up|down|worker|console|composer)
+    up|down|jwt-keys|worker|console|composer)
         load_settings
         RUNTIME_IMAGE=$DEV_IMAGE
         export RUNTIME_IMAGE
         case "$command" in
-            up) compose up --detach --wait --wait-timeout 60 app ;;
+            up) lock_setup; jwt_keys validate; compose up --detach --wait --wait-timeout 60 app ;;
             down) compose --profile worker down ;;
+            jwt-keys)
+                lock_setup
+                case "$1" in
+                    rotate|rotate-emergency|retire)
+                        # Explicit stop/switch/start: never switch beneath active
+                        # app/CLI processes or automatically restart after failure.
+                        active=$(docker ps --quiet --filter "volume=${PROJECT_ID}_jwt_keys")
+                        test -z "$active" || fail 'Stop app and key-using console containers before switching JWT keys: ./bin/dev down'
+                        ;;
+                esac
+                jwt_keys "$1" ;;
             worker)
                 case "$1" in
                     start)
@@ -156,7 +188,7 @@ case "$command" in
                     stop) compose --profile worker stop worker ;;
                     status) compose --profile worker ps --all worker ;;
                 esac ;;
-            console) compose run --rm --no-deps app php bin/console "$@" ;;
+            console) lock_setup; compose run --rm --no-deps app php bin/console "$@" ;;
             composer) lock_setup; compose run --rm --no-deps app composer "$@" ;;
         esac ;;
     *) fail "Unknown command: $command" ;;

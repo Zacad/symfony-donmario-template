@@ -22,7 +22,7 @@ Open **http://127.0.0.1:8080**. For a different port on first setup:
 ./bin/dev setup 0
 ```
 
-Setup installs `composer.lock`, generates local credentials once, starts PostgreSQL,
+Setup installs `composer.lock`, generates local credentials and JWT signing keys once, starts PostgreSQL,
 validates/applies pending module and Platform Messaging migrations, and waits for the application. It can
 be rerun without replacing credentials or resetting the database. A migration
 failure returns nonzero before the success message. Symfony was originally scaffolded using Symfony CLI;
@@ -35,6 +35,7 @@ ordinary checkout setup uses that existing application.
 | `./bin/dev setup [port]` | Build images, install dependencies, migrate and start |
 | `./bin/dev up` | Start/recreate the app with current environment and wait for readiness |
 | `./bin/dev down` | Stop services, retaining persistent volumes |
+| `./bin/dev jwt-keys initialize\|validate\|rotate\|rotate-emergency\|retire` | Initialize/check keys or explicitly switch trust with key users stopped |
 | `./bin/dev worker start\|stop\|status` | Manage the optional native async-event consumer |
 | `./bin/dev console about` | Run Symfony console commands |
 | `./bin/dev composer require package/name` | Manage dependencies inside the container |
@@ -137,6 +138,184 @@ exception details. Queue/database access is trusted: stored events are sensitive
 and malformed-message failure storage may retain original wire data. Restrict access
 to that storage and its backups; output redaction does not sanitize stored payloads.
 
+## Web authentication
+
+[Subtask 6](docs/tasks/06-web-authentication.md) includes the user's approved
+2026-09-13 correction: registration owns password-policy validation and hashing.
+Subtask 6, including the correction, is **VERIFIED, REVIEWED and USER ACCEPTED on
+2026-09-13.** Post-correction setup, check, HTTP/PostgreSQL tests and fresh-consumer
+verification passed. Check: **610 tests / 3942 assertions**; E2E: **137 tests / 1991
+assertions**; consumer embedded E2E: **137 tests / 1990 assertions**. The fresh
+independent correction reviewer approved with no concrete findings.
+Subtask 7 has approved implementation, including the `/api/me` QueryBus correction;
+it is verified, independently reviewed and user accepted on 2026-09-14. Subtask 6's
+results above are its accepted historical checkpoint.
+
+Provision an account after setup, then open `/login`:
+
+```sh
+./bin/dev console app:account:provision person@example.com
+```
+
+The terminal prompts hide both password and confirmation and fail if hidden input
+is unavailable; there is no visible fallback. Automation can pipe private input to
+`./bin/dev console app:account:provision person@example.com --password-stdin --no-interaction`.
+Stdin is bounded and removes only one optional terminal LF/CRLF. Keep passwords out
+of command arguments, environment variables, URL queries and logs.
+The CLI handles secure input, confirmation, transport framing and fixed errors;
+it dispatches raw email/password without business validation or a hasher.
+
+- Email is ASCII, trimmed of outer ASCII whitespace, lowercased and at most 254 bytes.
+  Passwords require at least 15 Unicode characters and at most 4096 bytes of valid
+  UTF-8; spaces are preserved, NUL and line breaks rejected.
+- Native Symfony form login uses CSRF and throttling; `/account` requires full
+  authentication. Native logout is **POST `/logout` with CSRF**. Invalid login CSRF
+  preserves an existing authenticated session; a late password-migration failure
+  explicitly clears authentication. Successful login rotates the session.
+- Provisioning and hash upgrades write through synchronous command-bus commands.
+  `RegisterAccountCommand(email, password)` carries plaintext in memory; its handler
+  normalizes email, validates `PasswordPolicy`, hashes through the Domain
+  `PasswordHasher` port and adds the Account. `SymfonyPasswordHasher` delegates only
+  to the native hasher. Registration validation, hashing and persistence run **inside
+  the existing command transaction**. Native Symfony computes password upgrades
+  before dispatching the separate hash-only `UpgradePasswordHashCommand`; its
+  transaction uses compare-and-swap (CAS) to prevent stale overwrites.
+  Native login/session refresh reads module-local Domain credentials through the
+  provider as an explicit exception; there is no `LoginCommand`. Domain has no
+  Symfony Security dependency. Sessions store only a password-hash fingerprint,
+  never the reusable hash or plaintext password.
+- Plaintext is not persisted, queued or logged, but the public readonly registration
+  command, Messenger envelope and validation-exception objects can retain it in
+  memory. Unsetting a CLI local does not guarantee erasure. Do not dump these objects;
+  there is no public credential query, result or event.
+- Browser-session cookies are `dm_<PROJECT_ID>_<env>`, host-only, path `/`, HttpOnly,
+  SameSite=Lax and Secure=auto. Files live in `var/sessions/<env>` outside cache.
+  Native session GC is cleanup, **not a hard idle or absolute TTL**.
+- Dedicated native limiter storage/locks live in `var/security/<env>`, with stable
+  secret-based keys: **5 failures/minute per normalized identifier/IP** and
+  **25/IP/5 minutes**. This single-host baseline survives cache rebuilds; native
+  filesystem I/O is not guaranteed fail-closed and concurrent attempts can race.
+  Lock files accumulate; do not unlink them while authentication processes are active.
+- Caddy limits authentication POST bodies to **16 KiB** (413 when oversized),
+  requires Content-Length framing (411 otherwise), and rejects external
+  `/index.php` front-controller aliases with 404.
+
+The web firewall excludes `/api`. See [the architecture](docs/architecture.md#web-authentication-subtask-6)
+for the exact provider/principal exceptions and security/performance limits.
+
+## JWT API authentication
+
+[Subtask 7](docs/tasks/07-jwt-authentication.md) is **IMPLEMENTED, VERIFIED, REVIEWED
+and USER ACCEPTED on 2026-09-14**, following the user's “i accept, proceed”
+implementation approval, including the identity-query correction. Final setup,
+full checks, HTTP/PostgreSQL E2E and fresh-consumer verification passed. Both fresh
+independent reviewers approved after inspecting code/evidence; verification and
+reviews completed on 2026-09-13. Next fresh session: **Subtask 8 — Authorizing:
+model/management DISCOVERY/DESIGN ONLY**, with a bounded design, acceptance criteria
+and explicit security/performance review before implementation approval.
+LexikJWTAuthenticationBundle **3.2.0**, Lcobucci JWT **5.6.0** and API Platform Symfony
+**4.3.19** are installed. Business APIs and Authorizing are later subtasks.
+
+Provision an account using the hidden-input command above. A same-origin client sends
+these contracts over HTTPS outside loopback development:
+
+| Route | Request and response |
+| --- | --- |
+| POST `/api/login` | `Content-Type: application/json`, framed body containing exactly string `email` and `password` fields. Success: `{"access_token":"<JWT>","token_type":"Bearer","expires_in":900}`. |
+| GET `/api/me` | `Authorization: Bearer <JWT>`. Success: `{"id":"<account UUID>","email":"<current canonical email>"}`. |
+| GET `/api/docs.json` | Public JSON OpenAPI contract for login and identity; this exact documentation path has `security: false`. |
+
+The documentation route remains public even when an invalid bearer header is sent.
+
+The angle-bracket values describe response fields, not credentials to paste into a
+shell. Read credentials through private client input, send them only in the JSON body,
+and keep the returned token in client memory. Never put passwords/tokens in argv,
+environment variables, shell history, URLs or logs. There is no browser application
+shipped here: the SPA contract is same-origin, memory-only storage; reload or expiry
+requires login again. No persistent browser token storage or cross-origin setup is supplied.
+
+- Native Symfony `json_login` verifies credentials and completes password migration
+  before a fully authenticated thin controller asks Lexik to issue a token. There
+  is no early success handler, manual password authenticator or `LoginCommand`.
+- Login and bearer firewalls are stateless. API requests neither create/invalidate
+  web sessions nor accept web cookies as authentication. Tokens are accepted only
+  from the Authorization Bearer header: at most **8 KiB of token plus the 7-byte
+  `Bearer ` prefix**, bounded before parsing. Cookie, query and body token extraction
+  are disabled.
+- Login bodies are limited to **16 KiB**, with Content-Length required by Caddy.
+  Strict JSON shape/type validation and email normalization run before native login;
+  web/API attempts share the existing limiter and its documented single-host limits.
+  Errors are fixed and responses use no-store. Invalid input is 400, missing framing
+  411, oversized body 413, wrong content type 415, throttling 429, failed authentication
+  401 and operational authentication failure 503. Login supports POST only (405 otherwise).
+- Tokens use **RS256 / RSA 3072**, **900-second lifetime**, **zero clock skew** and
+  `typ: JWT`. The only payload claims are `sub`, `iss`, `aud`, `iat`, `nbf`, `exp`:
+  UUID subject, project/environment-specific issuer/audience, `nbf = iat` and exactly
+  `exp = iat + 900`. Signature and normalized claims are checked before account lookup.
+  Tokens contain no email, password-derived values or business permissions. Payloads
+  are readable, not encrypted.
+- Every valid bearer request performs a live indexed UUID account lookup. `/api/me`
+  then uses `QueryBus` → `Application/GetAccountIdentity/GetAccountIdentityQuery` →
+  handler → Domain `findIdentityById` → `GetAccountIdentityResult(id, email)` → UI
+  resource. This deliberate **second indexed read** returns current identity without
+  publishing credentials. Deleted accounts are denied (401); deletion between the
+  authentication read and identity query returns 404.
+- There is no refresh token, disabled-account state or per-token revocation store.
+  Password changes/rehashes and web logout do **not** revoke existing JWTs. Client
+  logout discards the token; a copied token remains replayable until expiry or removal
+  of its signing key from verification trust. Memory-only storage does not prevent active XSS.
+
+### JWT key operations
+
+Compose's dedicated **`jwt_keys`** volume (`PROJECT_ID_jwt_keys`) holds local,
+unencrypted PKCS8 signing PEM and matching public PEM, with **0700 directories /
+0600 files**, owned by the configured application UID. The app/console mount is
+read-only; the test runner mounts only its isolated test keys read-only. Workers
+have no key mount. No key is generated during image builds, cache compilation,
+ordinary requests or worker startup. The short-lived, network-disabled key helper
+is the writer.
+
+`./bin/dev setup` initializes once and validates/retains keys on reruns;
+`./bin/dev up` validates them before startup. `./bin/dev jwt-keys initialize` and
+`./bin/dev jwt-keys validate` expose those operations after settings/images exist.
+Independent **`var/docker/jwt-initialized`** metadata matches the volume's `.identity`
+and detects loss/replacement of initialized keys. Back up both with local settings
+and valuable data; clean consumer exports exclude them and generate independent keys.
+
+The helper writes a complete generation, atomically switches the `current` symlink,
+then validates the published state. Published `active`, `previous` and `verification.json` paths follow
+that generation. Lexik's native key-loader service receives its additional-public-key
+array lazily from `/app/var/jwt/verification.json`; rotation does not rewrite config
+or require build-time keys. Issuer is `urn:donmario:<APP_INSTANCE_ID>:<env>` and audience
+adds `:api`; Compose derives APP_INSTANCE_ID from PROJECT_ID. Keep project identity,
+APP_SECRET and keys consistent; development, test and consumers have separate namespaces.
+
+For planned rotation, record when old-key issuance stopped and your retirement deadline:
+
+```sh
+./bin/dev down
+./bin/dev jwt-keys rotate
+./bin/dev up
+# Before the recorded deadline, stop and remove previous-key trust:
+./bin/dev down
+./bin/dev jwt-keys retire
+./bin/dev up
+```
+
+All key-using app/console containers must be stopped for `rotate`, `rotate-emergency`
+and `retire`; the wrapper refuses these operations while any running container mounts the
+volume. Restart an optional async worker separately using the event commands above.
+Planned rotation retains **one old public key only**, deletes obsolete signing
+generations, and refuses a second overlap rotation until retirement. **The operator
+must retire old trust within 900 seconds of stopping old-key issuance**; downtime
+counts. There is no automatic retirement timer. Earlier retirement invalidates any
+remaining old tokens.
+
+For compromise response, use `./bin/dev down`, then
+`./bin/dev jwt-keys rotate-emergency`, then `./bin/dev up`. This publishes a fresh
+pair with no old-key trust; old tokens are rejected after restart. Do not restart
+after a failed switch until retained key/metadata state has been validated or restored.
+
 ## Runtime and local configuration
 
 - Symfony **8.1**, PHP **8.5**, FrankenPHP classic mode, Twig/AssetMapper and PostgreSQL **18**.
@@ -184,10 +363,31 @@ for new applications must exclude local settings and runtime data.
   valuable. Setup never performs that deletion automatically.
 - **Stale setup lock:** after confirming no setup/Composer process is active,
   remove the empty `var/docker/setup.lock` directory and rerun.
+- **Missing/corrupt JWT keys with initialization evidence:** stop key users and
+  preserve the volume and `var/docker/jwt-initialized`. Restore the matching original
+  key volume and metadata from backup, then run `./bin/dev jwt-keys validate` before
+  `./bin/dev up`. Setup refuses silent regeneration. Do not delete the marker to
+  disguise key loss.
+- **Interrupted first JWT initialization:** preserve the partial volume and metadata
+  first. If a valid published generation and volume `.identity` exist but the external
+  marker was not written, `./bin/dev setup` validates the retained keys and completes
+  the marker. If publication or `.identity` is incomplete, setup refuses and preserves
+  the state: restore a matching complete backup. Only for a confirmed disposable,
+  never-completed first initialization with no valuable signing keys may an operator
+  explicitly remove this checkout's `PROJECT_ID_jwt_keys` volume and any partial
+  `var/docker/jwt-initialized` or `var/docker/jwt-initialized.pending-*` files, keeping local settings and database
+  intact, then rerun setup. Stop all key users/helpers first; setup never resets this
+  state automatically. After an interrupted rotation with valid retained state,
+  setup can validate the selected generation and finish pruning obsolete generations;
+  check which key is selected and honor the original retirement deadline.
 - **Changed host UID/GID:** stop this checkout, update `LOCAL_UID`/`LOCAL_GID` to
   your current IDs, and recreate only its disposable `PROJECT_runtime` cache/log
   volume before `setup`. Repair ownership of your source/vendor files using your
-  normal host administration process. PostgreSQL retains its own UID and data volume.
+  normal host administration process. Independently repair the retained `jwt_keys`
+  volume's directory/file ownership and local JWT metadata to the new application
+  UID/GID, preserving 0700 directories, 0600 files and generation symlinks; validate
+  after rebuilding with setup. Do not delete valuable signing keys as cache recovery.
+  PostgreSQL retains its own UID and data volume.
 - **Readiness failure:** inspect application/database container logs. The HTTP
   probe deliberately omits connection details. Dependency audits failing due to
   network errors are failed checks, not a clean audit result.
@@ -480,11 +680,21 @@ Logs and the temporary checkout
 are retained at the printed path; Docker resources are cleaned up. `TMPDIR` can
 select where this temporary checkout is created.
 
+Only the `verify-setup` consumer PTY/cookie helper additionally requires **host
+Python 3**; normal setup needs no host PHP, Composer or Python. Authentication
+verification includes actual hidden terminal input, native session/limiter storage,
+consumer cookie isolation and log canaries collected from each container generation
+after stopping it, including shutdown logs, then checked and redacted before
+recreation/removal. These are checks of the exercised paths and canaries, not a proof
+that arbitrary future payloads or logging integrations cannot leak.
+
 Run all three for runtime/bootstrap changes. For other changes, run the relevant
 checks and agreed E2E journey. See [Subtask 1](docs/tasks/01-runtime.md) and
 [Subtask 2](docs/tasks/02-module-persistence.md) for evidence.
 
 ## Architecture and delivery
+
+Subtasks **1, 2, 3a, 3b, 4, 5b, 6 (including the registration correction) and 7** are accepted.
 
 Read [the architecture](docs/architecture.md), [delivery roadmap](docs/roadmap.md)
 and [agent instructions](AGENTS.md). Subtask 1 establishes the executable runtime;
@@ -496,11 +706,41 @@ review and acceptance evidence are in the task record.
 [Subtask 4](docs/tasks/04-synchronous-events.md) and
 [Subtask 5](docs/tasks/05-durable-events.md) are historical records whose delivery
 designs are **superseded by [Subtask 5b](docs/tasks/05b-native-event-bus.md)**.
-The native implementation is verified and independently reviewed: **496 check-suite
+The accepted 5b checkpoint was verified and independently reviewed: **496 check-suite
 tests / 3226 assertions** and **88 PostgreSQL E2E tests / 1270 assertions** passed,
 alongside fresh consumer verification. The user accepted 5b on 2026-09-13.
-Authentication, authorization and the reusable initializer retain their subsequent
-approval gates.
+Subtask 6, including the approved registration correction, is **VERIFIED, REVIEWED
+and USER ACCEPTED on 2026-09-13**. Post-correction `./bin/dev setup` passed with
+dependencies/migration unchanged and app/database healthy. `./bin/dev check` passed
+**610 tests / 3942 assertions**, Deptrac **1031 allowed / 0 violations / 0 uncovered**,
+at `var/test-runs/run-eTQK6EAr/`. `./bin/dev test` passed **137 tests / 1991 assertions**,
+all 21 PHPUnit phases, at `var/test-runs/run-xaiXVV3r/`. Fresh consumer verification
+passed in `/tmp/opencode/donmario-setup-fej1lSca/`, with embedded **137 tests / 1990
+assertions** at `application/var/test-runs/run-1pN3Ocj1/`. Fresh independent correction
+reviewer `ses_f64339484ffeQjNteclNnjAlvj` inspected code/evidence and **APPROVED** with
+no concrete findings; the earlier two approvals cover the unmodified native web-authentication scope.
+**Pre-correction historical evidence:** `check` **588 tests / 3738 assertions** at
+`var/test-runs/run-hsi0IoyH/`; PostgreSQL E2E **120 tests / 1744 assertions** at
+`var/test-runs/run-qeu9uWzb/`; consumer `/tmp/opencode/donmario-setup-RBWCh0mQ/`
+passed with embedded **120 tests / 1745 assertions**. Both earlier reviewer rechecks
+approved that snapshot; the correction's fresh approval is recorded above. [The task record](docs/tasks/06-web-authentication.md)
+owns exact evidence.
+
+**Subtask 7 final verification (2026-09-13):** `./bin/dev setup` passed retaining
+RSA3072 keys, with dependencies unchanged, migration current and app/database healthy.
+`./bin/dev check` passed **695 tests / 4385 assertions**, Deptrac **1246 allowed /
+0 violations / 0 uncovered**, at `var/test-runs/run-VU1J5W0M/`. `./bin/dev test`
+passed **201 tests / 4606 assertions**, all **38 PHPUnit phases**, at
+`var/test-runs/run-Dk8kGEH0/`. `TMPDIR=/tmp/opencode ./bin/dev verify-setup` passed in
+`/tmp/opencode/donmario-setup-tr7xoQb4/`, with embedded **201 tests / 4607 assertions**,
+all 38 phases, at `application/var/test-runs/run-KkpCT8uO/`. Fresh authentication
+reviewer `ses_f63a1e74affeszKsYM4RJDMnZS` and runtime reviewer
+`ses_f63a1e72bffePxCpnh11QTnL9Q` **APPROVED** after inspecting code/evidence; they did
+not rerun suites. [Task 7](docs/tasks/07-jwt-authentication.md) records exact coverage,
+review conclusions and local timing observations. **IMPLEMENTED, VERIFIED, REVIEWED
+and USER ACCEPTED on 2026-09-14.** Subtask 8 has not started; its discovery/design is
+reserved for the next fresh session. Authorization and the initializer retain their
+later approval gates.
 
 For dependency updates, use containerized Composer, review recipe/lock changes,
 refresh image digests and CLI archive hashes deliberately, then run the checks

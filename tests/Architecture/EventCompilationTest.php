@@ -29,7 +29,9 @@ final class EventCompilationTest extends TestCase
 
                     public function process(ContainerBuilder $container): void
                     {
-                        TestCase::assertSame([TaskCreatedEvent::class => 'event'], $container->findDefinition(EventPolicyMiddleware::class)->getArgument(0));
+                        $events = $container->findDefinition(EventPolicyMiddleware::class)->getArgument(0);
+                        TestCase::assertIsArray($events);
+                        TestCase::assertSame('event', $events[TaskCreatedEvent::class] ?? null);
                         $bus = $container->findDefinition(EventBus::class)->getArgument(0);
                         TestCase::assertInstanceOf(Reference::class, $bus);
                         TestCase::assertSame('application.event.bus', (string) $bus);

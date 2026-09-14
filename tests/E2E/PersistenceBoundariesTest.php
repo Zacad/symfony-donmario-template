@@ -13,6 +13,8 @@ use Doctrine\ORM\EntityManagerInterface;
 use PHPUnit\Framework\Attributes\DataProvider;
 use Symfony\Component\Console\Command\Command;
 use Symfony\Component\Console\Tester\CommandTester;
+use Symfony\Component\Filesystem\Filesystem;
+use Symfony\Component\Finder\Finder;
 
 final class PersistenceBoundariesTest extends DatabaseTestCase
 {
@@ -191,14 +193,34 @@ final class PersistenceBoundariesTest extends DatabaseTestCase
         $originalFilter = $configuration->getSchemaAssetsFilter();
         $hidden = static fn (): bool => false;
 
+        $filesystem = new Filesystem();
+        $inventory = new ModuleMap(sys_get_temp_dir().'/persistence-boundaries-'.bin2hex(random_bytes(12)));
         $connection->beginTransaction();
         try {
+            // Real metadata and synthetic probes need one physical inventory.
+            // Symlink individual files to merge shared module namespaces while
+            // preserving the guard's reflected source-path checks.
+            foreach ([new ModuleMap(\dirname(__DIR__, 2)), $fixture->moduleMap] as $modules) {
+                foreach ($modules->modules() as $module) {
+                    $filesystem->mkdir($inventory->path($module));
+                    $domain = $modules->path($module).'/Domain';
+                    if (!is_dir($domain)) {
+                        continue;
+                    }
+                    foreach (new Finder()->files()->in($domain)->name('*.php') as $file) {
+                        $target = $inventory->path($module).'/Domain/'.$file->getRelativePathname();
+                        self::assertFileDoesNotExist($target, 'Installed and synthetic entity sources must not overwrite each other.');
+                        $filesystem->mkdir(\dirname($target));
+                        $filesystem->symlink($file->getPathname(), $target);
+                    }
+                }
+            }
             $connection->executeStatement('CREATE TABLE public.task_tracking_boundary_probe (id integer PRIMARY KEY, foreign_id integer DEFAULT NULL)');
             $connection->executeStatement('CREATE TABLE public.authorizing_boundary_probe (id integer PRIMARY KEY)');
             $entityManager = self::getContainer()->get('doctrine.orm.default_entity_manager');
             self::assertInstanceOf(EntityManagerInterface::class, $entityManager);
             $metadata = array_merge($entityManager->getMetadataFactory()->getAllMetadata(), $fixture->metadata());
-            $fixtureGuard = new PersistenceBoundaries($fixture->entityManager, $fixture->moduleMap);
+            $fixtureGuard = new PersistenceBoundaries($fixture->entityManager, $inventory);
             // Prove these are known, compatible tables before introducing the raw FK.
             $fixtureGuard->assertDatabase($metadata);
 
@@ -213,6 +235,7 @@ final class PersistenceBoundariesTest extends DatabaseTestCase
             $configuration->setSchemaAssetsFilter($originalFilter);
             $connection->rollBack();
             $fixture->unregister();
+            $filesystem->remove($inventory->projectDir);
         }
 
         self::assertFalse($connection->isTransactionActive());

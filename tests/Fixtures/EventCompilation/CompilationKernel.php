@@ -56,7 +56,12 @@ final class CompilationKernel extends Kernel
     {
         $filesystem = new Filesystem();
         $filesystem->mkdir($this->directory.'/src/Module');
-        $filesystem->symlink($this->getProjectDir().'/src/Module/TaskTracking', $this->directory.'/src/Module/TaskTracking');
+        // The real kernel imports every installed module's services. Its message
+        // inventory must cover those modules alongside our synthetic listeners.
+        $modules = new ModuleMap($this->getProjectDir());
+        foreach ($modules->modules() as $module) {
+            $filesystem->symlink($modules->path($module), $this->directory.'/src/Module/'.$module);
+        }
         if ('zero' === $this->scenario) {
             return;
         }

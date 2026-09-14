@@ -6,6 +6,7 @@ composer audit
 php bin/console lint:yaml config --parse-tags
 php bin/console lint:yaml src/Module --parse-tags
 php bin/console lint:twig templates
+php bin/console lint:twig src/Module
 php bin/console lint:container
 php tools/architecture.php
 php vendor/bin/deptrac analyse --no-cache --report-uncovered --fail-on-uncovered

@@ -25,7 +25,8 @@ COPY --from=composer /usr/bin/composer /usr/local/bin/composer
 RUN test "$APP_UID" -gt 0 && test "$APP_GID" -gt 0 \
     && (getent group "$APP_GID" || groupadd --gid "$APP_GID" app) \
     && (getent passwd "$APP_UID" || useradd --no-log-init --uid "$APP_UID" --gid "$APP_GID" --home-dir /home/app --shell /bin/sh app) \
-    && mkdir -p /app/var /home/app /config/caddy /data/caddy \
+    && mkdir -p /app/var/jwt /home/app /config/caddy /data/caddy \
+    && chmod 700 /app/var/jwt \
     && chown -R "$APP_UID:$APP_GID" /app /home/app /config/caddy /data/caddy \
     && setcap -r /usr/local/bin/frankenphp
 
