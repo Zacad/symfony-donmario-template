@@ -1,0 +1,21 @@
+<?php
+
+declare(strict_types=1);
+
+namespace App\Module\CollectionChecking\Resources\migrations;
+
+use Doctrine\DBAL\Schema\Schema;
+use Doctrine\Migrations\AbstractMigration;
+
+final class Version20260914000100 extends AbstractMigration
+{
+    public function up(Schema $schema): void
+    {
+        $this->addSql('CREATE TABLE public.collection_checking_observation (label VARCHAR(160) NOT NULL PRIMARY KEY, transaction VARCHAR(32) NOT NULL)');
+    }
+
+    public function down(Schema $schema): void
+    {
+        $this->addSql('DROP TABLE public.collection_checking_observation');
+    }
+}

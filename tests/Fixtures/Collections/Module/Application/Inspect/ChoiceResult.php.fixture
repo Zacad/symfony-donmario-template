@@ -1,0 +1,10 @@
+<?php
+
+declare(strict_types=1);
+
+namespace App\Module\CollectionChecking\Application\Inspect;
+
+enum ChoiceResult: string
+{
+    case Ready = 'ready';
+}

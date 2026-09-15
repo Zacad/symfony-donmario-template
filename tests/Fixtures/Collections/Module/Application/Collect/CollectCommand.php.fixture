@@ -1,0 +1,16 @@
+<?php
+
+declare(strict_types=1);
+
+namespace App\Module\CollectionChecking\Application\Collect;
+
+final readonly class CollectCommand
+{
+    /**
+     * @param list<string> $labels
+     * @param list<ItemInput> $items
+     */
+    public function __construct(public string $label, public array $labels, public array $items, public ItemInput $nested, public string $mode = 'valid')
+    {
+    }
+}

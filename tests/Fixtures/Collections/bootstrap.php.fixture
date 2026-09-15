@@ -1,0 +1,16 @@
+<?php
+
+declare(strict_types=1);
+
+use App\Tests\Fixtures\Collections\CollectionsKernel;
+use Composer\Autoload\ClassLoader;
+
+require_once '__SOURCE_ROOT__/vendor/autoload.php';
+$loader = new ClassLoader();
+$loader->addPsr4('App\\Module\\', __DIR__.'/src/Module');
+$loader->register(true);
+
+$kernel = new CollectionsKernel(__DIR__);
+$kernel->boot();
+
+return $kernel;

@@ -1,0 +1,26 @@
+<?php
+
+declare(strict_types=1);
+
+namespace App\Module\CollectionChecking\Application\Inspect;
+
+use App\Module\CollectionChecking\Application\Collect\ItemInput;
+use App\Module\CollectionChecking\Application\Collect\ItemResult;
+use Symfony\Component\Uid\Uuid;
+
+final readonly class InspectResult
+{
+    /**
+     * @param list<string> $strings
+     * @param list<int> $integers
+     * @param list<float> $floats
+     * @param list<bool> $booleans
+     * @param list<Uuid> $ids
+     * @param list<\DateTimeImmutable> $dates
+     * @param list<ChoiceResult> $choices
+     * @param list<ItemResult> $items
+     */
+    public function __construct(public array $strings, public array $integers, public array $floats, public array $booleans, public array $ids, public array $dates, public array $choices, public array $items, public ItemInput $nested)
+    {
+    }
+}

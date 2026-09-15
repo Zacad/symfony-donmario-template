@@ -1,0 +1,13 @@
+<?php
+
+declare(strict_types=1);
+
+namespace App\Module\CollectionChecking\Application\Collect;
+
+final readonly class CollectResult
+{
+    /** @param list<ItemResult> $items */
+    public function __construct(public array $items)
+    {
+    }
+}

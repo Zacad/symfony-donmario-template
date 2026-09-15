@@ -1,0 +1,10 @@
+<?php
+
+declare(strict_types=1);
+
+namespace App\Module\CollectionChecking\Domain;
+
+interface ObservationRepository
+{
+    public function add(string $label): void;
+}

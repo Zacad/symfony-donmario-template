@@ -5,13 +5,24 @@ declare(strict_types=1);
 namespace App\Tests\Fixtures\Cqrs;
 
 use App\Module\Authorizing\Application\CreateTask\ForeignHandler;
+use App\Module\TaskTracking\Application\CreateTask\AcceptedDataHandler;
+use App\Module\TaskTracking\Application\CreateTask\ArrayHandler;
+use App\Module\TaskTracking\Application\CreateTask\CollectionCommandHandler;
+use App\Module\TaskTracking\Application\CreateTask\CollectionQueryHandler;
+use App\Module\TaskTracking\Application\CreateTask\CollectionUnionHandler;
 use App\Module\TaskTracking\Application\CreateTask\CreateTaskCommand;
 use App\Module\TaskTracking\Application\CreateTask\CreateTaskHandler;
 use App\Module\TaskTracking\Application\CreateTask\EntityHandler;
+use App\Module\TaskTracking\Application\CreateTask\InputHandler;
 use App\Module\TaskTracking\Application\CreateTask\UnionHandler;
+use App\Module\TaskTracking\Application\CreateTask\VoidHandler;
+use App\Module\TaskTracking\Application\CreateTask\WrappedCommandHandler;
+use App\Module\TaskTracking\Application\CreateTask\WrappedQueryHandler;
 use App\Module\TaskTracking\Application\GetTask\GetTaskHandler;
 use App\Platform\Messaging\CommandBus;
+use App\Platform\Messaging\CommandTransactionMiddleware;
 use App\Platform\Messaging\InvocationContext;
+use App\Platform\Messaging\ResultValidationMiddleware;
 use Symfony\Component\DependencyInjection\Argument\IteratorArgument;
 use Symfony\Component\DependencyInjection\Compiler\CompilerPassInterface;
 use Symfony\Component\DependencyInjection\ContainerBuilder;
@@ -85,13 +96,59 @@ final readonly class AlterCqrsPass implements CompilerPassInterface
                 break;
             case 'foreign':
             case 'entity-result':
+            case 'input-result':
+            case 'array-result':
+            case 'collection-command-result':
+            case 'collection-query-result':
+            case 'wrapped-command-result':
+            case 'wrapped-query-result':
+            case 'collection-union-result':
+            case 'accepted-data-result':
+            case 'void-result':
             case 'union':
                 $handler->setClass(match ($this->scenario) {
                     'foreign' => ForeignHandler::class,
                     'entity-result' => EntityHandler::class,
+                    'input-result' => InputHandler::class,
+                    'array-result' => ArrayHandler::class,
+                    'collection-command-result' => CollectionCommandHandler::class,
+                    'collection-query-result' => CollectionQueryHandler::class,
+                    'wrapped-command-result' => WrappedCommandHandler::class,
+                    'wrapped-query-result' => WrappedQueryHandler::class,
+                    'collection-union-result' => CollectionUnionHandler::class,
+                    'accepted-data-result' => AcceptedDataHandler::class,
+                    'void-result' => VoidHandler::class,
                     default => UnionHandler::class,
                 })->setArguments([]);
                 $handler->clearTag('messenger.message_handler')->addTag('messenger.message_handler', ['bus' => 'command.bus', 'handles' => CreateTaskCommand::class]);
+                break;
+            case 'missing-command-result-validation':
+            case 'missing-query-result-validation':
+            case 'result-before-transaction':
+            case 'result-before-input':
+            case 'result-after-handler':
+                $bus = 'missing-query-result-validation' === $this->scenario ? 'query' : 'command';
+                /** @var list<array{id: string}> $middleware */
+                $middleware = $container->getParameter($bus.'.bus.middleware');
+                $middleware = array_values(array_filter($middleware, static fn (array $item): bool => ResultValidationMiddleware::class !== $item['id']));
+                if (!str_starts_with($this->scenario, 'missing-')) {
+                    $before = match ($this->scenario) {
+                        'result-before-transaction' => CommandTransactionMiddleware::class,
+                        'result-before-input' => 'validation',
+                        default => null,
+                    };
+                    $position = count($middleware);
+                    foreach ($middleware as $index => $item) {
+                        if ($item['id'] === $before) {
+                            $position = $index;
+                        }
+                    }
+                    array_splice($middleware, $position, 0, [['id' => ResultValidationMiddleware::class, 'arguments' => []]]);
+                }
+                $container->setParameter($bus.'.bus.middleware', $middleware);
+                break;
+            case 'result-constructor':
+                $container->getDefinition(ResultValidationMiddleware::class)->addMethodCall('__construct', [new Reference('validator')]);
                 break;
             case 'missing-validation':
                 /** @var list<array{id: string}> $middleware */

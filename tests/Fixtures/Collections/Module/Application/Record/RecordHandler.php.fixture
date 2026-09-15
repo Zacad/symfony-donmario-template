@@ -1,0 +1,21 @@
+<?php
+
+declare(strict_types=1);
+
+namespace App\Module\CollectionChecking\Application\Record;
+
+use App\Module\CollectionChecking\Domain\ObservationRepository;
+use Symfony\Component\Messenger\Attribute\AsMessageHandler;
+
+#[AsMessageHandler(bus: 'command.bus')]
+final readonly class RecordHandler
+{
+    public function __construct(private ObservationRepository $observations)
+    {
+    }
+
+    public function __invoke(RecordCommand $command): void
+    {
+        $this->observations->add($command->label);
+    }
+}

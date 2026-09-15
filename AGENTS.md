@@ -2,14 +2,19 @@
 
 ## Start here
 
-**Latest accepted checkpoint:** [Subtask 7](docs/tasks/07-jwt-authentication.md) is
-**IMPLEMENTED, VERIFIED, REVIEWED and USER ACCEPTED on 2026-09-14**. Verification
-and fresh independent reviews completed on 2026-09-13; exact evidence is below.
-**Next fresh session: Subtask 8 — Authorizing: model/management DISCOVERY/DESIGN ONLY.**
-Present a bounded design, acceptance criteria and explicit security/performance review;
-obtain user approval before implementation. Subtask 8 has not started.
+**Latest accepted checkpoint: [Subtask 8a — Application DTO collections](docs/tasks/08-authorizing.md):
+IMPLEMENTED, VERIFIED, REVIEWED and USER ACCEPTED on 2026-09-15.** Final setup/check/E2E/
+consumer verification and fresh independent reviews completed on 2026-09-14. Both reviewers
+approved with no findings and did not run suites. Earlier fixture YAML/static issues
+are resolved; see [handoff evidence](docs/handoff.md#completed-8a-verification-and-review--2026-09-14).
+**8b Authorizing model/management is approved for implementation, not yet implemented.**
+On 2026-09-15, in response to the request to accept 8a and proceed to 8b, the user said
+exactly “commit, push and proceed”. This accepts 8a, authorizes commit/push of the
+verified 8a checkpoint only, and approves beginning 8b. Main owns the Git workflow
+and will begin 8b after that commit/push; future commits/pushes need explicit authorization.
+Main owns task 8's record; reconcile it with subsequent progress instructions.
 
-**Previous accepted checkpoint:** [Subtask 6](docs/tasks/06-web-authentication.md), including
+**Earlier accepted checkpoint:** [Subtask 6](docs/tasks/06-web-authentication.md), including
 the user's 2026-09-13 correction making registration responsible for password-policy
 validation and hashing, is implemented. That correction is approved, with no new
 design gate needed. **Subtask 6 including the correction is VERIFIED, REVIEWED and
@@ -36,9 +41,12 @@ assertions**, all 38 phases, `var/test-runs/run-Dk8kGEH0/`. Consumer
 all 38 phases, at `application/var/test-runs/run-KkpCT8uO/`. Fresh independent reviewers
 `ses_f63a1e74affeszKsYM4RJDMnZS` (authentication) and `ses_f63a1e72bffePxCpnh11QTnL9Q`
 (runtime) **APPROVED** after inspecting code/evidence; they did not rerun suites.
-See task 7 for exact findings/coverage and the acceptance quote. Continue with
-Subtask 8 discovery/design only in the next fresh session. Preserve intended
-uncommitted work; no commit/push authorization exists.
+See task 7 for exact findings/coverage and the acceptance quote. These are historical
+accepted results, not 8a evidence. 8a verification/review completed on 2026-09-14;
+user acceptance followed on 2026-09-15.
+The working tree was clean at existing `c29a3f9` before the new 8a implementation
+edits; earlier uncommitted authentication-work descriptions are historical. Preserve
+intended 8a work; the 2026-09-15 authorization covers commit/push of that verified checkpoint only.
 
 Use subagents and paralelize work when possible and not affect results. Treat using subagents as default way of work for providing faster results.
 
@@ -90,13 +98,13 @@ tool output, test artifacts, source control or image contexts.
 - Use PHP CS Fixer's `@Symfony` rules and PHPStan at the configured level.
 - Namespace business modules as `App\Module\<ResponsibilityEndingInIng>`.
 - Follow the module contract/data-ownership rules in `docs/architecture.md`.
-- Co-locate commands, queries, handlers, useful results and public events in `Application/<UseCase>`.
-  Public data uses descriptive `*Command`, `*Query`, `*Result`, `*Event` names at that exact
+- Co-locate commands, queries, handlers, useful results, nested inputs and public events in `Application/<UseCase>`.
+  Public data uses descriptive `*Command`, `*Query`, `*Result`, `*Input`, `*Event` names at that exact
   depth; handlers/helpers remain module-internal. DTOs are data, not services.
   Other modules use this public data API through buses. Domain cannot depend on
   Application DTOs or public events. Domain records internal `Domain/Event/*Event`;
   Application explicitly translates selected facts to public events. No current
-  `Contract` path. Public events cannot carry command/query/result DTOs or internals.
+  `Contract` path. Public events cannot carry command/query/result/input DTOs or internals.
   Concrete events directly extend their exact empty abstract readonly category in
   `Platform/Event`: `BaseEvent -> DomainEvent, ApplicationEvent, InfrastructureEvent`.
   No primitive state, behavior, event IDs or metadata; no broad Domain-to-Platform
@@ -119,6 +127,52 @@ tool output, test artifacts, source control or image contexts.
   adapters compose EntityManager and do not flush/commit. Enforce inward dependencies.
 - `Platform` contains narrowly scoped technical infrastructure, including the
   current health endpoints; it is not a shared business-model directory.
+
+## Application DTO collections (8a: user accepted 2026-09-15)
+
+- Input suffixes are reserved public non-service data at the exact use-case depth.
+  Keep `ContractTypes`, source/Deptrac, container exclusions and CQRS classification
+  aligned. Inputs cannot be dispatched or used as top-level handler results.
+  Collection outputs use named Result envelopes. Compilation rejects collection-bearing
+  Command/Query return types, including transitive DTO fields and union members.
+  Events retain their collection-free
+  payload and wire contracts; principal/API-resource exemptions remain exact.
+- Final readonly DTOs use public typed promoted properties and empty constructors.
+  Native nonnullable `array` requires constructor `@param list<T>`; optional promoted
+  `@var` must agree. Homogeneous non-null scalar/UUID/immutable-date/concrete CQRS/Input
+  DTO/backed data-enum items are allowed. Reject maps, nullable items, item unions,
+  untyped arrays, nested generic lists, aliases/templates and recursive collection-bearing
+  graphs. Named DTO nesting with independently bounded lists and `[]` defaults is allowed.
+- `tools/Architecture/CollectionDocTypes` and `CollectionContracts` parse source
+  PHPDoc, resolve namespaces/imports and check doc-only dependencies/cascade graphs
+  without executing application source. **phpstan/phpdoc-parser 2.3.5** is an explicit
+  direct development dependency; no package-version updates or runtime parser requirement.
+- `CollectionValidationMetadata`/`CollectionValidationKernel` compare contracts with
+  loaded native Default-group property metadata. `./bin/dev check` runs
+  `php tools/collection-validation.php`. Require exact native sibling `Type(list)`,
+  finite nonnegative integer `Count(max)`, `All` with explicit `NotNull` and matching
+  item `Type`, and property `Valid` for DTO items and ordinary DTO edges leading to
+  collections. Register YAML mappings explicitly and constrain item DTO fields.
+  Arbitrary equivalent wrappers, class cascades and group-sequence overrides are not
+  supported substitutes. README contains the native YAML/DTO example.
+- Native input validation precedes command transaction work. Exact
+  `Platform/Messaging/ResultValidationMiddleware` sits immediately before handling,
+  validates DTO output on unwind inside invocation/transaction scope and before
+  commit, and throws fixed internal `cqrs.result_validation: Handler returned invalid data.`
+  without output/violation payloads. Caught nested output failures invalidate the root.
+  Existing scalar/null/value/enum/void results retain their contracts.
+- Trust in-process constructors to supply ordinary owned lists. Readonly arrays are
+  shallow; references/mutable subclass state are not universally prevented. Bounds
+  limit accepted data, not all allocation/traversal; native `Valid` can traverse after
+  other failures. External adapters must bound bytes/items before DTO construction.
+  Keep mappings cheap/database-independent; do not claim universal traversal, deep
+  immutability, serialization or in-memory erasure guarantees.
+- Final setup/check/test/consumer verification, including actual PostgreSQL invalid-result
+  and caught-nested rollback/recovery, and both fresh independent implementation reviews
+  are complete. Final check and consumer E2E cover the final compiler-only return guard;
+  standalone E2E preceded it, with runtime unchanged. Do not repeat passing suites
+  merely to resume. 8a was user accepted on 2026-09-15; 8b implementation is approved
+  and main will begin after committing/pushing the verified 8a checkpoint.
 
 ## Web authentication boundaries
 
@@ -279,6 +333,8 @@ Historical [Subtask 4](docs/tasks/04-synchronous-events.md) and
 Subtask 5b**. Subtask 6 including its registration correction is verified, freshly
 independently reviewed and **USER ACCEPTED on 2026-09-13**. Subtask 7's approved
 implementation, including the identity-query correction, is **IMPLEMENTED, VERIFIED,
-REVIEWED and USER ACCEPTED on 2026-09-14**. Next fresh session: Subtask 8 — Authorizing:
-model/management discovery/design only, with a bounded design, acceptance criteria
-and explicit security/performance review before implementation approval.
+REVIEWED and USER ACCEPTED on 2026-09-14** and remains an accepted historical checkpoint.
+Latest accepted Subtask 8a is **IMPLEMENTED, VERIFIED, REVIEWED and USER ACCEPTED on 2026-09-15**.
+Final verification and both fresh independent implementation reviews completed on
+2026-09-14 with no findings. 8b is approved for implementation but not yet implemented;
+main will begin after the explicitly authorized commit/push of the verified 8a checkpoint.

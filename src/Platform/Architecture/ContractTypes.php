@@ -127,13 +127,13 @@ final class ContractTypes
     {
         return 'Contract' === ModuleMap::layer($class)
             || self::isEventPrimitive($class)
-            || ('Application' === ModuleMap::layer($class) && 1 === preg_match('/(?:Command|Query|Result|Event)$/D', $class))
+            || ('Application' === ModuleMap::layer($class) && 1 === preg_match('/(?:Command|Query|Result|Input|Event)$/D', $class))
             || (null !== ModuleMap::owner($class) && (str_contains($class, '\\Event\\') || str_ends_with($class, 'Event')));
     }
 
     public static function applicationPattern(?string $module = null): string
     {
-        return '~^'.self::modulePattern($module).'Application\\\\'.self::NAME.'\\\\'.self::NAME.'(?:Command|Query|Result)$~D';
+        return '~^'.self::modulePattern($module).'Application\\\\'.self::NAME.'\\\\'.self::NAME.'(?:Command|Query|Result|Input)$~D';
     }
 
     public static function eventPattern(?string $module = null): string

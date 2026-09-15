@@ -21,9 +21,18 @@ use Symfony\Component\Finder\Finder;
 /** Parses first-party source without loading application classes or booting a kernel. */
 final class SourceRules
 {
+    private ?CollectionContracts $collections = null;
+
+    /** Available after violations(); descriptors are usable only when source passes. */
+    public function collections(): CollectionContracts
+    {
+        return $this->collections ?? throw new \LogicException('Run source analysis before reading collection descriptors.');
+    }
+
     /** @return list<string> Diagnostics contain the rule, file, line and offending declaration. */
     public function violations(string $projectDir): array
     {
+        $this->collections = null;
         $errors = [];
         $map = new ModuleMap($projectDir);
         try {
@@ -42,10 +51,12 @@ final class SourceRules
         $finder = new NodeFinder();
         /** @var array<string, array{Stmt\ClassLike, string}> $classes */
         $classes = [];
+        $imports = [];
         foreach ((new Finder())->files()->in($projectDir.'/src')->name('*.php')->sortByName() as $file) {
             $path = 'src/'.$file->getRelativePathname();
             try {
                 $nodes = (new NodeTraverser(new NameResolver()))->traverse($parser->parse($file->getContents()) ?? []);
+                $imports = [...$imports, ...CollectionDocTypes::imports($nodes)];
             } catch (Error $error) {
                 $errors[] = 'source.parse: '.$path.': '.$error->getMessage();
                 continue;
@@ -92,7 +103,7 @@ final class SourceRules
                 }
                 if (ContractTypes::isDataCandidate($class) || ContractTypes::isDataCandidate($pathClass)) {
                     if (!ContractTypes::isPublic($class) && !ContractTypes::isAnyEventData($class) && !ContractTypes::isEventPrimitive($class)) {
-                        $errors[] = $this->diagnostic('contract.path', $path, $declaration, $class, 'data belongs in Application/<UseCase>/<Name>{Command,Query,Result,Event}, Domain/Event/<Name>Event or Infrastructure/Event/<Name>Event; Contract layouts are forbidden');
+                        $errors[] = $this->diagnostic('contract.path', $path, $declaration, $class, 'data belongs in Application/<UseCase>/<Name>{Command,Query,Result,Input,Event}, Domain/Event/<Name>Event or Infrastructure/Event/<Name>Event; Contract layouts are forbidden');
                     }
                 }
             }
@@ -105,6 +116,8 @@ final class SourceRules
                 $errors[] = 'event.primitive: '.$primitive.' is a required first-party event primitive.';
             }
         }
+        $this->collections = CollectionContracts::fromSource($classes, $imports);
+        $errors = [...$errors, ...$this->collections->violations];
         foreach ($classes as $class => [$declaration, $path]) {
             if (ContractTypes::isEventPrimitive($class)) {
                 $parent = 'App\\Platform\\Event\\BaseEvent' === $class ? null : 'App\\Platform\\Event\\BaseEvent';
@@ -265,11 +278,16 @@ final class SourceRules
                     || $parameter->byRef || $parameter->variadic || [] !== $parameter->hooks) {
                     $errors[] = $this->diagnostic('contract.property', $path, $parameter, $class, 'parameters must be promoted public data properties without references, variadics or hooks');
                 }
-                if (!$this->isDataType($parameter->type, $classes, $class)) {
-                    $errors[] = $this->diagnostic('contract.type', $path, $parameter, $class, 'expected scalar, declared public data, DateTimeImmutable or Symfony\\Component\\Uid\\Uuid; events may reference only public event data; collections and behavior-bearing types are forbidden');
+                $collection = $parameter->type instanceof Node\Identifier && 'array' === $parameter->type->name
+                    && $parameter->var instanceof Expr\Variable && is_string($parameter->var->name)
+                    && isset($this->collections()->lists[$class][$parameter->var->name]);
+                if (!$collection && !$this->isDataType($parameter->type, $classes, $class)) {
+                    $errors[] = $this->diagnostic('contract.type', $path, $parameter, $class, 'expected scalar, declared public data, DateTimeImmutable, Symfony\\Component\\Uid\\Uuid or an approved Application list<T>; events remain collection-free and behavior-bearing types are forbidden');
                 }
-                if (null !== $parameter->default && !$this->isLiteral($parameter->default)) {
-                    $errors[] = $this->diagnostic('contract.default', $path, $parameter, $class, 'defaults must be scalar/null literals, without calls, construction or constant dependencies');
+                if (null !== $parameter->default && ($collection
+                    ? (!$parameter->default instanceof Expr\Array_ || [] !== $parameter->default->items)
+                    : !$this->isLiteral($parameter->default))) {
+                    $errors[] = $this->diagnostic('contract.default', $path, $parameter, $class, 'defaults must be scalar/null literals or [] for an approved list, without calls, construction or constant dependencies');
                 }
             }
         }

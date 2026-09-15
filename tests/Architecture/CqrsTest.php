@@ -9,6 +9,7 @@ use App\Module\TaskTracking\Application\CreateTask\TaskCreatedEvent;
 use App\Module\TaskTracking\Application\GetTask\GetTaskQuery;
 use App\Platform\Messaging\CommandBus;
 use App\Platform\Messaging\QueryBus;
+use App\Tests\Fixtures\Collections\CollectionsFixture;
 use App\Tests\Fixtures\Cqrs\CompilationKernel;
 use Doctrine\DBAL\Connection;
 use Doctrine\Persistence\ManagerRegistry;
@@ -27,6 +28,24 @@ use Symfony\Component\Validator\Validator\ValidatorInterface;
 
 final class CqrsTest extends TestCase
 {
+    public function testDisposableCollectionModuleUsesRealCompiledBusesAndNativeValidation(): void
+    {
+        $fixture = new CollectionsFixture();
+        try {
+            $fixture->initialize();
+            self::assertSame([], $fixture->sourceViolations());
+            $process = $fixture->process(['offline.php']);
+            $process->run();
+            self::assertTrue($process->isSuccessful(), $process->getOutput().$process->getErrorOutput());
+            self::assertSame(['invalid_inputs' => 14, 'nonservices' => true, 'values' => true, 'query_recovered' => true], json_decode($process->getOutput(), true, flags: JSON_THROW_ON_ERROR));
+            $deptrac = $fixture->process([\dirname(__DIR__, 2).'/vendor/bin/deptrac', 'analyse', '--config-file='.$fixture->projectDir.'/deptrac.php', '--no-progress', '--report-uncovered', '--fail-on-uncovered']);
+            $deptrac->run();
+            self::assertTrue($deptrac->isSuccessful(), $deptrac->getOutput().$deptrac->getErrorOutput());
+        } finally {
+            $fixture->remove();
+        }
+    }
+
     /** @return iterable<string, array{string, string}> */
     public static function invalidWiring(): iterable
     {
@@ -38,8 +57,22 @@ final class CqrsTest extends TestCase
         yield 'transport handler' => ['transport', 'registration'];
         yield 'foreign handler' => ['foreign', 'handler'];
         yield 'entity result' => ['entity-result', 'signature'];
+        yield 'input result is not a top-level result' => ['input-result', 'signature'];
+        yield 'raw array result needs a named envelope' => ['array-result', 'signature'];
+        yield 'array-bearing Command is not a result envelope' => ['collection-command-result', 'signature'];
+        yield 'array-bearing Query is not a result envelope' => ['collection-query-result', 'signature'];
+        yield 'Command wrapping a collection Result still needs a Result name' => ['wrapped-command-result', 'signature'];
+        yield 'Query wrapping Input and nullable collection Result needs a Result name' => ['wrapped-query-result', 'signature'];
+        yield 'valid union members do not excuse a collection-bearing Command member' => ['collection-union-result', 'signature'];
         yield 'union argument' => ['union', 'signature'];
         yield 'missing validation middleware' => ['missing-validation', 'middleware'];
+        yield 'missing command result validation' => ['missing-command-result-validation', 'middleware'];
+        yield 'missing query result validation' => ['missing-query-result-validation', 'middleware'];
+        yield 'result validation outside transaction' => ['result-before-transaction', 'wiring'];
+        yield 'result validation before input' => ['result-before-input', 'wiring'];
+        yield 'result validation after terminal handler' => ['result-after-handler', 'wiring'];
+        yield 'result validation wrong validator' => ['result-validator', 'wiring'];
+        yield 'result middleware constructor reinitialization' => ['result-constructor', 'wiring'];
         yield 'miswired facade' => ['facade-bypass', 'wiring'];
         yield 'unshared invocation context' => ['unshared-context', 'wiring'];
         yield 'transaction must use the invocation context' => ['transaction-context', 'wiring'];
@@ -68,6 +101,16 @@ final class CqrsTest extends TestCase
             }
             self::fail('Expected CQRS compilation failure.');
         });
+    }
+
+    public function testCompilationPreservesNoncollectionReturnsAndNamedCollectionResults(): void
+    {
+        foreach (['accepted-data-result', 'void-result'] as $scenario) {
+            CompilationKernel::run($scenario, static function (ContainerBuilder $container): void {
+                $container->compile();
+                self::assertTrue($container->isCompiled());
+            });
+        }
     }
 
     public function testCompiledBusesRejectInvalidInputAndStampsWithoutDatabaseAccess(): void

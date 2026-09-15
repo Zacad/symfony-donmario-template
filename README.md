@@ -3,6 +3,16 @@
 A Docker-first foundation for building applications with AI-assisted development.
 Licensed under [MIT](LICENSE), copyright DonMario.
 
+**Latest accepted checkpoint:** [Subtask 8a — Application DTO collections](docs/tasks/08-authorizing.md)
+is **IMPLEMENTED, VERIFIED, REVIEWED and USER ACCEPTED on 2026-09-15**. Final setup,
+check, PostgreSQL E2E and consumer verification passed on 2026-09-14; both fresh independent
+implementation reviewers approved with no findings. Earlier fixture YAML and static
+issues are resolved; reviews completed on 2026-09-14. **8b Authorizing model/management
+is approved for implementation, not yet implemented**. The user's exact 2026-09-15
+“commit, push and proceed” accepts 8a, authorizes commit/push of the verified 8a
+checkpoint only, and approves beginning 8b. Main will begin 8b after that commit/push;
+future commits/pushes require explicit authorization.
+
 ## Quick start
 
 Requirements: Linux x86_64, a **local Unix-socket Docker daemon**, Docker Compose
@@ -210,9 +220,9 @@ and USER ACCEPTED on 2026-09-14**, following the user's “i accept, proceed”
 implementation approval, including the identity-query correction. Final setup,
 full checks, HTTP/PostgreSQL E2E and fresh-consumer verification passed. Both fresh
 independent reviewers approved after inspecting code/evidence; verification and
-reviews completed on 2026-09-13. Next fresh session: **Subtask 8 — Authorizing:
-model/management DISCOVERY/DESIGN ONLY**, with a bounded design, acceptance criteria
-and explicit security/performance review before implementation approval.
+reviews completed on 2026-09-13. Latest accepted is **Subtask 8a — Application DTO
+collections, IMPLEMENTED, VERIFIED, REVIEWED and USER ACCEPTED on 2026-09-15**;
+8b is approved for implementation and not yet implemented.
 LexikJWTAuthenticationBundle **3.2.0**, Lcobucci JWT **5.6.0** and API Platform Symfony
 **4.3.19** are installed. Business APIs and Authorizing are later subtasks.
 
@@ -429,11 +439,11 @@ TaskTracking/Application/GetTask/GetTaskResult.php
 ```
 
 Subtask 3b implements this example on the boundary rules established in 3a. The exact
-`Application/<UseCase>/<Name>{Command,Query,Result,Event}` types form the public data API;
+`Application/<UseCase>/<Name>{Command,Query,Result,Input,Event}` types form the public data API;
 neighboring handlers/helpers remain private module implementation. Domain is
 independent of Application DTOs and public events. Subtask 4 adds internal
 `Domain/Event/*Event` facts explicitly translated by Application to public events;
-public payloads cannot carry command/query/result DTOs or module internals. There is
+public event payloads cannot carry command/query/result/input DTOs or module internals. There is
 no current `Contract` directory. See [architecture](docs/architecture.md) for exact
 data restrictions and [Subtask 5b](docs/tasks/05b-native-event-bus.md) for the active
 native-event design and verification status.
@@ -465,8 +475,8 @@ exits 0. Native command-line syntax errors use Symfony Console's diagnostics.
 Responses use no-store; unexpected failures expose only a generic error.
 
 Application/UI adapters inject `App\Platform\Messaging\CommandBus` or `QueryBus`.
-The outer command validates, starts the default Doctrine transaction, runs its
-handler, flushes and commits before returning. Nested commands share that unit;
+The outer command validates input, starts the default Doctrine transaction, runs its
+handler, validates returned DTO data, then flushes and commits before returning. Nested commands share that unit;
 a nested failure prevents the outer commit even if caught. Independent operations
 reset ORM/context state. Queries never automatically flush, and cannot dispatch
 commands. Repositories continue to schedule persistence without flushing.
@@ -478,6 +488,104 @@ Compilation rejects missing/duplicate/wrong-bus handlers and invalid middleware
 wiring. Raw Messenger services are internal infrastructure, not module-facing APIs.
 The standard framework messages visible in `debug:messenger` are rejected by the
 application message policy; command/query helpers dispatch only their inventoried DTOs.
+
+### Application DTO collections (8a: user accepted 2026-09-15)
+
+Commands, queries, results and nested `*Input` data support homogeneous nonnullable
+native arrays declared with constructor `@param list<T>`. Input lives at the same exact use-case
+depth, is excluded from services, cannot be dispatched and cannot be a top-level
+handler result. Return collections inside a named `*Result` envelope; compilation
+rejects collection-bearing Command/Query return types, including transitive DTO
+fields and union members. Events retain
+their existing collection-free payload and wire contracts.
+
+For example, these are two separate files in an illustrative
+`Application/ImportItems/` use case, not an installed business feature:
+
+```php
+<?php
+
+declare(strict_types=1);
+
+// ImportItemsCommand.php
+namespace App\Module\TaskTracking\Application\ImportItems;
+
+final readonly class ImportItemsCommand
+{
+    /** @param list<ItemInput> $items */
+    public function __construct(public array $items = [])
+    {
+    }
+}
+```
+
+```php
+<?php
+
+declare(strict_types=1);
+
+// ItemInput.php — local to the same use case
+namespace App\Module\TaskTracking\Application\ImportItems;
+
+final readonly class ItemInput
+{
+    public function __construct(public string $title)
+    {
+    }
+}
+```
+
+Register the module's `Resources/config/validation.yaml` in
+`framework.validation.mapping.paths`, using native Symfony sibling constraints:
+
+```yaml
+App\Module\TaskTracking\Application\ImportItems\ImportItemsCommand:
+    properties:
+        items:
+            - Type: list
+            - Count: { max: 100 }
+            - All:
+                  constraints:
+                      - NotNull: ~
+                      - Type: App\Module\TaskTracking\Application\ImportItems\ItemInput
+            - Valid: ~
+
+App\Module\TaskTracking\Application\ImportItems\ItemInput:
+    properties:
+        title:
+            - NotBlank: ~
+            - Length: { max: 200 }
+```
+
+The structural audit supports these exact native **Default-group** forms, not arbitrary
+equivalent wrappers: property `Type(list)`, finite nonnegative integer `Count(max)`,
+`All` with explicit `NotNull` and the exact item `Type`, plus sibling property `Valid`
+for DTO items. Ordinary named DTO edges leading to collections also require `Valid`.
+Scalar, UUID, immutable-date, concrete CQRS/Input DTO and backed data-enum items are
+supported. Maps, nullable items, item unions, untyped arrays, nested generic lists,
+aliases/templates and recursive collection-bearing graphs are rejected. Named DTO
+nesting with separately bounded lists and the empty `[]` default are allowed; an
+optional promoted `@var` must agree with the constructor declaration.
+
+`tools/Architecture/CollectionDocTypes` and `CollectionContracts` parse source
+contracts; `CollectionValidationMetadata` and `CollectionValidationKernel` compare
+them with loaded native metadata. `./bin/dev check` runs the structural audit
+`php tools/collection-validation.php`. **phpstan/phpdoc-parser 2.3.5** is now an
+explicit direct development dependency, with no package-version updates; runtime
+validation needs no PHPDoc parser.
+
+Validation has two phases: native input validation before command transaction work,
+then `Platform/Messaging/ResultValidationMiddleware` validates returned DTOs before
+commit. Invalid output raises the fixed internal error
+`cqrs.result_validation: Handler returned invalid data.`, without violation/result
+payloads; caught nested output failures still invalidate the root transaction.
+Existing scalar/null/value/enum/void return contracts remain supported.
+
+Readonly arrays are shallow, and trusted in-process code must supply ordinary owned
+lists. Item limits bound accepted data, not all allocation or traversal: native
+`Valid` can traverse even after a count/type failure. This is not universal deep
+immutability or traversal proof. External adapters must bound bytes/items before
+DTO construction; validation mappings should remain cheap and database-independent.
 
 ### Publish and handle Application events
 
@@ -598,7 +706,7 @@ To add a module:
    autowired/autoconfigured defaults. Root configuration imports these files.
    Module configuration is YAML; PHP configuration is rejected by source checks.
     `Domain`, `Infrastructure/Event`, `Resources` and the exact Application use-case data patterns
-    (`Application/*/*Command.php`, `*Query.php`, `*Result.php`, `*Event.php`) are excluded from the
+    (`Application/*/*Command.php`, `*Query.php`, `*Result.php`, `*Input.php`, `*Event.php`) are excluded from the
     service prototype. Follow the full paths in TaskTracking's configuration;
     handlers, event listeners and `UI/Console/*Command` adapters remain services. Explicitly register
     any actual Domain services you introduce. Data cannot be registered as services.
@@ -663,7 +771,8 @@ wrapper orchestrates Docker; test containers have no Docker socket.
 redacted logs, exit statuses and phase timings under `var/test-runs/`. Their
 containers, volumes, networks and unique image tags are cleaned up. Failed runs
 retain private settings for investigation; do not publish an entire run directory.
-Check runs Deptrac, the source/contract validator, compiled service checks, offline
+Check runs Deptrac, the source/contract validator, the loaded collection-metadata audit
+(`php tools/collection-validation.php`), compiled service checks, offline
 Doctrine metadata/migration inventories and diagnostic-specific architecture tests.
 It requires no running database. Check also fault-tests migration failure propagation,
 Docker endpoint precedence, credential-refusal verification,
@@ -738,9 +847,18 @@ reviewer `ses_f63a1e74affeszKsYM4RJDMnZS` and runtime reviewer
 `ses_f63a1e72bffePxCpnh11QTnL9Q` **APPROVED** after inspecting code/evidence; they did
 not rerun suites. [Task 7](docs/tasks/07-jwt-authentication.md) records exact coverage,
 review conclusions and local timing observations. **IMPLEMENTED, VERIFIED, REVIEWED
-and USER ACCEPTED on 2026-09-14.** Subtask 8 has not started; its discovery/design is
-reserved for the next fresh session. Authorization and the initializer retain their
-later approval gates.
+and USER ACCEPTED on 2026-09-14.** This evidence is historical for Subtask 7.
+**Subtask 8a is IMPLEMENTED, VERIFIED, REVIEWED and USER ACCEPTED on 2026-09-15** under
+the approved [8a/8b design](docs/tasks/08-authorizing.md). Verification and reviews
+completed on 2026-09-14. Setup passed; check passed
+**822 tests / 4731 assertions**, standalone E2E **202 tests / 4673 assertions**, and
+consumer E2E **202 tests / 4676 assertions**. Both fresh independent implementation
+reviewers approved with no findings and did not run suites. See the
+[handoff evidence](docs/handoff.md#completed-8a-verification-and-review--2026-09-14)
+for exact paths and final-code coverage. Earlier fixture YAML/static issues are resolved.
+8b is approved for implementation, not yet implemented; main will begin after the
+authorized commit/push of the verified 8a checkpoint. Future commits/pushes need explicit authorization;
+the initializer retains its later approval gate.
 
 For dependency updates, use containerized Composer, review recipe/lock changes,
 refresh image digests and CLI archive hashes deliberately, then run the checks

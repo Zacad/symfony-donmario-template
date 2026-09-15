@@ -1,0 +1,42 @@
+<?php
+
+declare(strict_types=1);
+
+namespace App\Module\CollectionChecking\Application\Collect;
+
+use App\Module\CollectionChecking\Application\Inspect\InspectQuery;
+use App\Module\CollectionChecking\Domain\ObservationRepository;
+use App\Module\TaskTracking\Application\CreateTask\CreateTaskCommand;
+use App\Platform\Messaging\CommandBus;
+use App\Platform\Messaging\QueryBus;
+use Symfony\Component\Messenger\Attribute\AsMessageHandler;
+
+#[AsMessageHandler(bus: 'command.bus')]
+final readonly class CollectHandler
+{
+    public function __construct(private ObservationRepository $observations, private CommandBus $commands, private QueryBus $queries)
+    {
+    }
+
+    public function __invoke(CollectCommand $command): CollectResult
+    {
+        $this->observations->add($command->label);
+        $this->commands->dispatch(new CreateTaskCommand($command->label));
+        if (in_array($command->mode, ['caught-command', 'caught-query'], true)) {
+            try {
+                if ('caught-command' === $command->mode) {
+                    $this->commands->dispatch(new CollectCommand($command->label.'-nested', [], [], new ItemInput('nested'), 'invalid'));
+                } else {
+                    $this->queries->ask(new InspectQuery('invalid'));
+                }
+            } catch (\LogicException $failure) {
+                if (!str_starts_with($failure->getMessage(), 'cqrs.result_validation:')) {
+                    throw $failure;
+                }
+                $this->observations->add($command->label.'-caught');
+            }
+        }
+
+        return new CollectResult([new ItemResult('invalid' === $command->mode ? '' : $command->nested->name)]);
+    }
+}

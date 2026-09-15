@@ -1,0 +1,100 @@
+<?php
+
+declare(strict_types=1);
+
+use App\Module\CollectionChecking\Application\Collect\CollectCommand;
+use App\Module\CollectionChecking\Application\Collect\CollectResult;
+use App\Module\CollectionChecking\Application\Collect\ItemInput;
+use App\Module\CollectionChecking\Application\Collect\ItemResult;
+use App\Module\CollectionChecking\Application\Inspect\ChoiceResult;
+use App\Module\CollectionChecking\Application\Inspect\InspectQuery;
+use App\Module\CollectionChecking\Application\Inspect\InspectResult;
+use App\Module\CollectionChecking\Application\Values\ValuesQuery;
+use PHPUnit\Framework\Assert;
+use Symfony\Component\Messenger\Exception\ValidationFailedException;
+use Symfony\Component\Uid\Uuid;
+
+$kernel = require __DIR__.'/bootstrap.php';
+$container = $kernel->getContainer();
+$commands = $container->get('test.collections.commands');
+$queries = $container->get('test.collections.queries');
+$db = $container->get('doctrine.dbal.default_connection');
+// Discard setup-process evidence; everything below belongs to these dispatches.
+file_put_contents(__DIR__.'/transactions.txt', '');
+file_put_contents(__DIR__.'/observations.jsonl', '');
+
+foreach ([CollectCommand::class, CollectResult::class, ItemInput::class, ItemResult::class, InspectQuery::class, InspectResult::class, ChoiceResult::class, ValuesQuery::class] as $data) {
+    Assert::assertFalse($container->has($data), 'Public collection data must not be services.');
+}
+
+$valid = new ItemInput('valid');
+$cases = [
+    'sparse' => [[1 => 'label'], [], $valid, 'labels'],
+    'associative' => [['key' => 'label'], [], $valid, 'labels'],
+    'wrong-scalar' => [[42], [], $valid, 'labels[0]'],
+    'null' => [[null], [], $valid, 'labels[0]'],
+    'object' => [[new stdClass()], [], $valid, 'labels[0]'],
+    'oversize' => [array_fill(0, 4, 'label'), [], $valid, 'labels'],
+    'item-sparse' => [[], [1 => $valid], $valid, 'items'],
+    'item-associative' => [[], ['key' => $valid], $valid, 'items'],
+    'item-scalar' => [[], ['wrong'], $valid, 'items[0]'],
+    'item-null' => [[], [null], $valid, 'items[0]'],
+    'item-object' => [[], [new stdClass()], $valid, 'items[0]'],
+    'item-oversize' => [[], array_fill(0, 4, $valid), $valid, 'items'],
+    'item-field' => [[], [new ItemInput('')], $valid, 'items[0].name'],
+    'nested-field' => [[], [], new ItemInput(''), 'nested.name'],
+];
+foreach ($cases as $name => [$labels, $items, $nested, $path]) {
+    try {
+        $commands->dispatch(new CollectCommand('offline-'.$name, $labels, $items, $nested));
+        Assert::fail('Invalid collection input reached its handler: '.$name);
+    } catch (ValidationFailedException $failure) {
+        $paths = [];
+        foreach ($failure->getViolations() as $violation) {
+            $paths[] = $violation->getPropertyPath();
+        }
+        Assert::assertContains($path, $paths);
+    }
+    Assert::assertFalse($db->isConnected());
+    Assert::assertSame('', file_get_contents(__DIR__.'/transactions.txt'), 'Validation precedes native driver beginTransaction.');
+    Assert::assertSame('', file_get_contents(__DIR__.'/observations.jsonl'), 'Validation precedes handler SQL.');
+}
+foreach ([$commands->dispatch(...), $queries->ask(...)] as $dispatch) {
+    try {
+        $dispatch($valid);
+        Assert::fail('Input DTO must not be dispatchable.');
+    } catch (LogicException $failure) {
+        Assert::assertStringStartsWith('cqrs.message:', $failure->getMessage());
+    }
+}
+
+$result = $queries->ask(new InspectQuery());
+Assert::assertInstanceOf(InspectResult::class, $result);
+Assert::assertSame(['one', 'two'], $result->strings);
+Assert::assertSame([1, 2], $result->integers);
+Assert::assertSame([1.5, 2.5], $result->floats);
+Assert::assertSame([true, false], $result->booleans);
+Assert::assertInstanceOf(Uuid::class, $result->ids[0]);
+Assert::assertInstanceOf(DateTimeImmutable::class, $result->dates[0]);
+Assert::assertSame([ChoiceResult::Ready], $result->choices);
+Assert::assertSame('valid', $result->items[0]->name);
+Assert::assertSame('nested', $result->nested->name);
+
+foreach (['string' => 'value', 'int' => 42, 'float' => 1.5, 'bool' => false, 'null' => null, 'enum' => ChoiceResult::Ready] as $kind => $expected) {
+    Assert::assertSame($expected, $queries->ask(new ValuesQuery($kind)));
+}
+Assert::assertInstanceOf(Uuid::class, $queries->ask(new ValuesQuery('uuid')));
+Assert::assertInstanceOf(DateTimeImmutable::class, $queries->ask(new ValuesQuery('date')));
+
+try {
+    $queries->ask(new InspectQuery('invalid'));
+    Assert::fail('Invalid query output escaped result validation.');
+} catch (LogicException $failure) {
+    Assert::assertSame('cqrs.result_validation: Handler returned invalid data.', $failure->getMessage());
+    Assert::assertNull($failure->getPrevious());
+}
+Assert::assertInstanceOf(InspectResult::class, $queries->ask(new InspectQuery()));
+Assert::assertFalse($db->isConnected());
+Assert::assertSame('', file_get_contents(__DIR__.'/transactions.txt'));
+print json_encode(['invalid_inputs' => count($cases), 'nonservices' => true, 'values' => true, 'query_recovered' => true], JSON_THROW_ON_ERROR);
+$kernel->shutdown();

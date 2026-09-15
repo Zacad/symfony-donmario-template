@@ -9,6 +9,7 @@ use App\Platform\Messaging\CommandBus;
 use App\Platform\Messaging\CommandTransactionMiddleware;
 use App\Platform\Messaging\InvocationContext;
 use App\Platform\Messaging\QueryBus;
+use App\Platform\Messaging\ResultValidationMiddleware;
 use Psr\Container\ContainerInterface;
 use Symfony\Component\DependencyInjection\Compiler\CompilerPassInterface;
 use Symfony\Component\DependencyInjection\Compiler\PassConfig;
@@ -70,6 +71,10 @@ final class CompilationKernel extends Kernel
             public function process(ContainerBuilder $container): void
             {
                 switch ($this->scenario) {
+                    case 'result-validator':
+                        $container->register('test.other.validator', \Symfony\Component\Validator\Validator\RecursiveValidator::class);
+                        $container->getDefinition(ResultValidationMiddleware::class)->setArgument(0, new Reference('test.other.validator'));
+                        break;
                     case 'transaction-context':
                         $container->register('test.other.context', InvocationContext::class);
                         $container->getDefinition(CommandTransactionMiddleware::class)->setArgument(1, new Reference('test.other.context'));

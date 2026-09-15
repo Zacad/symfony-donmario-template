@@ -191,6 +191,7 @@ else
     step migration-tests compose run --rm --no-deps runner php vendor/bin/phpunit tests/E2E/MigrationsTest.php
     step persistence-boundaries compose run --rm --no-deps runner php vendor/bin/phpunit tests/E2E/PersistenceBoundariesTest.php
     step cqrs compose run --rm --no-deps runner php vendor/bin/phpunit tests/E2E/CqrsTest.php
+    step collections compose run --rm --no-deps runner php vendor/bin/phpunit tests/E2E/CollectionsTest.php
     step persistence-create compose run --rm --no-deps runner php vendor/bin/phpunit tests/E2E/PersistenceCreateTest.php
     step authenticating-provision compose run --rm --no-deps runner php vendor/bin/phpunit tests/E2E/AuthenticatingProvisionTest.php
     step authenticating-jwt compose run --rm --no-deps runner php vendor/bin/phpunit tests/E2E/AuthenticatingJwtTest.php

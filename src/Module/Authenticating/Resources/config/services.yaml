@@ -14,6 +14,7 @@ services:
             - '../../Application/*/*Command.php'
             - '../../Application/*/*Query.php'
             - '../../Application/*/*Result.php'
+            - '../../Application/*/*Input.php'
             - '../../Application/*/*Event.php'
             - '../../Domain/'
             - '../../Infrastructure/Event/'

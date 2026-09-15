@@ -1,0 +1,26 @@
+<?php
+
+declare(strict_types=1);
+
+namespace App\Module\CollectionChecking\Infrastructure\Persistence;
+
+use App\Module\CollectionChecking\Domain\ObservationRepository;
+use Doctrine\ORM\EntityManagerInterface;
+
+final readonly class DoctrineObservationRepository implements ObservationRepository
+{
+    public function __construct(private EntityManagerInterface $entityManager, private string $fixtureRoot)
+    {
+    }
+
+    public function add(string $label): void
+    {
+        $connection = $this->entityManager->getConnection();
+        $connection->executeStatement('INSERT INTO collection_checking_observation (label, transaction) VALUES (?, txid_current()::text)', [$label]);
+        file_put_contents($this->fixtureRoot.'/observations.jsonl', json_encode([
+            'label' => $label,
+            'local' => $connection->fetchOne('SELECT count(*) FROM collection_checking_observation WHERE label = ?', [$label]),
+            'transaction' => $connection->fetchOne('SELECT txid_current()::text'),
+        ], JSON_THROW_ON_ERROR)."\n", FILE_APPEND | LOCK_EX);
+    }
+}

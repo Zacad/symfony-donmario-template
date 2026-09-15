@@ -13,6 +13,7 @@ use App\Platform\Messaging\InvocationContext;
 use App\Platform\Messaging\InvocationMiddleware;
 use App\Platform\Messaging\MessagePolicyMiddleware;
 use App\Platform\Messaging\QueryBus;
+use App\Platform\Messaging\ResultValidationMiddleware;
 use Symfony\Component\DependencyInjection\Argument\IteratorArgument;
 use Symfony\Component\DependencyInjection\Argument\ServiceClosureArgument;
 use Symfony\Component\DependencyInjection\Compiler\CompilerPassInterface;
@@ -178,6 +179,9 @@ final readonly class CqrsPass implements CompilerPassInterface
             $this->assertReference($container, $transaction->getArgument(1), InvocationContext::class);
             $expected[] = CommandTransactionMiddleware::class;
         }
+        $resultValidation = $this->definition($container, ResultValidationMiddleware::class, ResultValidationMiddleware::class);
+        $this->assertReference($container, $resultValidation->getArgument(0), 'validator');
+        $expected[] = ResultValidationMiddleware::class;
         $expected[] = $bus.'.middleware.handle_message';
         $middleware = $busDefinition->getArgument(0);
         $values = $middleware instanceof IteratorArgument ? $middleware->getValues() : [];
@@ -186,7 +190,7 @@ final readonly class CqrsPass implements CompilerPassInterface
             array_shift($values);
         }
         if (count($expected) !== count($values)) {
-            $this->fail('middleware', $bus.' requires the synchronous scope/policy/validation/transaction/handling order.');
+            $this->fail('middleware', $bus.' requires the synchronous scope/policy/input-validation/transaction/result-validation/handling order.');
         }
         foreach ($expected as $index => $id) {
             $this->assertReference($container, $values[$index], $id);
@@ -427,8 +431,56 @@ final readonly class CqrsPass implements CompilerPassInterface
         }
         $name = $type->getName();
 
-        return ($allowVoid && 'void' === $name) || in_array($name, ['null', 'string', 'int', 'float', 'bool', 'true', 'false'], true)
-            || ContractTypes::isImmutable($name) || (ContractTypes::isPublic($name) && (class_exists($name) || enum_exists($name)));
+        if (($allowVoid && 'void' === $name) || in_array($name, ['null', 'string', 'int', 'float', 'bool', 'true', 'false'], true) || ContractTypes::isImmutable($name)) {
+            return true;
+        }
+        if (!ContractTypes::isPublic($name) || str_ends_with($name, 'Input') || (!class_exists($name) && !enum_exists($name))) {
+            return false;
+        }
+        if (enum_exists($name) || !in_array(ContractTypes::messageKind($name), ['command', 'query'], true)) {
+            return true;
+        }
+        $visited = [];
+
+        // Ordinary message-shaped results retain their existing contract. Once
+        // their public DTO graph contains an array, the output needs a Result name.
+        return !$this->containsArray($type, $visited);
+    }
+
+    /** @param array<class-string, true> $visited */
+    private function containsArray(?\ReflectionType $type, array &$visited): bool
+    {
+        if ($type instanceof \ReflectionUnionType || $type instanceof \ReflectionIntersectionType) {
+            foreach ($type->getTypes() as $member) {
+                if ($this->containsArray($member, $visited)) {
+                    return true;
+                }
+            }
+
+            return false;
+        }
+        if (!$type instanceof \ReflectionNamedType) {
+            return false;
+        }
+        $name = $type->getName();
+        if ('array' === $name) {
+            return true;
+        }
+        if (!ContractTypes::isPublic($name) || !class_exists($name)) {
+            return false;
+        }
+        $class = new \ReflectionClass($name);
+        if ($class->isEnum() || isset($visited[$class->name])) {
+            return false;
+        }
+        $visited[$class->name] = true;
+        foreach ($class->getProperties() as $property) {
+            if ($this->containsArray($property->getType(), $visited)) {
+                return true;
+            }
+        }
+
+        return false;
     }
 
     private function definition(ContainerBuilder $container, string $id, string $class): Definition

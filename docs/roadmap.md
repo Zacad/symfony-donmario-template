@@ -1,7 +1,7 @@
 # Approval-gated delivery
 
 General design and Subtasks **1, 2, 3a, 3b, 4, 5b, 6 (including the registration
-correction) and 7** have user acceptance. Historical
+correction), 7 and 8a** have user acceptance. Historical
 [Subtask 4](tasks/04-synchronous-events.md) and [Subtask 5](tasks/05-durable-events.md)
 delivery designs are **superseded by approved [Subtask 5b](tasks/05b-native-event-bus.md)**.
 Their records retain historical evidence; current behavior is documented in
@@ -15,10 +15,16 @@ the correction is VERIFIED, REVIEWED and USER ACCEPTED on 2026-09-13.**
 Post-correction setup/check/test, consumer verification and fresh independent review
 are complete. **Subtask 7 is IMPLEMENTED, VERIFIED, REVIEWED and USER ACCEPTED on
 2026-09-14**, including `/api/me` through QueryBus. Full verification and two fresh
-independent reviews passed on 2026-09-13. **Next fresh session: Subtask 8 — Authorizing:
-model/management DISCOVERY/DESIGN ONLY.** Present a bounded design, acceptance criteria
-and explicit security/performance review; obtain approval before implementation.
-Subtask 8 has not started. Reconcile the dated
+independent reviews passed on 2026-09-13. **Current Subtask 8a — Application DTO
+collections is IMPLEMENTED, VERIFIED, REVIEWED and USER ACCEPTED on 2026-09-15** under
+the approved [8a/8b design](tasks/08-authorizing.md). Final verification passed on 2026-09-14;
+both fresh independent implementation reviewers approved with no findings and did
+not run suites; reviews completed on 2026-09-14. Earlier fixture YAML/static issues are resolved.
+**8b model/management is approved for implementation, not yet implemented.**
+The user's exact 2026-09-15 “commit, push and proceed” accepts 8a, explicitly authorizes
+commit/push of the verified 8a checkpoint only, and approves beginning 8b. Main will
+begin 8b after that commit/push; future commits/pushes require explicit authorization.
+8a is the latest accepted checkpoint. Reconcile the dated
 [session handoff](handoff.md) with the active task record and subsequent instructions.
 Later subtasks require their own discovery, design and approval before edits.
 Split a subtask further if discovery reveals that its scope is too broad.
@@ -34,7 +40,8 @@ Split a subtask further if discovery reveals that its scope is too broad.
 | 5b | Native EventBus (accepted) | Immediate sync producer-transaction commit/rollback; global Doctrine switch; one-row atomic enqueue; current handlers, native retries/partial success, idempotency, worker crash/outage recovery and consumer isolation |
 | 6 | [Authenticating: web](tasks/06-web-authentication.md) (including correction: verified, reviewed and user accepted 2026-09-13) | Hidden CLI/stdin provisioning, registration-owned password-policy validation/hashing, native login/refresh and POST/CSRF logout, hash-only CAS upgrade commands, sessions/throttling, outage/recovery and consumer isolation |
 | 7 | [Authenticating: JWT](tasks/07-jwt-authentication.md) (implemented, verified, reviewed and user accepted 2026-09-14) | Native JSON issuance, QueryBus-backed API Platform identity, stateless isolation, exact JWT lifecycle, key setup/rotation/recovery and negative cases |
-| 8 | Authorizing: model/management (next fresh session: discovery/design only) | Roles, direct scoped grants and permission decisions |
+| 8a | [Application DTO collections](tasks/08-authorizing.md) (implemented, verified, reviewed and user accepted 2026-09-15) | Typed CQRS/Input lists, native metadata audit, input rejection before transaction work and invalid-result rollback before commit, including caught nested failures |
+| 8b | [Authorizing: model/management](tasks/08-authorizing.md) (approved for implementation 2026-09-15; not yet implemented) | Global/resource-scoped roles and direct grants, atomic batch management, bounded permission decisions and keyset listing through trusted operator CLI |
 | 9 | Authorization enforcement | Entry-point enforcement, revocation and restricted administration |
 | 10 | TaskTracking use cases/CLI | Create/list/complete, ownership and invariants |
 | 11 | TaskTracking events | Completion activity through CQRS in both delivery modes |
@@ -99,7 +106,37 @@ reviewer `ses_f63a1e74affeszKsYM4RJDMnZS` and runtime reviewer
 `ses_f63a1e72bffePxCpnh11QTnL9Q` **APPROVED** after inspecting code/evidence; they did
 not rerun suites. Verification/reviews completed on 2026-09-13; task 7 records exact
 conclusions and **user acceptance on 2026-09-14**.
-Authorizing and business API adapters retain their later approval gates.
+These are accepted Subtask 7 results, not 8a verification. Authorizing 8b is approved
+for implementation and not yet implemented; business API adapters retain their later gate.
+
+Subtask 8a adds exact use-case-local `*Input` public non-service data (neither
+dispatchable nor a top-level result), native `array` plus constructor `@param list<T>`,
+and collection Result envelopes. Compilation rejects collection-bearing Command/Query
+return types through transitive DTO fields and union members too.
+`tools/Architecture/Collection*` supplies source
+contracts and loaded native Default-group metadata auditing;
+`php tools/collection-validation.php` runs through `./bin/dev check`.
+**phpstan/phpdoc-parser 2.3.5** is an explicit direct development dependency, with no
+package-version updates or runtime parser requirement. Supported sibling native
+constraints are `Type(list)`, finite `Count(max)`, `All` with explicit `NotNull` and
+matching item `Type`, and property `Valid` for DTO items/intermediate collection
+wrappers, not arbitrary equivalent constraint wrappers. Homogeneous nonnullable
+items and named DTO nesting with `[]` defaults are allowed; maps, item unions,
+nested generic lists and recursive collection-bearing graphs are rejected.
+`ResultValidationMiddleware` validates output inside invocation/command transaction
+scope before commit; native input validation remains before transaction work.
+Invalid output uses a fixed internal failure and caught nested failures invalidate
+the root. Events retain their existing contracts. Trusted shallow readonly data and
+per-use-case limits are not universal traversal/deep-immutability guarantees.
+
+8a's final setup/check/E2E/consumer verification and fresh independent implementation
+reviews completed on **2026-09-14**; **8a was USER ACCEPTED on 2026-09-15**. The final check and full
+consumer run cover the final code after compiler-only return-guard tightening;
+standalone E2E preceded that change, with runtime unchanged. See the
+[task record](tasks/08-authorizing.md) and
+[handoff evidence](handoff.md#completed-8a-verification-and-review--2026-09-14).
+8b implementation is approved and main will begin after the authorized 8a commit/push.
+It requires its own complete evidence, review and acceptance checkpoint.
 
 **Subtask 6 final post-correction evidence:** `./bin/dev setup` passed with dependencies/migration
 unchanged and app/database healthy. `./bin/dev check` passed **610 tests / 3942 assertions**,

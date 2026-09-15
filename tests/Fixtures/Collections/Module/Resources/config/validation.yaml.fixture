@@ -1,0 +1,109 @@
+App\Module\CollectionChecking\Application\Collect\CollectCommand:
+    properties:
+        label:
+            - NotBlank: ~
+            - Length: { max: 120 }
+        labels:
+            - Type: list
+            - Count: { max: 3 }
+            - All:
+                constraints:
+                    - NotNull: ~
+                    - Type: string
+        items:
+            - Type: list
+            - Count: { max: 3 }
+            - All:
+                constraints:
+                    - NotNull: ~
+                    - Type: App\Module\CollectionChecking\Application\Collect\ItemInput
+            - Valid: ~
+        nested:
+            - Valid: ~
+        mode:
+            - Choice: { choices: [valid, invalid, caught-command, caught-query] }
+
+App\Module\CollectionChecking\Application\Collect\ItemInput:
+    properties:
+        name:
+            - NotBlank: ~
+            - Length: { max: 40 }
+
+App\Module\CollectionChecking\Application\Collect\ItemResult:
+    properties:
+        name:
+            - NotBlank: ~
+            - Length: { max: 40 }
+
+App\Module\CollectionChecking\Application\Collect\CollectResult:
+    properties:
+        items:
+            - Type: list
+            - Count: { max: 3 }
+            - All:
+                constraints:
+                    - NotNull: ~
+                    - Type: App\Module\CollectionChecking\Application\Collect\ItemResult
+            - Valid: ~
+
+App\Module\CollectionChecking\Application\Inspect\InspectResult:
+    properties:
+        strings:
+            - Type: list
+            - Count: { max: 3 }
+            - All:
+                constraints:
+                    - NotNull: ~
+                    - Type: string
+        integers:
+            - Type: list
+            - Count: { max: 3 }
+            - All:
+                constraints:
+                    - NotNull: ~
+                    - Type: int
+        floats:
+            - Type: list
+            - Count: { max: 3 }
+            - All:
+                constraints:
+                    - NotNull: ~
+                    - Type: float
+        booleans:
+            - Type: list
+            - Count: { max: 3 }
+            - All:
+                constraints:
+                    - NotNull: ~
+                    - Type: bool
+        ids:
+            - Type: list
+            - Count: { max: 3 }
+            - All:
+                constraints:
+                    - NotNull: ~
+                    - Type: Symfony\Component\Uid\Uuid
+        dates:
+            - Type: list
+            - Count: { max: 3 }
+            - All:
+                constraints:
+                    - NotNull: ~
+                    - Type: DateTimeImmutable
+        choices:
+            - Type: list
+            - Count: { max: 3 }
+            - All:
+                constraints:
+                    - NotNull: ~
+                    - Type: App\Module\CollectionChecking\Application\Inspect\ChoiceResult
+        items:
+            - Type: list
+            - Count: { max: 3 }
+            - All:
+                constraints:
+                    - NotNull: ~
+                    - Type: App\Module\CollectionChecking\Application\Collect\ItemResult
+            - Valid: ~
+        nested:
+            - Valid: ~

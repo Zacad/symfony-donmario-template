@@ -1,10 +1,27 @@
-# Session handoff — JWT accepted; next fresh session Authorizing discovery/design
+# Session handoff — Subtask 8a user accepted; 8b approved for implementation
 
-Date: **2026-09-14**
+Date: **2026-09-15**
 
 Repository: `/var/home/adam/Projects/symfony-donmario-template`
 
 ## Status and next gate
+
+**Current [Subtask 8a — Application DTO collections](tasks/08-authorizing.md) is
+IMPLEMENTED, VERIFIED, REVIEWED and USER ACCEPTED on 2026-09-15.** The user approved
+“proceed”, followed by “continue”, for the split 8a/8b design. Final setup, check,
+actual PostgreSQL E2E and fresh-consumer verification passed. Both fresh independent
+implementation reviewers approved with no findings and did not run suites.
+Earlier fixture YAML/static issues are resolved. Verification and reviews completed
+on **2026-09-14**; exact 8a evidence is below.
+**8b Authorizing model/management is approved for implementation, not yet implemented.**
+On **2026-09-15**, responding to the request to accept 8a and proceed to 8b, the user said exactly:
+
+> commit, push and proceed
+
+This accepts 8a, explicitly authorizes commit/push of the verified 8a checkpoint only,
+and approves beginning 8b. Main owns task 8's record and the Git workflow, and will
+begin 8b after that commit/push. Future commits/pushes require explicit authorization.
+8a is the latest accepted checkpoint; Subtask 7's accepted evidence below is historical.
 
 **Accepted Subtask 6 — Authenticating web includes the user's approved 2026-09-13
 correction: registration owns password-policy validation and hashing. Subtask 6
@@ -27,9 +44,9 @@ below and in its task record. On 2026-09-14 the user accepted with the exact mes
 
 > i accept, we will work on next subtask in fresh session
 
-**Next fresh session: Subtask 8 — Authorizing: model/management DISCOVERY/DESIGN
-ONLY.** Present a bounded design, acceptance criteria and explicit security/performance
-review; obtain user approval before implementation. Subtask 8 has not started.
+The accepted JWT checkpoint has since been followed by the approved 8a/8b design
+and completed 8a implementation, verification and fresh independent review on 2026-09-14,
+then user acceptance and approval to begin 8b on 2026-09-15.
 
 Subtask 5b remains accepted: actual container/PostgreSQL verification and independent
 reviews completed, and the user accepted it on 2026-09-13 with “i accept” and requested
@@ -43,7 +60,9 @@ as historical evidence, not current operating instructions.
 ## Read first
 
 1. `AGENTS.md`, `README.md`, `docs/architecture.md`, `docs/roadmap.md`.
-2. `docs/tasks/07-jwt-authentication.md` — accepted design, verification/review evidence
+2. `docs/tasks/08-authorizing.md` — approved 8a/8b design and main-owned active task record;
+   reconcile its progress with subsequent user/main updates.
+   `docs/tasks/07-jwt-authentication.md` — accepted design, verification/review evidence
    and user acceptance recorded on 2026-09-14.
    `docs/tasks/06-web-authentication.md` — approved brief/correction, implementation,
    current verification status and pre-correction historical evidence/reviews;
@@ -51,11 +70,87 @@ as historical evidence, not current operating instructions.
    `docs/tasks/05b-native-event-bus.md` retains the accepted event checkpoint.
 3. Composer/Flex manifests and locks; inspect current Git status before editing.
 
-The working tree contains intended **uncommitted** Subtask 6 and Subtask 7 implementation,
-tooling, tests and documentation, including untracked additions. It is not a clean checkpoint.
-Inspect `git status` before editing and preserve this work. No commit/push was
-requested in this session; the historical 5b request is not current authorization.
+The working tree was **clean at the start of 8a implementation**, at existing commit
+`c29a3f9`. The earlier uncommitted Subtask 6/7 handoff description is historical.
+Preserve the new intended 8a implementation, tooling, tests and documentation edits.
+Inspect current changes before editing. The user's 2026-09-15 request explicitly
+authorizes main to commit/push the verified 8a checkpoint only, then begin approved 8b
+implementation. It does not authorize future commits/pushes.
 Preserve the instruction to use subagents for independent work.
+
+## Current 8a implementation
+
+- Exact `Application/<UseCase>/<Name>Input` joins Command/Query/Result public data
+  classification in source/Deptrac, container exclusions and CQRS rules. Inputs are
+  non-service nested data, never dispatched or returned as top-level handler results.
+  Collections use native `array`, constructor `@param list<T>`, final readonly DTOs,
+  public promoted typed properties and empty constructors; optional promoted `@var`
+  must agree. Empty `[]` defaults and named DTO nesting are allowed.
+- `tools/Architecture/CollectionDocTypes` resolves PHPDoc names/import aliases;
+  `CollectionContracts` inventories typed homogeneous lists, doc-only dependencies
+  and cascade/cycle requirements without executing application source. Non-null
+  scalars, UUIDs, immutable dates, concrete CQRS/Input DTOs and backed data enums are
+  supported. Maps, nullable items, item unions, untyped arrays, nested generic lists,
+  aliases/templates and recursive collection-bearing graphs fail source policy.
+- `CollectionValidationMetadata` and `CollectionValidationKernel` audit loaded
+  native Default-group metadata through `php tools/collection-validation.php` in
+  `./bin/dev check`. Require the supported exact sibling `Type(list)`, finite
+  nonnegative integer `Count(max)`, `All` with explicit `NotNull` and matching item
+  `Type`, plus property `Valid` for DTO list items and ordinary DTO edges leading
+  to collections. Register mappings explicitly; arbitrary equivalent wrappers,
+  class cascades or group-sequence overrides are not substitutes. README supplies
+  the native YAML example and item field constraints.
+- **phpstan/phpdoc-parser 2.3.5** is an explicit direct development dependency;
+  no package versions were updated and runtime validation needs no PHPDoc parser.
+- Native input validation runs before command transaction work.
+  `src/Platform/Messaging/ResultValidationMiddleware.php` runs immediately before
+  handling and validates returned DTOs on unwind inside invocation/transaction scope,
+  before commit. Invalid output raises fixed internal
+  `cqrs.result_validation: Handler returned invalid data.` without result/violation
+  payloads. Caught nested command/query output failures invalidate the root.
+  Collection outputs require Result envelopes. Compilation rejects collection-bearing
+  Command/Query return types, including transitive DTO fields and union members;
+  scalar/null/value/enum/void contracts
+  retain their existing behavior. Events retain their collection-free/wire contracts.
+- Trusted in-process code must construct ordinary owned lists: readonly is shallow,
+  and array references/mutable subclass state are not universally prevented. Accepted
+  item limits do not bound all allocation/traversal; native `Valid` may traverse
+  despite other failures. Bound external bytes/items before construction and keep
+  validation cheap/database-independent. This is not universal traversal or deep
+  immutability proof; existing in-memory invocation/exception objects are not erased.
+
+### Completed 8a verification and review — 2026-09-14
+
+Main completed the following verification. The earlier fixture YAML failure and
+static-analysis/style issues are fixed; these final results supersede failed attempts.
+
+| Command | Final result / evidence |
+| --- | --- |
+| `./bin/dev setup` | **PASS**; retained RSA3072 keys, locked dependencies and current migration; app/database healthy. |
+| `./bin/dev check` | **PASS**: **656 architecture tests / 3619 assertions + 166 unit tests / 1112 assertions = 822 tests / 4731 assertions**. Deptrac **1266 allowed / 0 violations / 0 uncovered**. `var/test-runs/run-vjLRhO18/`. |
+| `./bin/dev test` | **PASS**: **202 tests / 4673 assertions**, all **39 PHPUnit phases**, including the collection PostgreSQL journey **1 test / 82 assertions**. `var/test-runs/run-JcI8AkkQ/`. |
+| `TMPDIR=/tmp/opencode ./bin/dev verify-setup` | **PASS**: `/tmp/opencode/donmario-setup-0X5cqk2l/`; embedded **202 tests / 4676 assertions**, all **39 phases**, including collections **1 test / 82 assertions**, at `application/var/test-runs/run-pGssVhBz/`. |
+
+Standalone E2E preceded the final **compiler-only** guard tightening: collection-bearing
+Command/Query return types, including transitive DTO fields and union members, must
+use Result envelopes. Runtime middleware was unchanged. The final full check and
+subsequent consumer setup/full embedded E2E cover the final code; no repeat suite is
+needed merely to resume. The three-assertion E2E difference comes from async polling.
+
+Verification covers source/metadata positives and negatives, input rejection before
+transaction work, actual PostgreSQL invalid-result and caught nested command/query
+rollback, no precommit visibility through an independent connection, same-process
+recovery, authentication/event regressions and consumer isolation.
+
+Both **fresh independent implementation reviewers APPROVED with no findings**:
+
+- Source/metadata: `ses_f5e99ad9affeSqojFsFsqYat0w`.
+- Runtime: `ses_f5e99ad4cffe6CQx3YoBgJaVN8`.
+
+They inspected implementation/evidence and **did not run suites**. These are
+implementation reviews in addition to the earlier design review. Main owns the
+[task record](tasks/08-authorizing.md). **8a was USER ACCEPTED on 2026-09-15;
+8b is approved for implementation and remains unimplemented.**
 
 ## Current web-authentication boundaries
 
@@ -148,7 +243,7 @@ native `Parser::convertDate` TypeError handling for malformed NumericDates (fixe
 verifies exactly two account reads with changed email visible in the second query;
 the deletion-between-reads 404 has unit coverage. Actual HTTP emergency rotation
 rejects the still-unexpired prior token and confirms new issuance. User acceptance
-was recorded on 2026-09-14; Subtask 8 discovery/design is reserved for the next fresh session.
+was recorded on 2026-09-14; 8a was verified and reviewed on 2026-09-14 and user accepted on 2026-09-15.
 
 ## Accepted 5b API and delivery
 
@@ -231,7 +326,8 @@ Fresh independent authentication reviewer `ses_f63a1e74affeszKsYM4RJDMnZS`
 **APPROVED** with no concrete findings. Fresh independent runtime reviewer
 `ses_f63a1e72bffePxCpnh11QTnL9Q` **APPROVED** with no concrete blocking findings or
 materially missing acceptance coverage. Both inspected code/evidence and did **not**
-rerun suites. No further code/configuration changes followed their reviews.
+rerun suites. No further code/configuration changes followed those reviews before
+Subtask 7 acceptance; the separate completed 8a verification and review are recorded above.
 
 Three-sample local actual HTTP medians: issuance **527.04 ms**, `/api/me` **21.27 ms**;
 consumer **525.65 ms / 21.56 ms**, respectively. These are local observations, not an
@@ -308,16 +404,21 @@ may contain private settings; share only redacted logs. Tests must use isolated 
 ## Fresh-session prompt
 
 > Read `docs/handoff.md`, `AGENTS.md`, `README.md`, `docs/architecture.md`,
-> `docs/roadmap.md` and `docs/tasks/07-jwt-authentication.md`; inspect `composer.json`,
-> `composer.lock`, `symfony.lock` and Git status. Subtask 6 including the registration
-> correction is VERIFIED, REVIEWED and USER ACCEPTED on 2026-09-13. Preserve intended
-> uncommitted work and native authentication/EventBus/CQRS boundaries; no commit/push
-> is authorized. Subtask 7 is IMPLEMENTED, VERIFIED, REVIEWED and USER ACCEPTED on
-> 2026-09-14, including `/api/me` through QueryBus and a second Domain safe-identity
-> read. Final setup/check/E2E/consumer verification and both fresh independent reviews
-> passed on 2026-09-13; consult task 7 for exact evidence and the acceptance quote.
-> Preserve exact stateless/native login, query and key-lifecycle boundaries. Do not
-> rerun unchanged passing suites merely to resume. Begin Subtask 8 — Authorizing:
-> model/management DISCOVERY/DESIGN ONLY in this fresh session. Propose a bounded
-> design, acceptance criteria and explicit security/performance review; obtain user
-> approval before implementation. Subtask 8 has not started at this handoff.
+> `docs/roadmap.md` and main-owned `docs/tasks/08-authorizing.md`; inspect `composer.json`,
+> `composer.lock`, `symfony.lock` and current changes. The tree was clean at existing
+> `c29a3f9` before the new 8a edits; preserve them. On 2026-09-15 the user replied exactly
+> “commit, push and proceed” to the request to accept 8a and proceed to 8b. This accepts
+> 8a, authorizes commit/push of the verified 8a checkpoint only, and approves 8b implementation.
+> Main owns the Git workflow and will begin 8b after that commit/push. Future commits/pushes
+> need explicit authorization; reconcile subsequent main/user updates before acting.
+> Subtask 7 remains accepted on 2026-09-14; its passing historical evidence does not
+> verify 8a. The user approved “proceed”/“continue” for the split design. Subtask 8a
+> is IMPLEMENTED, VERIFIED, REVIEWED and USER ACCEPTED on 2026-09-15, the latest accepted checkpoint. Earlier fixture
+> YAML/static issues are resolved; final setup/check/E2E/consumer verification passed
+> and both fresh independent implementation reviewers approved with no findings on 2026-09-14.
+> Reviewers did not run suites. Final check and consumer E2E cover the final compiler
+> guard; standalone E2E preceded it, with runtime unchanged. Do not repeat passing
+> suites merely to resume. Preserve native authentication/EventBus/CQRS and exact key boundaries.
+> 8a adds synchronous CQRS/Input collections only; runtime needs no PHPDoc parser.
+> 8b is approved for implementation, not yet implemented; it requires its own verification,
+> fresh independent review and user acceptance after implementation.

@@ -1,0 +1,12 @@
+<?php
+
+declare(strict_types=1);
+
+namespace App\Module\CollectionChecking\Application\Inspect;
+
+final readonly class InspectQuery
+{
+    public function __construct(public string $mode = 'valid')
+    {
+    }
+}

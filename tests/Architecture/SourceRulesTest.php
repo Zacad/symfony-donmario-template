@@ -145,7 +145,7 @@ final class SourceRulesTest extends TestCase
 
     public function testEveryPublicDataRoleRejectsBehaviorOrMutability(): void
     {
-        foreach (['Command', 'Query'] as $kind) {
+        foreach (['Command', 'Query', 'Input'] as $kind) {
             $class = 'App\\Module\\TaskTracking\\Application\\Example\\Example'.$kind;
             $this->writeClass($class, 'final class Example'.$kind.' {}');
             $this->assertSourceDiagnostic('contract.shape', $class);
@@ -417,7 +417,7 @@ final class SourceRulesTest extends TestCase
         yield 'contract outside public kinds' => ['src/Module/TaskTracking/Contract/Example.php', 'App\\Module\\TaskTracking\\Contract\\Example', 'contract.path'];
         yield 'nested event facade' => ['src/Module/TaskTracking/Contract/Event/Service/Example.php', 'App\\Module\\TaskTracking\\Contract\\Event\\Service\\Example', 'contract.path'];
         yield 'internal namespace hidden in contract path' => ['src/Module/TaskTracking/Contract/Event/Example.php', 'App\\Module\\TaskTracking\\Domain\\Example', 'contract.path'];
-        foreach (['Command', 'Query', 'Result'] as $kind) {
+        foreach (['Command', 'Query', 'Result', 'Input'] as $kind) {
             yield 'obsolete '.$kind.' location' => ['src/Module/TaskTracking/Contract/'.$kind.'/Example.php', 'App\\Module\\TaskTracking\\Contract\\'.$kind.'\\Example', 'contract.path'];
             yield 'missing use case for '.$kind => ['src/Module/TaskTracking/Application/Example'.$kind.'.php', 'App\\Module\\TaskTracking\\Application\\Example'.$kind, 'contract.path'];
             yield 'nested '.$kind.' facade' => ['src/Module/TaskTracking/Application/Example/Service/Example'.$kind.'.php', 'App\\Module\\TaskTracking\\Application\\Example\\Service\\Example'.$kind, 'contract.path'];
@@ -583,7 +583,7 @@ final class SourceRulesTest extends TestCase
         yield 'unclassified source is not vendor' => ['App\\Service\\Leak', 'App\\Module\\TaskTracking\\Domain\\Task', 'Unclassified on TaskTracking.Domain'];
         yield 'public data cannot expose mutable vendor value' => ['App\\Module\\TaskTracking\\Application\\Leak\\LeakResult', 'DateTime', 'TaskTracking.ApplicationData on Vendor'];
         yield 'public data cannot expose Platform' => ['App\\Module\\TaskTracking\\Application\\Leak\\LeakResult', 'App\\Platform\\Repository', 'TaskTracking.ApplicationData on Platform'];
-        foreach (['Command', 'Query', 'Result'] as $kind) {
+        foreach (['Command', 'Query', 'Result', 'Input'] as $kind) {
             yield 'Domain cannot depend on own '.$kind => ['App\\Module\\TaskTracking\\Domain\\Leak', 'App\\Module\\TaskTracking\\Application\\Lookup\\Lookup'.$kind, 'TaskTracking.Domain on TaskTracking.ApplicationData'];
             yield 'Domain cannot depend on foreign '.$kind => ['App\\Module\\TaskTracking\\Domain\\Leak', 'App\\Module\\Authorizing\\Application\\Lookup\\Lookup'.$kind, 'TaskTracking.Domain on Authorizing.ApplicationData'];
             yield 'event cannot expose Application '.$kind => ['App\\Module\\TaskTracking\\Application\\Leak\\LeakEvent', 'App\\Module\\Authorizing\\Application\\Lookup\\Lookup'.$kind, 'TaskTracking.EventData on Authorizing.ApplicationData'];

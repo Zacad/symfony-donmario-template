@@ -39,6 +39,7 @@ framework:
                     - add_bus_name_stamp_middleware
                     - validation
                     - App\Platform\Messaging\CommandTransactionMiddleware
+                    - App\Platform\Messaging\ResultValidationMiddleware
                     - handle_message
             query.bus:
                 default_middleware: false
@@ -47,6 +48,7 @@ framework:
                     - app.query_policy
                     - add_bus_name_stamp_middleware
                     - validation
+                    - App\Platform\Messaging\ResultValidationMiddleware
                     - handle_message
             application.event.bus:
                 default_middleware:

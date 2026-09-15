@@ -1,0 +1,22 @@
+<?php
+
+declare(strict_types=1);
+
+namespace App\Module\CollectionChecking\Application\Inspect;
+
+use App\Module\CollectionChecking\Application\Collect\ItemInput;
+use App\Module\CollectionChecking\Application\Collect\ItemResult;
+use Symfony\Component\Messenger\Attribute\AsMessageHandler;
+use Symfony\Component\Uid\Uuid;
+
+#[AsMessageHandler(bus: 'query.bus')]
+final readonly class InspectHandler
+{
+    public function __invoke(InspectQuery $query): InspectResult
+    {
+        return new InspectResult(
+            ['one', 'two'], [1, 2], [1.5, 2.5], [true, false], [Uuid::v7()], [new \DateTimeImmutable('2026-09-14T00:00:00Z')], [ChoiceResult::Ready],
+            [new ItemResult('invalid' === $query->mode ? '' : 'valid')], new ItemInput('nested'),
+        );
+    }
+}

@@ -1,0 +1,8 @@
+<?php
+
+declare(strict_types=1);
+
+use Symfony\Bundle\FrameworkBundle\Console\Application;
+
+$kernel = require __DIR__.'/bootstrap.php';
+exit(new Application($kernel)->run());

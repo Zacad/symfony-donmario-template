@@ -35,10 +35,16 @@ passed with embedded **201 tests / 4607 assertions**, all 38 phases, at
 `application/var/test-runs/run-KkpCT8uO/`. Fresh authentication/runtime reviewers
 approved after inspecting code/evidence, without rerunning suites; task 7 records
 their identities and exact conclusions. Subtask 6's evidence above remains its
-accepted historical checkpoint. Next fresh session: **Subtask 8 — Authorizing:
-model/management DISCOVERY/DESIGN ONLY**. Present a bounded design, acceptance criteria
-and explicit security/performance review before seeking implementation approval.
-Subtask 8 has not started.
+accepted historical checkpoint. **Current Subtask 8a — Application DTO collections
+is IMPLEMENTED, VERIFIED, REVIEWED and USER ACCEPTED on 2026-09-15** under the approved
+[8a/8b design](tasks/08-authorizing.md). Final verification passed on 2026-09-14 and both fresh
+independent implementation reviewers approved with no findings; neither ran suites.
+Reviews completed on 2026-09-14; earlier fixture YAML/static issues are resolved.
+**8b Authorizing model/management is approved for implementation, not yet implemented.**
+8a is the latest accepted checkpoint. The user's exact 2026-09-15 “commit, push and proceed”
+accepts 8a, authorizes commit/push of the verified 8a checkpoint only, and approves
+beginning 8b. Main will begin 8b after that commit/push; future commits/pushes require
+explicit authorization.
 
 ## Modules and data ownership
 
@@ -52,6 +58,7 @@ src/Module/<Module>/
     <Name>Command.php or <Name>Query.php
     <Name>Handler.php
     <Name>Result.php                  # when a result DTO is useful
+    <Name>Input.php                   # nested CQRS data, not dispatchable
     <Name>Event.php                   # public Application integration fact
   Domain/
     Event/<Name>Event.php             # internal Domain fact
@@ -69,8 +76,8 @@ on module models. Start with one database/default connection/EntityManager and a
 ordered migration workflow. Platform health probing may use a dedicated technical
 connection, independent of business transactions.
 
-Cross-module code depends only on public command/query/result/event data. Commands,
-queries, results and public events live in Application use-case folders. There is
+Cross-module code depends only on public command/query/result/input/event data. Commands,
+queries, results, nested inputs and public events live in Application use-case folders. There is
 no current `Contract` directory. Public data contains no entities,
 repositories, handlers or callable facades.
 No cross-module foreign keys, ORM relationships, direct table reads/writes or SQL
@@ -101,20 +108,22 @@ handlers, Messenger integration and shared HTTP/CLI adapters. See
 [Subtask 3](tasks/03-cqrs-transactions.md) for approval and evidence.
 
 - The supported public Application data path is exactly
-  `Application/<UseCase>/<Name>{Command,Query,Result,Event}.php`. UseCase and Name are
+  `Application/<UseCase>/<Name>{Command,Query,Result,Input,Event}.php`. UseCase and Name are
   descriptive PascalCase identifiers; Name has a nonempty prefix before its suffix.
-  Command/Query/Result/Event suffixes are reserved for data within Application,
+  Command/Query/Result/Input/Event suffixes are reserved for data within Application,
   including when checking misplaced classes. Other Application classes remain internal.
 - Public data can be imported by another module's Application or adapters. Requests
   go through the appropriate bus; consumers never inject/call another module's handler.
   A public message is an integration API, not an authorization grant.
 - Public DTOs follow the data-only rules below. Handlers are private services;
-  messages, results and events are ordinary data objects excluded from discovery.
+  messages, results, inputs and events are ordinary data objects excluded from discovery.
+  Input is nested public data, neither a dispatchable message nor a top-level handler
+  result. Collection outputs use named Result envelopes.
 - Domain has no dependency on Application DTOs, public events or handlers. It records
   its own `Domain/Event/*Event` facts; Application explicitly translates selected
   facts to public events and maps domain values/entities into public results.
   Public event payloads may reference approved immutable values and concrete public
-  event data, never command/query/result DTOs or module-internal types.
+  event data, never command/query/result/input DTOs or module-internal types.
 - A dedicated result DTO is optional. The create use case returns `Uuid`;
   lookup returns `GetTaskResult|null` with UUID/title. Result data is transport-neutral:
   HTTP and CLI adapters decide status codes, serialization and presentation.
@@ -144,11 +153,11 @@ runtime-persistence dependencies.
 ### Implemented boundary checks
 
 - **Source/Deptrac:** every first-party class has an owned namespace/path. Domain,
-  Application implementation, public command/query/result data, public events,
+  Application implementation, public command/query/result/input data, public events,
   internal Domain/Infrastructure events, our listeners and framework listeners have
   separate, non-overlapping layers. Ordinary module adapters may use their own
   internals and public data; our event listeners have narrower permissions.
-  Public command/query/result data may reference approved immutable values and
+  Public command/query/result/input data may reference approved immutable values and
   declared public data; public events may reference only approved immutable values
   and public events. Domain cannot import public Application data.
   Application/UI may use exact CommandBus/QueryBus helpers; Application alone may
@@ -164,13 +173,15 @@ runtime-persistence dependencies.
   `event.listener_dependency`, including same-layer edges ignored by Deptrac.
   This is not dynamic callable-body analysis.
 - **Contract data:** DTOs are final readonly classes with public typed promoted
-  properties, empty constructors and scalar/null literal defaults. Command/query/result
+  properties, empty constructors and scalar/null literal defaults; CQRS/Input lists
+  additionally permit an empty `[]` default. Command/query/result/input
   enums have literal int/string cases. Allowed types are scalars/null (including
   nullable and union forms), declared public data (concrete public events only for
   event payloads), `DateTimeImmutable` and Symfony `Uuid`. Internal Domain/Infrastructure
   events allow only scalar/null and those immutable values. Concrete events directly
-  extend their exact category; commands/queries/results have no inheritance.
-  Collections, callbacks, interfaces, traits, attributes and additional behavior
+  extend their exact category; commands/queries/results/inputs have no inheritance.
+  CQRS/Input collections follow the bounded list contract below; event collections
+  remain forbidden. Callbacks, interfaces, traits, attributes and additional behavior
   remain forbidden in DTOs. `Platform/Architecture/ContractTypes` supplies the shared
   namespace/role vocabulary. Obsolete `Contract` paths, misplaced data suffixes,
   wrong categories and intermediate event bases fail validation. These structural
@@ -248,14 +259,17 @@ Separate synchronous `command.bus` and `query.bus` use Messenger and Validator 8
   Public handlers/aliases, wildcard, union, transport-specific, batch, indirect/factory
   and missing/duplicate application registrations fail the supported policy.
 - Command/query middleware order is explicit: invocation scope, message policy,
-  bus-name stamp, standard validation, command transaction (commands only), handling.
+  bus-name stamp, standard input validation, command transaction (commands only),
+  result validation, handling. `ResultValidationMiddleware` validates on stack unwind
+  inside invocation scope and before command flush/commit.
   Checks cover these service classes, helper references and shared invocation wiring;
   standard handling's logger setter and leading debug tracing are supported.
   Native Symfony message registrations remain framework-owned; runtime policy admits
   only inventoried application messages. These checks do not exhaustively validate
   the vendor service graph or arbitrary callable bodies.
 - Module YAML validation must be explicitly registered. Title/UUID constraints and
-  missing-mapping rejection are tested; future constraint completeness needs review.
+  missing-mapping rejection are tested. The 8a structural collection audit checks the
+  supported native metadata forms below; other business-constraint completeness needs review.
 - Invocation state starts before validation without opening the database. A valid
   outer command owns the default connection transaction through ORM `wrapInTransaction`.
   Repositories/handlers schedule writes; the boundary checks result/health before
@@ -274,6 +288,81 @@ Separate synchronous `command.bus` and `query.bus` use Messenger and Validator 8
   bounded to 4 KiB and fixed fields; titles allow at most 200 codepoints. Validation
   exposes field/message diagnostics, unexpected failures use generic responses and
   safe operation metadata. Production route absence is tested.
+
+### Application DTO collections (8a: user accepted 2026-09-15)
+
+The synchronous extension covers exact public Command/Query/Result/Input data only.
+Events retain their collection-free payload rules and existing wire behavior.
+`ContractTypes`, source/Deptrac, module service exclusions and `CqrsPass` classify
+the reserved `Input` suffix together; Input is never dispatchable or a top-level
+handler result. Collection-bearing Command/Query handler return types are rejected
+at compilation, including collections reached through transitive DTO fields and
+union members; use a Result envelope. Principal/API-resource exceptions retain their exact scope.
+
+#### Source and loaded metadata contract
+
+- Native nonnullable `array` properties require constructor `@param list<T> $name`.
+  Optional promoted `@var` must agree. Items are homogeneous non-null `string`, `int`,
+  `float`, `bool`, `Uuid`, `DateTimeImmutable`, concrete public CQRS/Input DTOs or
+  backed public data enums. Empty `[]` is the only added default.
+- Maps, untyped/mixed arrays, nullable items, item unions, nested generic lists,
+  aliases/templates and recursive collection-bearing DTO graphs fail source checks.
+  Named DTO nesting with independently bounded collections is allowed. Graph checks
+  include ordinary DTO fields and intermediate wrappers, not only list-item edges.
+- `tools/Architecture/CollectionDocTypes` parses PHPDoc ASTs and resolves lexical
+  namespaces/import aliases; `CollectionContracts` inventories lists, validates
+  doc-only public-data dependencies and derives cascade/cycle requirements without
+  executing application source. **phpstan/phpdoc-parser 2.3.5** is an explicit direct
+  development dependency; no package versions were updated. Runtime needs no PHPDoc parser.
+- `CollectionValidationMetadata` checks loaded native Default-group property metadata
+  via `CollectionValidationKernel`. `./bin/dev check` invokes
+  `php tools/collection-validation.php`, which first runs source policy, then boots
+  the audit kernel and compares descriptors with the registered native validator.
+  This is a structural metadata audit, not a runtime graph parser.
+- Supported forms are exact native sibling property `Type(list)`, `Count` with a
+  finite nonnegative integer `max`, and `All` with explicit native `NotNull` and
+  `Type` matching the resolved item type, all effective in Default. DTO list items
+  require sibling property `Valid`; every ordinary DTO edge leading to a collection
+  also requires property cascading. Mappings must be explicitly registered in
+  `framework.validation.mapping.paths`; item DTO fields retain their own constraints.
+  Arbitrary equivalent wrappers, custom subclasses, class cascades and group-sequence
+  overrides do not substitute for these supported native forms. See the
+  [README example](../README.md#application-dto-collections-8a-user-accepted-2026-09-15).
+
+#### Two-phase runtime validation
+
+Native Messenger input validation runs before command transaction work. The new
+`Platform/Messaging/ResultValidationMiddleware` sits immediately before handling,
+then validates returned public DTO objects on unwind, before the owned transaction
+can flush/commit. Invalid output or a validator exception becomes the fixed internal
+`LogicException` message `cqrs.result_validation: Handler returned invalid data.`;
+it is not a client-input validation error and carries no result/violation payload.
+Existing invocation failure handling invalidates the root even when a nested command
+or query output failure is caught. Scalar/null/value/enum/void results retain their
+existing contracts; list outputs require named Result envelopes.
+
+#### Security/performance bounds and completed verification
+
+Readonly arrays are shallow. Validation observes a value graph at one point in time;
+it does not universally prevent element references or mutable subclass state.
+Trusted in-process code must construct ordinary owned lists of supported data.
+Per-use-case limits bound accepted data, not every allocation or traversal: native
+`Valid` may traverse even after a count/type violation. External adapters must bound
+transport bytes/items before constructing DTOs, and mappings should remain cheap
+and database-independent. No universal traversal, deep-immutability or serialization
+round-trip proof is claimed. Fixed errors do not erase existing invocation/exception
+objects from memory.
+
+Source/metadata positives and negatives, compiled-bus rejection, actual PostgreSQL
+rollback after invalid and caught nested outputs, recovery, authentication/event
+regressions and fresh-consumer isolation passed in 8a verification. Both fresh
+independent implementation reviewers approved with no findings, without running
+suites. Final check and consumer verification cover the final compiler guard;
+standalone E2E preceded that compiler-only change, with runtime unchanged. Exact
+commands, evidence and review identities are in the [task record](tasks/08-authorizing.md)
+and [handoff](handoff.md#completed-8a-verification-and-review--2026-09-14).
+Verification and reviews completed on **2026-09-14**; **8a was USER ACCEPTED on
+2026-09-15** and is the latest accepted checkpoint.
 
 ### Native Application events (5b)
 
@@ -642,19 +731,30 @@ gave median issuance **527.04 ms** and identity **21.27 ms**; consumer observati
 were **525.65 ms / 21.56 ms**. These are local measurements, not an SLA. Task 7
 records the evidence; token/key/password canaries establish exercised secrecy paths only.
 
-### Later authorization design
+### Authorizing model/management (8b: approved for implementation, not yet implemented)
 
-The following architectural direction retains separate discovery/implementation gates.
+The user accepted the 8a collection checkpoint and approved implementation of the
+[8b design](tasks/08-authorizing.md) on 2026-09-15. No 8b implementation has started;
+main will begin after the authorized commit/push of the verified 8a checkpoint.
+8b then needs its own verification, fresh review and acceptance.
 Self-service and OIDC can add authentication adapters/use cases later. Safe principal
 identities cross boundaries; business API operations are not yet implemented.
 
-Authorizing owns code-defined permission/role bundles, persisted assignments and
-direct global/resource grants. Deny by default. Effective permissions are the union
+Authorizing will own code-defined flat permission/role bundles, persisted global
+and resource-scoped role assignments, and direct global/resource grants in four
+module-owned tables. Exact resources are `(type, UUID)` with opaque cross-module
+references. Deny by default. Effective permissions are the union
 of applicable grants and roles. Removing the last applicable source denies future
 checks after commit; already-authorized operations may finish. JWT claims/session
 roles do not become a stale second authority for business permissions.
 
-Enforce permissions on use-case paths for every entry point. Actors and restricted
+Trusted deployment shell/container access supplies 8b operator-console authority;
+single-item commands adapt atomic 1–100-item assignment changes, permission batches
+use at most two business reads, and assignment listing uses bounded keyset pages.
+Structured batch stdin is bounded to 64 KiB, depth 16 and 100 items. The task record
+owns the exact scope, SQL budgets, concurrency and pagination acceptance criteria.
+
+Subtask 9 will enforce permissions on use-case paths for every entry point. Actors and restricted
 internal capabilities come from trusted infrastructure, never caller-controlled
 privilege flags. Grant/revoke commands require authority. Domain modules retain
 ownership rules and invariants. Bulk permission queries and bounded pagination
@@ -683,6 +783,6 @@ and cookie/key namespaces. Initialization is non-destructive on reruns. Demo omi
 is initially supported before database initialization; removal from an installed
 application requires a migration design.
 
-Every subtask has discovery/design approval, security/performance review, actual
+Every subtask requires discovery/design approval, security/performance review, actual
 E2E evidence, a fresh independent reviewer and approval before continuation.
 Security/performance bounds are feature-specific and executable where practical.
