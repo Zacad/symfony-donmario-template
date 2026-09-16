@@ -1,0 +1,157 @@
+App\Module\Authorizing\Application\ChangeAccountAssignments\ChangeAccountAssignmentsCommand:
+    properties:
+        accountId:
+            - NotNull: ~
+            - Type: Symfony\Component\Uid\Uuid
+        changes:
+            - Type: list
+            - Count: { min: 1, max: 100 }
+            - All:
+                constraints:
+                    - NotNull: ~
+                    - Type: App\Module\Authorizing\Application\ChangeAccountAssignments\AssignmentChangeInput
+            - Valid: ~
+
+App\Module\Authorizing\Application\ChangeAccountAssignments\AssignmentChangeInput:
+    properties:
+        operation:
+            - Choice: { choices: [add, remove] }
+        kind:
+            - Choice: { choices: [role, permission] }
+        key:
+            - NotBlank: ~
+            - Length: { max: 64, countUnit: bytes }
+            - Regex: { pattern: '/\A[a-z0-9._-]{1,64}\z/D' }
+        scope:
+            - Choice: { choices: [global, resource] }
+        resourceType:
+            - Type: string
+            - Length: { min: 1, max: 64, countUnit: bytes }
+            - Regex: { pattern: '/\A[a-z0-9._-]{1,64}\z/D' }
+        resourceId:
+            - Type: Symfony\Component\Uid\Uuid
+
+App\Module\Authorizing\Application\ChangeAccountAssignments\ChangeAccountAssignmentsResult:
+    properties:
+        requested:
+            - Range: { min: 1, max: 100 }
+        added:
+            - Range: { min: 0, max: 100 }
+        removed:
+            - Range: { min: 0, max: 100 }
+        unchanged:
+            - Range: { min: 0, max: 100 }
+
+App\Module\Authorizing\Application\EvaluatePermissions\EvaluatePermissionsQuery:
+    properties:
+        checks:
+            - Type: list
+            - Count: { min: 1, max: 100 }
+            - All:
+                constraints:
+                    - NotNull: ~
+                    - Type: App\Module\Authorizing\Application\EvaluatePermissions\PermissionCheckInput
+            - Valid: ~
+
+App\Module\Authorizing\Application\EvaluatePermissions\PermissionCheckInput:
+    properties:
+        accountId:
+            - NotNull: ~
+            - Type: Symfony\Component\Uid\Uuid
+        permission:
+            - NotBlank: ~
+            - Length: { max: 64, countUnit: bytes }
+            - Regex: { pattern: '/\A[a-z0-9._-]{1,64}\z/D' }
+        scope:
+            - Choice: { choices: [global, resource] }
+        resourceType:
+            - Type: string
+            - Length: { min: 1, max: 64, countUnit: bytes }
+            - Regex: { pattern: '/\A[a-z0-9._-]{1,64}\z/D' }
+        resourceId:
+            - Type: Symfony\Component\Uid\Uuid
+
+App\Module\Authorizing\Application\EvaluatePermissions\EvaluatePermissionsResult:
+    properties:
+        decisions:
+            - Type: list
+            - Count: { max: 100 }
+            - All:
+                constraints:
+                    - NotNull: ~
+                    - Type: App\Module\Authorizing\Application\EvaluatePermissions\PermissionDecisionResult
+            - Valid: ~
+
+App\Module\Authorizing\Application\EvaluatePermissions\PermissionDecisionResult:
+    properties:
+        allowed:
+            - Type: bool
+
+App\Module\Authorizing\Application\ListAccountAssignments\ListAccountAssignmentsQuery:
+    properties:
+        accountId:
+            - NotNull: ~
+            - Type: Symfony\Component\Uid\Uuid
+        limit:
+            - Range: { min: 1, max: 100 }
+        after:
+            - Type: App\Module\Authorizing\Application\ListAccountAssignments\AssignmentCursorInput
+            - Valid: ~
+
+App\Module\Authorizing\Application\ListAccountAssignments\AssignmentCursorInput:
+    properties:
+        accountId:
+            - NotNull: ~
+            - Type: Symfony\Component\Uid\Uuid
+        source:
+            - Range: { min: 0, max: 3 }
+        assignmentId:
+            - NotNull: ~
+            - Type: Symfony\Component\Uid\Uuid
+
+App\Module\Authorizing\Application\ListAccountAssignments\ListAccountAssignmentsResult:
+    properties:
+        assignments:
+            - Type: list
+            - Count: { max: 100 }
+            - All:
+                constraints:
+                    - NotNull: ~
+                    - Type: App\Module\Authorizing\Application\ListAccountAssignments\AccountAssignmentResult
+            - Valid: ~
+        next:
+            - Type: App\Module\Authorizing\Application\ListAccountAssignments\AssignmentCursorResult
+            - Valid: ~
+
+App\Module\Authorizing\Application\ListAccountAssignments\AssignmentCursorResult:
+    properties:
+        accountId:
+            - NotNull: ~
+            - Type: Symfony\Component\Uid\Uuid
+        source:
+            - Range: { min: 0, max: 3 }
+        assignmentId:
+            - NotNull: ~
+            - Type: Symfony\Component\Uid\Uuid
+
+App\Module\Authorizing\Application\ListAccountAssignments\AccountAssignmentResult:
+    properties:
+        id:
+            - NotNull: ~
+            - Type: Symfony\Component\Uid\Uuid
+        source:
+            - Range: { min: 0, max: 3 }
+        kind:
+            - Choice: { choices: [role, permission] }
+        key:
+            - NotBlank: ~
+            - Length: { max: 64, countUnit: bytes }
+            - Regex: { pattern: '/\A[a-z0-9._-]{1,64}\z/D' }
+        scope:
+            - Choice: { choices: [global, resource] }
+        resourceType:
+            - Type: string
+            - Length: { min: 1, max: 64, countUnit: bytes }
+            - Regex: { pattern: '/\A[a-z0-9._-]{1,64}\z/D' }
+        resourceId:
+            - Type: Symfony\Component\Uid\Uuid

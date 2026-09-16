@@ -23,6 +23,11 @@ doctrine:
                         is_bundle: false
                         dir: '%kernel.project_dir%/src/Module/Authenticating/Domain'
                         prefix: 'App\Module\Authenticating\Domain'
+                    Authorizing:
+                        type: attribute
+                        is_bundle: false
+                        dir: '%kernel.project_dir%/src/Module/Authorizing/Domain'
+                        prefix: 'App\Module\Authorizing\Domain'
                     TaskTracking:
                         type: attribute
                         is_bundle: false

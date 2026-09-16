@@ -14,7 +14,10 @@ use App\Module\Authenticating\Infrastructure\Framework\Symfony\Security\AccountP
 use App\Module\Authenticating\Infrastructure\Framework\Symfony\Security\ApiAuthenticationFailureHandler;
 use App\Module\Authenticating\UI\Api\LoginController;
 use App\Module\Authenticating\UI\Http\Security\AccountUserProvider;
+use App\Platform\Authorization\AuthenticationExecution;
+use App\Platform\Authorization\ExecutionContext;
 use App\Platform\Messaging\CommandBus;
+use App\Platform\Messaging\InvocationContext;
 use Lexik\Bundle\JWTAuthenticationBundle\Services\JWTTokenManagerInterface;
 use Monolog\Handler\TestHandler;
 use Monolog\Logger;
@@ -35,6 +38,7 @@ use Symfony\Component\Messenger\Middleware\HandleMessageMiddleware;
 use Symfony\Component\PasswordHasher\Hasher\PasswordHasherFactory;
 use Symfony\Component\PasswordHasher\PasswordHasherInterface;
 use Symfony\Component\RateLimiter\RateLimit;
+use Symfony\Component\Security\Core\Authentication\AuthenticationTrustResolver;
 use Symfony\Component\Security\Core\Authentication\Token\Storage\TokenStorage;
 use Symfony\Component\Security\Http\Authentication\AuthenticatorManager;
 use Symfony\Component\Security\Http\Authenticator\JsonLoginAuthenticator;
@@ -78,7 +82,8 @@ final class AuthenticatingJsonLoginTest extends TestCase
                 return $upgraded;
             }],
         ]))]);
-        $provider = new AccountUserProvider($accounts, new CommandBus($bus));
+        $authentication = new AuthenticationExecution(new ExecutionContext(new InvocationContext(), new RequestStack(), new TokenStorage(), new AuthenticationTrustResolver()));
+        $provider = new AccountUserProvider($accounts, new CommandBus($bus), $authentication);
         $tokens = new TokenStorage();
         $failures = new ApiAuthenticationFailureHandler($tokens);
         $authenticator = new JsonLoginAuthenticator(new HttpUtils(), $provider, failureHandler: $failures, options: ['check_path' => '/api/login', 'username_path' => 'email', 'password_path' => 'password']);

@@ -1,7 +1,21 @@
 # Approval-gated delivery
 
+**Current checkpoint (2026-09-16): Task 9 is IMPLEMENTED, VERIFIED, REVIEWED and
+USER ACCEPTED, including the `ActorKind` correction.** Following the full
+policy-only enforcement design, the user said “accept and proceed”; main recorded
+8b acceptance and Task 9 implementation approval. Following the additional fresh
+design/implementation review, the user accepted Task 9 and deferred Task 10 to a
+fresh session. Task 10 starts with discovery/design; implementation approval is pending.
+Setup/check/E2E/consumer passed, including the `ActorKind` enum correction and its
+fresh independent approval with no findings. Check **1360 / 7959**, E2E **230 / 6306**,
+consumer **230 / 6310**. See
+the [Task 9 record](tasks/09-authorization-enforcement.md) for exact evidence.
+The subsequent 2026-09-16 “commit and push changes” request authorizes this accepted
+8b/9 delivery. Future Git operations need fresh authorization. Earlier awaiting-8b-
+acceptance records are superseded.
+
 General design and Subtasks **1, 2, 3a, 3b, 4, 5b, 6 (including the registration
-correction), 7 and 8a** have user acceptance. Historical
+correction), 7, 8a, 8b and 9 (including the enum correction)** have user acceptance. Historical
 [Subtask 4](tasks/04-synchronous-events.md) and [Subtask 5](tasks/05-durable-events.md)
 delivery designs are **superseded by approved [Subtask 5b](tasks/05b-native-event-bus.md)**.
 Their records retain historical evidence; current behavior is documented in
@@ -15,16 +29,20 @@ the correction is VERIFIED, REVIEWED and USER ACCEPTED on 2026-09-13.**
 Post-correction setup/check/test, consumer verification and fresh independent review
 are complete. **Subtask 7 is IMPLEMENTED, VERIFIED, REVIEWED and USER ACCEPTED on
 2026-09-14**, including `/api/me` through QueryBus. Full verification and two fresh
-independent reviews passed on 2026-09-13. **Current Subtask 8a — Application DTO
+independent reviews passed on 2026-09-13. **Accepted Subtask 8a — Application DTO
 collections is IMPLEMENTED, VERIFIED, REVIEWED and USER ACCEPTED on 2026-09-15** under
 the approved [8a/8b design](tasks/08-authorizing.md). Final verification passed on 2026-09-14;
 both fresh independent implementation reviewers approved with no findings and did
 not run suites; reviews completed on 2026-09-14. Earlier fixture YAML/static issues are resolved.
-**8b model/management is approved for implementation, not yet implemented.**
+**8b model/management is IMPLEMENTED, VERIFIED, REVIEWED and USER ACCEPTED
+(2026-09-15).**
 The user's exact 2026-09-15 “commit, push and proceed” accepts 8a, explicitly authorizes
-commit/push of the verified 8a checkpoint only, and approves beginning 8b. Main will
-begin 8b after that commit/push; future commits/pushes require explicit authorization.
-8a is the latest accepted checkpoint. Reconcile the dated
+commit/push of the verified 8a checkpoint only, and approves beginning 8b. Main pushed
+8a as `367fdfe` to `origin/main` that day. The subsequent 2026-09-16 request authorizes
+this 8b/9 delivery; future commits/pushes require explicit authorization. Final 8b verification and fresh independent review
+are complete. Subsequent “accept and proceed” accepted 8b and approved Task 9's full
+policy-only design; verified/reviewed implementation was accepted on 2026-09-16.
+Task 9 is the latest accepted checkpoint. Reconcile the dated
 [session handoff](handoff.md) with the active task record and subsequent instructions.
 Later subtasks require their own discovery, design and approval before edits.
 Split a subtask further if discovery reveals that its scope is too broad.
@@ -41,9 +59,9 @@ Split a subtask further if discovery reveals that its scope is too broad.
 | 6 | [Authenticating: web](tasks/06-web-authentication.md) (including correction: verified, reviewed and user accepted 2026-09-13) | Hidden CLI/stdin provisioning, registration-owned password-policy validation/hashing, native login/refresh and POST/CSRF logout, hash-only CAS upgrade commands, sessions/throttling, outage/recovery and consumer isolation |
 | 7 | [Authenticating: JWT](tasks/07-jwt-authentication.md) (implemented, verified, reviewed and user accepted 2026-09-14) | Native JSON issuance, QueryBus-backed API Platform identity, stateless isolation, exact JWT lifecycle, key setup/rotation/recovery and negative cases |
 | 8a | [Application DTO collections](tasks/08-authorizing.md) (implemented, verified, reviewed and user accepted 2026-09-15) | Typed CQRS/Input lists, native metadata audit, input rejection before transaction work and invalid-result rollback before commit, including caught nested failures |
-| 8b | [Authorizing: model/management](tasks/08-authorizing.md) (approved for implementation 2026-09-15; not yet implemented) | Global/resource-scoped roles and direct grants, atomic batch management, bounded permission decisions and keyset listing through trusted operator CLI |
-| 9 | Authorization enforcement | Entry-point enforcement, revocation and restricted administration |
-| 10 | TaskTracking use cases/CLI | Create/list/complete, ownership and invariants |
+| 8b | [Authorizing: model/management](tasks/08-authorizing.md) (implemented, verified, reviewed and user accepted 2026-09-15) | Global/resource-scoped roles and direct grants, atomic batch management, bounded permission decisions and keyset listing through trusted operator CLI; final verification and both fresh reviews passed |
+| 9 | [Policy-only authorization enforcement](tasks/09-authorization-enforcement.md) (implemented, verified, reviewed and user accepted 2026-09-16, including enum correction) | Co-located private policies, trusted immutable context, explicit operator/authentication scopes, allowed/denied buses, live revocation and caught-nested rollback |
+| 10 | TaskTracking use cases/CLI (next fresh session: discovery/design; implementation not yet approved) | Create/list/complete, ownership and invariants |
 | 11 | TaskTracking events | Completion activity through CQRS in both delivery modes |
 | 12 | TaskTracking Twig | Real browser workflows with allowed/denied users |
 | 13 | API Platform business adapters | JWT API workflows, validation, isolation and pagination |
@@ -106,8 +124,8 @@ reviewer `ses_f63a1e74affeszKsYM4RJDMnZS` and runtime reviewer
 `ses_f63a1e72bffePxCpnh11QTnL9Q` **APPROVED** after inspecting code/evidence; they did
 not rerun suites. Verification/reviews completed on 2026-09-13; task 7 records exact
 conclusions and **user acceptance on 2026-09-14**.
-These are accepted Subtask 7 results, not 8a verification. Authorizing 8b is approved
-for implementation and not yet implemented; business API adapters retain their later gate.
+These are accepted Subtask 7 results, not 8a verification. Authorizing 8b is implemented,
+verified, reviewed and user accepted; business API adapters retain their later gate.
 
 Subtask 8a adds exact use-case-local `*Input` public non-service data (neither
 dispatchable nor a top-level result), native `array` plus constructor `@param list<T>`,
@@ -135,8 +153,24 @@ consumer run cover the final code after compiler-only return-guard tightening;
 standalone E2E preceded that change, with runtime unchanged. See the
 [task record](tasks/08-authorizing.md) and
 [handoff evidence](handoff.md#completed-8a-verification-and-review--2026-09-14).
-8b implementation is approved and main will begin after the authorized 8a commit/push.
-It requires its own complete evidence, review and acceptance checkpoint.
+8a was pushed as `367fdfe` on 2026-09-15. 8b now implements all four mapped assignment/
+grant tables, the Domain catalogue, three batch-capable bus APIs, Authenticating's
+owning account-existence query and eight operator console commands. This supplies
+trusted shell administration. Task 9 adds policy-only actor enforcement to existing
+use cases, with no new HTTP/API management routes. Setup applied
+`Version20260915010000`; dependencies/locks are unchanged.
+
+**8b final verification and review are complete:** setup/check/E2E/consumer passed,
+including actual N=100 SQL budgets and populated query plans. Final runs cover the
+earlier cursor Domain-exception and EXPLAIN numeric fixes. Both fresh independent
+reviewers approved with no findings and did not rerun suites. Only documentation
+changed between 8b review and acceptance. See [final handoff evidence](handoff.md#completed-8b-verification-and-review--2026-09-15)
+and the task 8 record. **8b is user accepted.** Task 9's subsequent full design is
+approved, implemented, verified and independently reviewed; user acceptance followed
+on 2026-09-16, including the enum correction and additional fresh design review.
+PolicyContext foundation rules provide no general internal bypass; own-state read
+ports do not form an arbitrary SQL sandbox. Automatic Task grants, list filtering and
+durable service identities remain separate future designs.
 
 **Subtask 6 final post-correction evidence:** `./bin/dev setup` passed with dependencies/migration
 unchanged and app/database healthy. `./bin/dev check` passed **610 tests / 3942 assertions**,

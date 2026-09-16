@@ -9,6 +9,7 @@ use App\Module\Authenticating\Domain\AccountCredentials;
 use App\Module\Authenticating\Domain\AccountRepository;
 use App\Module\Authenticating\Domain\EmailAddress;
 use App\Module\Authenticating\Infrastructure\Framework\Symfony\Security\AccountPrincipal;
+use App\Platform\Authorization\AuthenticationExecution;
 use App\Platform\Messaging\CommandBus;
 use Symfony\Component\HttpKernel\Exception\ServiceUnavailableHttpException;
 use Symfony\Component\Security\Core\Exception\BadCredentialsException;
@@ -22,7 +23,7 @@ use Symfony\Component\Security\Core\User\UserProviderInterface;
 /** @implements UserProviderInterface<AccountPrincipal> */
 final readonly class AccountUserProvider implements UserProviderInterface, PasswordUpgraderInterface
 {
-    public function __construct(private AccountRepository $accounts, private CommandBus $commands)
+    public function __construct(private AccountRepository $accounts, private CommandBus $commands, private AuthenticationExecution $authentication)
     {
     }
 
@@ -68,7 +69,8 @@ final readonly class AccountUserProvider implements UserProviderInterface, Passw
             throw new UnsupportedUserException('Unsupported account principal.');
         }
         try {
-            $upgraded = $this->commands->dispatch(new UpgradePasswordHashCommand($user->id(), $user->getPassword(), $newHashedPassword));
+            $message = new UpgradePasswordHashCommand($user->id(), $user->getPassword(), $newHashedPassword);
+            $upgraded = $this->authentication->run($user->id(), fn (): mixed => $this->commands->dispatch($message));
         } catch (\Throwable) {
             throw new ServiceUnavailableHttpException(null, 'Authentication unavailable.');
         }

@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace App\Tests\E2E;
 
+use App\Tests\Fixtures\Authorization\TaskBrowser;
 use App\Tests\Fixtures\NativeEvents\NativeEventsFixture;
 use Doctrine\DBAL\Connection;
 use PHPUnit\Framework\Attributes\Group;
@@ -222,10 +223,14 @@ final class EventsTest extends DatabaseTestCase
     public function testComposeHttpAndCliUseSelectedMode(): void
     {
         $ids = [];
+        $account = Uuid::v7();
         try {
-            $response = HttpClient::create()->request('POST', 'http://app:8080/_demo/tasks', ['json' => ['title' => 'native-mode-http'], 'max_duration' => 15]);
-            self::assertSame(201, $response->getStatusCode());
-            $id = $response->toArray()['id'];
+            $browser = TaskBrowser::login($this->observer, $account);
+            $browser->jsonRequest('POST', '/_demo/tasks', ['title' => 'native-mode-http']);
+            self::assertSame(201, $browser->getResponse()->getStatusCode());
+            $payload = json_decode((string) $browser->getResponse()->getContent(), true, flags: JSON_THROW_ON_ERROR);
+            self::assertIsArray($payload);
+            $id = $payload['id'];
             self::assertIsString($id);
             $ids[] = $id;
             $cli = new Process([PHP_BINARY, 'bin/console', 'app:task:create', 'native-mode-cli'], \dirname(__DIR__, 2));
@@ -245,6 +250,7 @@ final class EventsTest extends DatabaseTestCase
                 $this->safeDiagnostics($worker->getOutput().$worker->getErrorOutput());
             }
         } finally {
+            TaskBrowser::cleanup($this->observer, $account);
             foreach ($ids as $id) {
                 $this->observer->executeStatement("DELETE FROM platform_messaging_message WHERE queue_name = 'events' AND body LIKE ?", ['%'.$id.'%']);
                 $this->observer->executeStatement('DELETE FROM task_tracking_task WHERE id = ?', [$id]);

@@ -7,11 +7,13 @@ namespace App\Module\TaskTracking\Application\CreateTask;
 use App\Module\TaskTracking\Domain\Event\TaskCreatedEvent as DomainTaskCreatedEvent;
 use App\Module\TaskTracking\Domain\Task;
 use App\Module\TaskTracking\Domain\TaskRepository;
+use App\Platform\Authorization\AuthorizeWith;
 use App\Platform\Messaging\EventBus;
 use Symfony\Component\Messenger\Attribute\AsMessageHandler;
 use Symfony\Component\Uid\Uuid;
 
 #[AsMessageHandler(bus: 'command.bus')]
+#[AuthorizeWith(CreateTaskPolicy::class)]
 final readonly class CreateTaskHandler
 {
     public function __construct(private TaskRepository $tasks, private EventBus $events)

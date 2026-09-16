@@ -143,6 +143,19 @@ namespace App\Module\DiConsuming\Domain {
 }
 
 namespace App\Module\DiConsuming\Application\Lookup {
+    use App\Module\DiConsuming\Domain\RepositoryPort;
+
+    final readonly class LookupPolicy
+    {
+        public function __construct(public mixed $dependency = null, public ?RepositoryPort $repository = null)
+        {
+        }
+    }
+
+    final class LookupHandler
+    {
+    }
+
     final readonly class LookupResult
     {
     }

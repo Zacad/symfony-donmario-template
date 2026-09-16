@@ -25,3 +25,11 @@ services:
     App\Platform\Messaging\EventPolicyMiddleware:
         # CqrsPass supplies the concrete public Application-event inventory.
         arguments: [[]]
+
+    App\Platform\Authorization\AuthorizationMiddleware:
+        arguments:
+            $policies: !service_locator {}
+
+    App\Platform\Authorization\ExecutionContext:
+        arguments:
+            $trust: '@security.authentication.trust_resolver'

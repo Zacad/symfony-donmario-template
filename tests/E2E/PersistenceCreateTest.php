@@ -7,8 +7,13 @@ namespace App\Tests\E2E;
 use App\Module\TaskTracking\Application\CreateTask\CreateTaskCommand;
 use App\Module\TaskTracking\Domain\Task;
 use App\Module\TaskTracking\Infrastructure\Persistence\DoctrineTaskRepository;
+use App\Platform\Authorization\Actor;
+use App\Platform\Authorization\ActorKind;
+use App\Platform\Authorization\ExecutionContext;
 use App\Platform\Event\Recording\RecordsDomainEvents;
 use App\Platform\Messaging\CommandBus;
+use App\Tests\Fixtures\Authenticating\Browser;
+use App\Tests\Fixtures\Authorization\TaskBrowser;
 use Doctrine\DBAL\Exception;
 use Doctrine\ORM\EntityManagerInterface;
 use Symfony\Component\Filesystem\Filesystem;
@@ -18,12 +23,33 @@ final class PersistenceCreateTest extends RepositoryTestCase
 {
     public function testCommandBusCommitsBeforeDatabaseRecreation(): void
     {
-        $this->database();
+        $connection = $this->database();
         $commands = self::getContainer()->get(CommandBus::class);
         self::assertInstanceOf(CommandBus::class, $commands);
-        $id = $commands->dispatch(new CreateTaskCommand('cqrs-before-recreation'));
+        $context = self::getContainer()->get(ExecutionContext::class);
+        self::assertInstanceOf(ExecutionContext::class, $context);
+        $id = $context->run(new Actor(ActorKind::Operator, scope: 'tasks'), fn () => $commands->dispatch(new CreateTaskCommand('cqrs-before-recreation')));
         self::assertInstanceOf(Uuid::class, $id);
         new Filesystem()->dumpFile('var/e2e-cqrs-id', $id->toRfc4122());
+        $account = Uuid::v7();
+        $retained = false;
+        try {
+            $browser = TaskBrowser::login($connection, $account, $id);
+            self::assertFileDoesNotExist('var/e2e-cqrs-session.json');
+            $mask = umask(0077);
+            try {
+                new Filesystem()->dumpFile('var/e2e-cqrs-session.json', json_encode(['account' => $account->toRfc4122(), 'session' => Browser::session($browser)], JSON_THROW_ON_ERROR));
+            } finally {
+                umask($mask);
+            }
+            self::assertSame(0600, fileperms('var/e2e-cqrs-session.json') & 0777);
+            $retained = true;
+        } finally {
+            if (!$retained) {
+                TaskBrowser::cleanup($connection, $account);
+                new Filesystem()->remove('var/e2e-cqrs-session.json');
+            }
+        }
     }
 
     public function testApplicationRoleCommitsAndReloadsAModuleOwnedTask(): void

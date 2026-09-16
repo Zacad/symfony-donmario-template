@@ -6,6 +6,9 @@ namespace App\Tests\E2E;
 
 use App\Module\Authenticating\Application\RegisterAccount\RegisterAccountCommand;
 use App\Module\Authenticating\Application\UpgradePasswordHash\UpgradePasswordHashCommand;
+use App\Platform\Authorization\Actor;
+use App\Platform\Authorization\ActorKind;
+use App\Platform\Authorization\ExecutionContext;
 use App\Platform\Messaging\CommandBus;
 use App\Tests\Fixtures\Authenticating\AuthenticatingKernel;
 use App\Tests\Fixtures\Authenticating\Browser;
@@ -47,18 +50,32 @@ abstract class AuthenticatingTestCase extends DatabaseTestCase
         return $commands;
     }
 
+    /** Root fixture operations only; nested calls use commands() to retain their actor. */
+    protected function dispatch(#[\SensitiveParameter] object $command): mixed
+    {
+        $actor = match ($command::class) {
+            RegisterAccountCommand::class => new Actor(ActorKind::Operator, scope: 'accounts'),
+            UpgradePasswordHashCommand::class => new Actor(ActorKind::Authentication, $command->accountId),
+            default => throw new \LogicException('Unsupported authenticating fixture command.'),
+        };
+        $execution = self::getContainer()->get(ExecutionContext::class);
+        self::assertInstanceOf(ExecutionContext::class, $execution);
+
+        return $execution->run($actor, fn (): mixed => $this->commands()->dispatch($command));
+    }
+
     /** @return array{id: string, email: string, password: string, hash: string} */
     protected function account(string $suffix = '', ?string $password = null): array
     {
         $password ??= Browser::secret();
         $email = $this->prefix.$suffix.'@example.test';
-        $id = $this->commands()->dispatch(new RegisterAccountCommand($email, $password));
+        $id = $this->dispatch(new RegisterAccountCommand($email, $password));
         self::assertInstanceOf(Uuid::class, $id);
         // Seed legacy storage only after ordinary registration has validated and
         // hashed its plaintext input. Native web login must upgrade this fixture.
         $currentHash = $this->storedHash($id->toRfc4122());
         $hash = password_hash($password, PASSWORD_BCRYPT, ['cost' => 4]);
-        self::assertTrue($this->commands()->dispatch(new UpgradePasswordHashCommand($id, $currentHash, $hash)));
+        self::assertTrue($this->dispatch(new UpgradePasswordHashCommand($id, $currentHash, $hash)));
 
         return ['id' => $id->toRfc4122(), 'email' => $email, 'password' => $password, 'hash' => $hash];
     }

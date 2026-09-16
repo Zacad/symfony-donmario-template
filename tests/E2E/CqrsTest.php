@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace App\Tests\E2E;
 
+use App\Module\Authenticating\Infrastructure\Framework\Symfony\Security\AccountPrincipal;
 use App\Module\TaskTracking\Application\CreateTask\CreateTaskCommand;
 use App\Module\TaskTracking\Application\GetTask\GetTaskQuery;
 use App\Module\TaskTracking\Application\GetTask\GetTaskResult;
@@ -12,6 +13,7 @@ use App\Module\TaskTracking\Domain\TaskRepository;
 use App\Module\TaskTracking\Infrastructure\Testing\FaultTaskRepository;
 use App\Platform\Messaging\CommandBus;
 use App\Platform\Messaging\QueryBus;
+use App\Tests\Fixtures\Authenticating\Browser;
 use App\Tests\Fixtures\Cqrs\CqrsKernel;
 use App\Tests\Fixtures\Cqrs\FaultControl;
 use Doctrine\DBAL\Connection;
@@ -19,9 +21,14 @@ use Doctrine\DBAL\DriverManager;
 use Doctrine\ORM\EntityManagerInterface;
 use PHPUnit\Framework\Attributes\DataProvider;
 use Symfony\Component\HttpClient\HttpClient;
+use Symfony\Component\HttpFoundation\Request;
+use Symfony\Component\HttpFoundation\RequestStack;
 use Symfony\Component\Messenger\Exception\ValidationFailedException;
 use Symfony\Component\Process\Process;
+use Symfony\Component\Security\Core\Authentication\Token\Storage\TokenStorageInterface;
+use Symfony\Component\Security\Core\Authentication\Token\UsernamePasswordToken;
 use Symfony\Component\Uid\Uuid;
+use Symfony\Contracts\HttpClient\HttpClientInterface;
 
 final class CqrsTest extends DatabaseTestCase
 {
@@ -33,6 +40,9 @@ final class CqrsTest extends DatabaseTestCase
     private TaskRepository $repository;
     private FaultControl $fault;
     private string $prefix;
+    private Uuid $actorId;
+    private RequestStack $requests;
+    private TokenStorageInterface $tokens;
 
     protected static function getKernelClass(): string
     {
@@ -63,12 +73,35 @@ final class CqrsTest extends DatabaseTestCase
         $this->repository = $repository;
         $this->fault = $fault;
         $this->prefix = 'cqrs-'.bin2hex(random_bytes(8)).'-';
+        $this->actorId = Uuid::v7();
+        $this->observer->executeStatement('INSERT INTO authenticating_account (id, email, password_hash) VALUES (?, ?, ?)', [$this->actorId->toRfc4122(), $this->prefix.'@example.test', 'unused-cqrs-fixture']);
+        foreach (['task_tracking.task.create', 'task_tracking.task.view'] as $permission) {
+            $this->observer->executeStatement('INSERT INTO authorizing_global_permission_grant (id, account_id, permission_key) VALUES (?, ?, ?)', [Uuid::v7()->toRfc4122(), $this->actorId->toRfc4122(), $permission]);
+        }
+        $requests = $container->get('request_stack');
+        $tokens = $container->get('security.token_storage');
+        self::assertInstanceOf(RequestStack::class, $requests);
+        self::assertInstanceOf(TokenStorageInterface::class, $tokens);
+        $this->requests = $requests;
+        $this->tokens = $tokens;
+        // Direct bus verification uses the same native identity sources as HTTP.
+        // Permissions still come from the real policy and isolated PostgreSQL rows.
+        $this->requests->push(Request::create('/_demo/tasks'));
+        $this->tokens->setToken(new UsernamePasswordToken(new AccountPrincipal($this->actorId, $this->prefix.'@example.test', 'unused-cqrs-fixture'), 'main', []));
     }
 
     protected function tearDown(): void
     {
+        if (isset($this->tokens)) {
+            $this->tokens->setToken(null);
+            $this->requests->pop();
+        }
         if (isset($this->observer)) {
             $this->observer->executeStatement('DELETE FROM task_tracking_task WHERE title LIKE ?', [$this->prefix.'%']);
+            if (isset($this->actorId)) {
+                $this->observer->executeStatement('DELETE FROM authorizing_global_permission_grant WHERE account_id = ?', [$this->actorId->toRfc4122()]);
+                $this->observer->executeStatement('DELETE FROM authenticating_account WHERE id = ?', [$this->actorId->toRfc4122()]);
+            }
             $this->observer->close();
         }
         parent::tearDown();
@@ -76,7 +109,7 @@ final class CqrsTest extends DatabaseTestCase
 
     public function testHttpAndCliShareUseCasesAndCommittedResults(): void
     {
-        $http = HttpClient::createForBaseUri('http://app:8080', ['max_duration' => 5]);
+        $http = $this->authenticatedHttp();
         $title = $this->prefix."<error>title</error>\n\x1b[31m";
         $response = $http->request('POST', '/_demo/tasks', ['json' => ['title' => $title]]);
         self::assertSame(201, $response->getStatusCode(), $response->getContent(false));
@@ -147,7 +180,7 @@ final class CqrsTest extends DatabaseTestCase
 
     public function testHttpInputErrorsAreBoundedAndSafe(): void
     {
-        $http = HttpClient::createForBaseUri('http://app:8080', ['max_duration' => 5]);
+        $http = $this->authenticatedHttp();
         foreach (['{', '{}', '[]', '{"title":3}', '{"title":null}', '{"title":"valid","admin":true}'] as $body) {
             self::assertSame(400, $http->request('POST', '/_demo/tasks', ['headers' => ['Content-Type' => 'application/json'], 'body' => $body])->getStatusCode());
         }
@@ -328,7 +361,7 @@ final class CqrsTest extends DatabaseTestCase
             $this->connection->executeStatement('CREATE CONSTRAINT TRIGGER cqrs_test_failure AFTER INSERT ON task_tracking_task DEFERRABLE INITIALLY DEFERRED FOR EACH ROW EXECUTE FUNCTION public.cqrs_test_failure('.$this->connection->quote($title).')');
             $this->assertFails(fn () => $this->commands->dispatch(new CreateTaskCommand($title)), 'synthetic private SQL detail');
             self::assertSame(0, $this->countRows());
-            $response = HttpClient::createForBaseUri('http://app:8080', ['max_duration' => 5])->request('POST', '/_demo/tasks', ['json' => ['title' => $title]]);
+            $response = $this->authenticatedHttp()->request('POST', '/_demo/tasks', ['json' => ['title' => $title]]);
             self::assertSame(500, $response->getStatusCode());
             self::assertSame(['error' => 'operation_failed'], $response->toArray(false));
             $cli = $this->cli(['app:task:create', $title]);
@@ -341,6 +374,23 @@ final class CqrsTest extends DatabaseTestCase
         }
         $this->commands->dispatch(new CreateTaskCommand($this->prefix.'recovered'));
         self::assertSame(1, $this->countRows());
+    }
+
+    private function authenticatedHttp(): HttpClientInterface
+    {
+        $password = Browser::secret();
+        $hash = password_hash($password, PASSWORD_BCRYPT, ['cost' => 4]);
+        $this->observer->executeStatement('UPDATE authenticating_account SET password_hash = ? WHERE id = ?', [$hash, $this->actorId->toRfc4122()]);
+        $browser = Browser::create();
+        Browser::login($browser, $this->prefix.'@example.test', $password);
+        self::assertTrue(Browser::redirectedTo($browser, '/account'), 'CQRS HTTP verification requires a successful native web login.');
+        $browser->request('GET', '/account');
+        self::assertSame(200, $browser->getResponse()->getStatusCode());
+
+        return HttpClient::createForBaseUri('http://app:8080', [
+            'max_duration' => 5,
+            'headers' => ['Cookie' => Browser::cookieName().'='.Browser::session($browser)],
+        ]);
     }
 
     private function countRows(): int

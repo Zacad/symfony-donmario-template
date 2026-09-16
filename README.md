@@ -3,15 +3,19 @@
 A Docker-first foundation for building applications with AI-assisted development.
 Licensed under [MIT](LICENSE), copyright DonMario.
 
-**Latest accepted checkpoint:** [Subtask 8a — Application DTO collections](docs/tasks/08-authorizing.md)
-is **IMPLEMENTED, VERIFIED, REVIEWED and USER ACCEPTED on 2026-09-15**. Final setup,
-check, PostgreSQL E2E and consumer verification passed on 2026-09-14; both fresh independent
-implementation reviewers approved with no findings. Earlier fixture YAML and static
-issues are resolved; reviews completed on 2026-09-14. **8b Authorizing model/management
-is approved for implementation, not yet implemented**. The user's exact 2026-09-15
-“commit, push and proceed” accepts 8a, authorizes commit/push of the verified 8a
-checkpoint only, and approves beginning 8b. Main will begin 8b after that commit/push;
-future commits/pushes require explicit authorization.
+**Current checkpoint (2026-09-16):** [8b Authorizing model/management](docs/tasks/08-authorizing.md)
+is **IMPLEMENTED, VERIFIED, REVIEWED and USER ACCEPTED**. Following the full policy-only
+enforcement design, the user said **“accept and proceed”**; main recorded 8b acceptance
+and approval to implement [Task 9](docs/tasks/09-authorization-enforcement.md).
+Task 9 is **IMPLEMENTED, VERIFIED, REVIEWED and USER ACCEPTED on 2026-09-16**.
+Including the `ActorKind` enum correction, setup, check (**1360 tests / 7959 assertions**),
+E2E (**230 / 6306**) and fresh consumer (embedded **230 / 6310**) passed. Independent
+implementation, correction and additional design reviews approved with no findings;
+see [current handoff](docs/handoff.md#status-and-next-gate).
+Task 10 discovery/design continues in a fresh session; implementation needs its own approval.
+8a was pushed as `367fdfe`; the user's 2026-09-16 “commit and push changes” request
+authorizes this accepted 8b/9 delivery. Future commits/pushes need fresh authorization.
+Earlier awaiting-8b-acceptance records are superseded; [8b evidence](docs/handoff.md#completed-8b-verification-and-review--2026-09-15) is retained.
 
 ## Quick start
 
@@ -220,11 +224,10 @@ and USER ACCEPTED on 2026-09-14**, following the user's “i accept, proceed”
 implementation approval, including the identity-query correction. Final setup,
 full checks, HTTP/PostgreSQL E2E and fresh-consumer verification passed. Both fresh
 independent reviewers approved after inspecting code/evidence; verification and
-reviews completed on 2026-09-13. Latest accepted is **Subtask 8a — Application DTO
-collections, IMPLEMENTED, VERIFIED, REVIEWED and USER ACCEPTED on 2026-09-15**;
-8b is approved for implementation and not yet implemented.
+reviews completed on 2026-09-13. Latest accepted is **Task 9 policy-only enforcement (2026-09-16)**.
 LexikJWTAuthenticationBundle **3.2.0**, Lcobucci JWT **5.6.0** and API Platform Symfony
-**4.3.19** are installed. Business APIs and Authorizing are later subtasks.
+**4.3.19** are installed. Task 9 policy enforcement is verified/reviewed and user
+accepted; business API adapters retain their later approval gates.
 
 Provision an account using the hidden-input command above. A same-origin client sends
 these contracts over HTTPS outside loopback development:
@@ -325,6 +328,127 @@ For compromise response, use `./bin/dev down`, then
 `./bin/dev jwt-keys rotate-emergency`, then `./bin/dev up`. This publishes a fresh
 pair with no old-key trust; old tokens are rejected after restart. Do not restart
 after a failed switch until retained key/metadata state has been validated or restored.
+
+## Authorizing operator management (8b: user accepted 2026-09-15)
+
+Authorizing implements persisted global/resource roles and direct permission grants,
+three bounded Application APIs, and eight console commands. **Authority is trusted
+deployment shell/container access**, expressed by explicit `assignments` operator
+scope in Task 9. There are no HTTP/API management routes. Setup applied the four-table migration
+`Version20260915010000`; dependencies and lock files are unchanged.
+
+### Catalogue and scope
+
+The code-defined catalogue is
+`src/Module/Authorizing/Domain/AuthorizationCatalog.php`:
+
+| Role | Permission bundle | Assignment scopes |
+| --- | --- | --- |
+| `task_tracking.creator` | `task_tracking.task.create` | Global only |
+| `task_tracking.reader` | `task_tracking.task.view` | Global or exact `task_tracking.task` UUID |
+| `task_tracking.editor` | `task_tracking.task.view`, `task_tracking.task.complete` | Global or exact `task_tracking.task` UUID |
+| `authorizing.administrator` | `authorizing.manage` | Global only; required for account-actor assignment management |
+
+The same permissions can be granted directly. All applicable sources are additive;
+removing one source leaves any other source effective. Removing the last source
+denies subsequent checks after commit; already-authorized work may finish. No automatic
+grants, wildcard matching or role hierarchy exists, and JWT/session roles are not
+business permission authority.
+
+A global `task_tracking.task.view` check asks for view across **all** Tasks and uses
+only global sources. A resource check combines global sources with those for that
+exact type/UUID. A known permission with the wrong resource type, or a global-only
+permission checked on a resource, is invalid. Missing accounts and unknown, syntactically
+valid permission keys return false. Operational failures return no partial decisions.
+
+To customize an application, edit `PERMISSIONS` (null means global-only; a resource
+type allows global or that exact type) and `ROLES` in the catalogue as a reviewed code
+change. **Every permission in a role bundle must support the assignment scope**:
+a bundle containing a global-only permission cannot be assigned to a resource;
+mixed resource types cannot form a compatible resource-scoped bundle. Keep stable keys
+and review existing assignments when changing bundles, since current code defines
+their meaning. Retired keys/types remain listable/removable for cleanup; deliberate
+cleanup is needed before reusing a key. No runtime role-definition management is supplied.
+
+### Single-item commands and listing
+
+Replace quoted `<ACCOUNT_UUID>` and `<TASK_UUID>` placeholders with UUIDs from your
+application. Additions require an already-persisted account. Use either `--global`
+or **both** `--resource-type` and `--resource-id`; they are mutually exclusive.
+
+```sh
+./bin/dev console app:authorization:role:assign '<ACCOUNT_UUID>' task_tracking.reader --global
+./bin/dev console app:authorization:role:remove '<ACCOUNT_UUID>' task_tracking.reader --global
+./bin/dev console app:authorization:permission:grant '<ACCOUNT_UUID>' task_tracking.task.view --resource-type=task_tracking.task --resource-id='<TASK_UUID>'
+./bin/dev console app:authorization:permission:revoke '<ACCOUNT_UUID>' task_tracking.task.view --resource-type=task_tracking.task --resource-id='<TASK_UUID>'
+./bin/dev console app:authorization:check '<ACCOUNT_UUID>' task_tracking.task.view --global
+./bin/dev console app:authorization:assignments '<ACCOUNT_UUID>' --limit=50
+# Continue using the previous response's non-null next value:
+./bin/dev console app:authorization:assignments '<ACCOUNT_UUID>' --limit=50 --after='<NEXT_CURSOR>'
+```
+
+Changes return JSON `requested`, `added`, `removed`, `unchanged` counts based on rows
+actually changed, so repeated additions/removals are idempotent. Checks return
+`{"allowed":true}` or `{"allowed":false}`. **Exit 0 includes a deny decision**; inspect
+the JSON boolean. Invalid input exits **2** with `Invalid authorization input.`;
+operational failure exits **1** with `Authorization operation failed.`. Native command
+syntax errors retain Symfony Console diagnostics.
+
+Listing returns `{"assignments":[...],"next":null}` or an opaque `next` string. Pages
+are **1–100 items, default 50**, in stable account/source/immutable assignment-UUID
+order. Source order is global roles, resource roles, global grants, resource grants.
+There are no totals, offsets or cross-page snapshot guarantees; concurrent changes
+can affect later pages, and UUIDv7 is not commit ordering. `--after` is at most **512
+characters**, strictly decoded and bound to the account, source and assignment UUID.
+It is pagination data, not an authorization grant. Removal-only batches and listing
+support orphan and retired-key cleanup.
+
+### Batch JSON stdin
+
+The remaining two commands accept a top-level JSON array on stdin: **1–100 objects,
+at most 64 KiB, JSON depth 16**, with exact field names. Replace UUID placeholders
+inside these examples before running them. Global items **omit** `resourceType` and
+`resourceId`; explicitly supplying null is currently rejected. Resource items require
+both string fields.
+
+```sh
+./bin/dev console app:authorization:change-batch '<ACCOUNT_UUID>' <<'JSON'
+[
+  {"operation":"add","kind":"role","key":"task_tracking.creator","scope":"global"},
+  {"operation":"add","kind":"permission","key":"task_tracking.task.view","scope":"resource","resourceType":"task_tracking.task","resourceId":"<TASK_UUID>"}
+]
+JSON
+
+./bin/dev console app:authorization:check-batch <<'JSON'
+[
+  {"accountId":"<ACCOUNT_UUID>","permission":"task_tracking.task.create","scope":"global"},
+  {"accountId":"<ACCOUNT_UUID>","permission":"task_tracking.task.view","scope":"resource","resourceType":"task_tracking.task","resourceId":"<TASK_UUID>"}
+]
+JSON
+```
+
+`change-batch` applies one account's entire batch atomically. `operation` is `add` or
+`remove`; `kind` is `role` or `permission`. Duplicate/conflicting natural keys fail
+the batch. `check-batch` may span accounts and returns `{"decisions":[{"allowed":true},...]}`
+in input order. Both use the same exit/error contracts as single-item commands.
+
+Application callers use `ChangeAccountAssignmentsCommand`, `EvaluatePermissionsQuery`
+and `ListAccountAssignmentsQuery` through the buses. Authenticating owns the UUID-only
+`CheckAccountExistenceQuery`. Additions observe account existence **before** taking
+the account-scoped transaction advisory lock; this snapshot is not referential
+integrity. Mutations use at most eight DML statements and the existing root transaction,
+with no handler/repository flush, commit or retry. Resource existence is established
+by the owning module, with no Authorizing resource SQL: this supports nested initial
+access for an unflushed owned Task. Unflushed account registration plus assignment
+is unsupported.
+
+Evaluation has a budget of **at most two business SQL reads**, including account
+existence; listing uses one bounded query. No authorization cache is introduced.
+Actual N=100 budgets, populated query plans and final runtime/consumer verification
+passed; both fresh independent reviewers approved without findings. These observed
+plans do not promise universal access paths or latency. See [final evidence](docs/handoff.md#completed-8b-verification-and-review--2026-09-15),
+[architecture](docs/architecture.md#authorizing-modelmanagement-8b-user-accepted-2026-09-15)
+and the main-owned [task record](docs/tasks/08-authorizing.md) for details.
 
 ## Runtime and local configuration
 
@@ -427,20 +551,22 @@ The module's service configuration explicitly binds the interface to its adapter
 application handlers inject the Domain interface. Repositories are module-internal
 ports; other modules use the public command/query contracts.
 
-Commands, queries, handlers and any result DTOs are grouped by use case:
+Commands, queries, handlers, policies and any result DTOs are grouped by use case:
 
 ```text
 TaskTracking/Application/CreateTask/CreateTaskCommand.php
 TaskTracking/Application/CreateTask/CreateTaskHandler.php
+TaskTracking/Application/CreateTask/CreateTaskPolicy.php
 TaskTracking/Application/CreateTask/TaskCreatedEvent.php
 TaskTracking/Application/GetTask/GetTaskQuery.php
 TaskTracking/Application/GetTask/GetTaskHandler.php
+TaskTracking/Application/GetTask/GetTaskPolicy.php
 TaskTracking/Application/GetTask/GetTaskResult.php
 ```
 
 Subtask 3b implements this example on the boundary rules established in 3a. The exact
 `Application/<UseCase>/<Name>{Command,Query,Result,Input,Event}` types form the public data API;
-neighboring handlers/helpers remain private module implementation. Domain is
+neighboring handlers/policies/helpers remain private module implementation. Domain is
 independent of Application DTOs and public events. Subtask 4 adds internal
 `Domain/Event/*Event` facts explicitly translated by Application to public events;
 public event payloads cannot carry command/query/result/input DTOs or module internals. There is
@@ -457,26 +583,46 @@ and rejects direct concrete injection, including through named aliases.
 
 ### Try the shared use cases
 
+The existing CLI commands explicitly run in trusted operator `tasks` scope. They
+take no actor argument; shell access is their authority:
+
 ```sh
 ./bin/dev console app:task:create 'First task'
 # Use the printed UUID:
 ./bin/dev console app:task:show UUID
-
-curl -i -H 'Content-Type: application/json' \
-    -d '{"title":"Created over HTTP"}' http://127.0.0.1:8080/_demo/tasks
-curl http://127.0.0.1:8080/_demo/tasks/UUID
 ```
 
-These HTTP demonstration routes exist in **dev/test only**. POST returns 201 with
-the UUID and Location; GET returns UUID/title JSON or 404. Payload-shape errors are
+For HTTP, provision an account, sign in at `/login`, and explicitly grant its UUID
+`task_tracking.creator` globally to create and `task_tracking.reader` globally to
+read this example, using the operator commands above. From the same-origin
+browser console after login:
+
+```js
+const created = await fetch('/_demo/tasks', {
+    method: 'POST',
+    headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({title: 'Created over HTTP'})
+});
+const task = await created.json();
+await fetch(`/_demo/tasks/${task.id}`).then(response => response.json());
+```
+
+These **dev/test-only** HTTP demonstration routes use native web-session identity;
+an API bearer token supplies no identity here. For valid requests, anonymous denial
+is **401**, authenticated denial **403**, both with fixed `{"error":"Access denied."}`.
+Create requires global `task_tracking.task.create`; Get requires
+`task_tracking.task.view` for the exact Task UUID (global sources also apply).
+Creation grants no automatic read access. Authorized POST returns 201 with
+the UUID and Location; authorized GET returns UUID/title JSON or 404. Payload-shape errors are
 400, bodies above 4 KiB are 413, non-JSON POSTs are 415 and message validation is 422.
 CLI message validation exits 2, missing tasks/operation failures exit 1, and success
 exits 0. Native command-line syntax errors use Symfony Console's diagnostics.
 Responses use no-store; unexpected failures expose only a generic error.
 
 Application/UI adapters inject `App\Platform\Messaging\CommandBus` or `QueryBus`.
-The outer command validates input, starts the default Doctrine transaction, runs its
-handler, validates returned DTO data, then flushes and commits before returning. Nested commands share that unit;
+The outer command validates input, starts the default Doctrine transaction, evaluates
+its policy, runs its handler, validates returned DTO data, then flushes and commits
+before returning. Nested commands share that unit;
 a nested failure prevents the outer commit even if caught. Independent operations
 reset ORM/context state. Queries never automatically flush, and cannot dispatch
 commands. Repositories continue to schedule persistence without flushing.
@@ -485,9 +631,53 @@ Module-owned `Resources/config/validation.yaml` files must be explicitly listed 
 `framework.validation.mapping.paths`. Handlers use `#[AsMessageHandler(bus: ...)]`
 with one exact DTO argument and a public-data return type, beside their message.
 Compilation rejects missing/duplicate/wrong-bus handlers and invalid middleware
-wiring. Raw Messenger services are internal infrastructure, not module-facing APIs.
+wiring. Each command/query handler also declares its co-located policy as below.
+Raw Messenger services are internal infrastructure, not module-facing APIs.
 The standard framework messages visible in `debug:messenger` are rejected by the
 application message policy; command/query helpers dispatch only their inventoried DTOs.
+
+### Policy-only authorization (Task 9: user accepted 2026-09-16)
+
+Every command/query handler declares its co-located private policy with
+`#[AuthorizeWith(CreateTaskPolicy::class)]` (import
+`App\Platform\Authorization\AuthorizeWith`). The policy is a final readonly service
+with `__invoke(CreateTaskCommand $message, PolicyContext $context): bool`.
+The compiler builds an exact message-to-policy map; authorization middleware resolves
+policies through its private framework service locator. Handlers do not inject or
+call policies. Actor-dependent admission belongs in policies; permission calculation,
+catalogue/scope validation, password/hash validation and Domain invariants remain
+use-case logic.
+
+`PolicyContext` contains immutable `actor`, `supportRead` and `caller` facts supplied
+by infrastructure. `Actor::$kind` is the unbacked `ActorKind` enum: `Anonymous`,
+`Account`, `Operator` or `Authentication`. Message target UUIDs are not actors. Native fully authenticated
+HTTP identity supplies the account UUID; `/api/me` admits only that same account.
+Exact trusted adapters establish `OperatorExecution` scopes: account provisioning
+uses `accounts`, the eight authorization commands use `assignments`, and existing
+Task create/show commands use `tasks`. Only the native account provider can use
+`AuthenticationExecution` for an account-bound password-hash upgrade. CLI/worker
+execution alone grants nothing, and authority cannot change during bus execution.
+
+Assignment change/list policies require global `authorizing.manage` for an account
+actor, or explicit operator `assignments` scope. Foundation rules are exact:
+`EvaluatePermissionsQuery` admits policy support reads or operator `assignments`;
+`CheckAccountExistenceQuery` admits policy support reads or direct callers
+`EvaluatePermissionsQuery` and `ChangeAccountAssignmentsCommand`. `supportRead` is
+not a general internal bypass; other nested queries reauthorize normally.
+
+Policies may use QueryBus and owning Domain read ports/state, never handlers,
+CommandBus or EventBus. Source, DI and Deptrac rules align this boundary; approved
+Domain ports are not an arbitrary SQL sandbox. Policy resolution/execution is inside
+the restrictive scope. A caught nested failure leaves the root invalid and prevents
+handler admission/commit. Input validation precedes admission; command policies run
+inside the owned transaction, while queries gain no automatic transaction. Live
+permission reads do not serialize against revocation; already-authorized work may
+finish. Policy/handler reads can overlap; historical 8b SQL budgets do not establish
+whole Task 9 journey budgets. Automatic Task grants, list filtering and durable
+service identities remain future designs. See [architecture](docs/architecture.md#policy-only-authorization-task-9)
+for the implementation boundary and [handoff](docs/handoff.md#status-and-next-gate)
+for final evidence. The measured direct Get journey uses three business reads
+(account existence, permission evaluation, Task lookup), excluding HTTP authentication.
 
 ### Application DTO collections (8a: user accepted 2026-09-15)
 
@@ -803,7 +993,7 @@ checks and agreed E2E journey. See [Subtask 1](docs/tasks/01-runtime.md) and
 
 ## Architecture and delivery
 
-Subtasks **1, 2, 3a, 3b, 4, 5b, 6 (including the registration correction) and 7** are accepted.
+Subtasks **1, 2, 3a, 3b, 4, 5b, 6 (including the registration correction), 7 and 8a** are accepted.
 
 Read [the architecture](docs/architecture.md), [delivery roadmap](docs/roadmap.md)
 and [agent instructions](AGENTS.md). Subtask 1 establishes the executable runtime;
@@ -856,9 +1046,17 @@ consumer E2E **202 tests / 4676 assertions**. Both fresh independent implementat
 reviewers approved with no findings and did not run suites. See the
 [handoff evidence](docs/handoff.md#completed-8a-verification-and-review--2026-09-14)
 for exact paths and final-code coverage. Earlier fixture YAML/static issues are resolved.
-8b is approved for implementation, not yet implemented; main will begin after the
-authorized commit/push of the verified 8a checkpoint. Future commits/pushes need explicit authorization;
-the initializer retains its later approval gate.
+8a was pushed as `367fdfe` on 2026-09-15. **8b is IMPLEMENTED, VERIFIED, REVIEWED and
+USER ACCEPTED** on that date. Final 8b runs cover the earlier cursor
+Domain-exception and EXPLAIN numeric fixes, N=100 budgets, populated plans and
+consumer persistence/isolation. Both fresh independent reviewers approved with no
+findings; neither reran suites. Only documentation changed between 8b review and acceptance.
+See [final handoff evidence](docs/handoff.md#completed-8b-verification-and-review--2026-09-15).
+The subsequent “accept and proceed” approved Task 9's full policy-only design.
+Task 9 is implemented, verified, freshly independently reviewed and user accepted
+on 2026-09-16, including the enum correction. See its [task record](docs/tasks/09-authorization-enforcement.md) for final
+evidence and resolved intermediate failures. This authorized delivery includes 8b/9;
+future commits/pushes need explicit authorization. The initializer retains its later approval gate.
 
 For dependency updates, use containerized Composer, review recipe/lock changes,
 refresh image digests and CLI archive hashes deliberately, then run the checks

@@ -5,6 +5,15 @@ temporary project and installs `App\Module\CollectionChecking` there. Its DTOs,
 native YAML validation, module service exclusions and handlers pass the production
 source, DI, CQRS and dependency checks. No fixture feature is installed in the app.
 
+Each fixture command/query declares its own co-located authorization policy. These
+policies explicitly allow only their exact disposable test operations. The runtime
+script enters the production `tasks` operator scope through the trusted
+`App\Tests\Fixtures\Collections\TaskExecution` adapter for each collection command
+that nests production TaskTracking creation. Production policies still reauthorize
+those nested calls; the scope is released on both success and failure. The adapter
+uses `ExecutionContext` outside module code and does not expose an execution facade
+through a public alias.
+
 `tests/Architecture/CqrsTest.php` automatically exercises the compiled buses offline:
 14 malformed input collections, nested field validation, Input dispatch rejection,
 non-service data, scalar/value/enum outputs, typed list envelopes, an invalid query

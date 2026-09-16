@@ -21,7 +21,7 @@ final class AuthenticatingJwtThrottleTest extends AuthenticatingTestCase
         self::assertSame('http://127.0.0.1:8080', getenv('E2E_BASE_URL'));
         $email = 'jwt-throttle-'.bin2hex(random_bytes(8)).'@example.test';
         $password = Browser::secret();
-        $id = $this->commands()->dispatch(new RegisterAccountCommand($email, $password));
+        $id = $this->dispatch(new RegisterAccountCommand($email, $password));
         self::assertInstanceOf(Uuid::class, $id);
         for ($i = 0; $i < 4; ++$i) {
             if (0 === $i % 2) {

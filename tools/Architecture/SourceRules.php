@@ -88,6 +88,9 @@ final class SourceRules
                 if (ContractTypes::isOwnEventListener($class)) {
                     $errors = [...$errors, ...$this->listenerDependencyViolations($class, $declaration, $path, $nodes)];
                 }
+                if (null !== ModuleMap::owner($class)) {
+                    $errors = [...$errors, ...$this->authorizationDependencyViolations($class, $declaration, $path, $nodes)];
+                }
                 $owner = ModuleMap::owner($class);
                 if (!$this->hasOwnedLayout($class) || (null !== $owner && !\in_array($owner, $modules, true))) {
                     $errors[] = $this->diagnostic('source.layout', $path, $declaration, $class, 'expected App\\Module\\<ResponsibilityEndingInIng> in an approved module directory, App\\Platform, or App\\Kernel');
@@ -148,6 +151,128 @@ final class SourceRules
                 .'(?:Application|Domain|Infrastructure)(?:\\\\'.$part.')+'
                 .'|UI\\\\(?:Http|Api|Console)(?:\\\\'.$part.')+'
                 .'|Resources\\\\migrations\\\\'.$part.')$~D', $class);
+    }
+
+    /**
+     * Source class constants are declarations, not DI instances. Only a policy
+     * constant inside the handler's exact AuthorizeWith attribute gets that exception.
+     * Like the listener guard, this checks resolved syntax, not dynamic PHP execution.
+     *
+     * @param array<Node> $nodes
+     *
+     * @return list<string>
+     */
+    private function authorizationDependencyViolations(string $class, Stmt\ClassLike $declaration, string $path, array $nodes): array
+    {
+        $errors = [];
+        $policy = ContractTypes::isPolicy($class);
+        $handler = ContractTypes::isApplicationHandler($class);
+        $authorizeWith = 'App\\Platform\\Authorization\\AuthorizeWith';
+        $policyDeclarations = [];
+        $attributes = [];
+        foreach ($declaration->attrGroups as $group) {
+            foreach ($group->attrs as $attribute) {
+                if ($handler && $authorizeWith === $attribute->name->toString()) {
+                    $attributes[] = $attribute;
+                    foreach ($attribute->args as $argument) {
+                        $constant = $argument->value;
+                        if ($constant instanceof Expr\ClassConstFetch && $constant->class instanceof Node\Name && $constant->name instanceof Node\Identifier && 'class' === $constant->name->name
+                            && ContractTypes::isPolicy($constant->class->toString())
+                            && substr($class, 0, (int) strrpos($class, '\\')) === substr($constant->class->toString(), 0, (int) strrpos($constant->class->toString(), '\\'))) {
+                            $policyDeclarations[$constant->class->toString()][] = $constant;
+                        }
+                    }
+                }
+            }
+        }
+        if ('Application' === ModuleMap::layer($class) && str_ends_with($class, 'Policy') && !$policy) {
+            $errors[] = $this->diagnostic('authorization.policy_path', $path, $declaration, $class, 'policies require Application/<UseCase>/<Name>Policy');
+        }
+        foreach ($this->classReferences($declaration, $nodes) as [$reference, $site]) {
+            $target = $reference->toString();
+            $import = $site instanceof Stmt\Use_ || $site instanceof Stmt\GroupUse;
+            if (1 === preg_match(ContractTypes::handlerPattern().'i', $target)) {
+                $errors[] = $this->diagnostic('source.handler_dependency', $path, $reference, $class, 'must invoke application handlers through CommandBus/QueryBus, not depend on '.$target);
+            }
+            if (1 === preg_match(ContractTypes::policyPattern().'i', $target)
+                && !($handler && isset($policyDeclarations[$target]) && ($import || in_array($site, $policyDeclarations[$target], true)))) {
+                $errors[] = $this->diagnostic('authorization.policy_reference', $path, $reference, $class, 'policy '.$target.' is only a handler AuthorizeWith declaration, never an injected/called service');
+            }
+            if ($policy && !$this->isPolicyDependency($class, $target)) {
+                $errors[] = $this->diagnostic('authorization.policy_dependency', $path, $reference, $class, 'policies may use only public data, QueryBus, Actor/ActorKind/PolicyContext, owning Domain ports/state and approved immutable values/exceptions; found '.$target);
+            }
+            if (0 === strcasecmp($target, $authorizeWith)
+                && !($handler && ($import || in_array($site, $attributes, true)))) {
+                $errors[] = $this->diagnostic('authorization.declaration', $path, $reference, $class, 'AuthorizeWith is only a handler class attribute');
+            }
+            if (1 === preg_match('~^App\\\\Platform\\\\Authorization\\\\(?:Actor|ActorKind|PolicyContext)$~Di', $target) && !$policy) {
+                $errors[] = $this->diagnostic('authorization.context', $path, $reference, $class, 'Actor/ActorKind/PolicyContext belong only in policies, never message input or other module services');
+            }
+            if (0 === strcasecmp($target, 'App\\Platform\\Authorization\\AuthorizationDenied')
+                && !('UI' === ModuleMap::layer($class) && ($import || $site instanceof Stmt\Catch_))) {
+                $errors[] = $this->diagnostic('authorization.denied', $path, $reference, $class, 'UI may catch AuthorizationDenied; admission belongs to policies');
+            }
+            if ((str_starts_with(strtolower($target), 'app\\platform\\authorization\\') && !ContractTypes::isAuthorizationData($target)
+                || 0 === strcasecmp($target, 'App\\Platform\\Messaging\\InvocationContext'))
+                && !ContractTypes::mayUseExecutionFacade($class, $target)) {
+                $errors[] = $this->diagnostic('authorization.runtime', $path, $reference, $class, 'execution authority is private; '.$target.' is not an approved facade for this adapter');
+            }
+        }
+
+        return $errors;
+    }
+
+    private function isPolicyDependency(string $source, string $target): bool
+    {
+        return in_array(strtolower($target), ['self', 'static', 'parent'], true)
+            || ContractTypes::isPublic($target) || ContractTypes::isImmutable($target)
+            || 1 === preg_match(ContractTypes::POLICY_EXCEPTION_PATTERN, $target)
+            || in_array($target, ['App\\Platform\\Messaging\\QueryBus', 'App\\Platform\\Authorization\\Actor', 'App\\Platform\\Authorization\\ActorKind', 'App\\Platform\\Authorization\\PolicyContext'], true)
+            || (ModuleMap::owner($source) === ModuleMap::owner($target) && 'Domain' === ModuleMap::layer($target) && !ContractTypes::isAnyEventData($target));
+    }
+
+    /**
+     * @param array<Node> $nodes
+     *
+     * @return list<array{Node\Name, Node}>
+     */
+    private function classReferences(Stmt\ClassLike $declaration, array $nodes): array
+    {
+        $finder = new NodeFinder();
+        $references = [];
+        foreach ($finder->find($nodes, static fn (Node $node): bool => $node instanceof Stmt\Use_ || $node instanceof Stmt\GroupUse) as $use) {
+            if (!$use instanceof Stmt\Use_ && !$use instanceof Stmt\GroupUse) {
+                continue;
+            }
+            foreach ($use->uses as $item) {
+                if (Stmt\Use_::TYPE_NORMAL === ($item->type ?: $use->type)) {
+                    $prefix = $use instanceof Stmt\GroupUse ? $use->prefix->toString().'\\' : '';
+                    $references[] = [new Node\Name\FullyQualified($prefix.$item->name->toString(), $item->name->getAttributes()), $use];
+                }
+            }
+        }
+        foreach ($finder->findInstanceOf([$declaration], Node::class) as $node) {
+            $types = match (true) {
+                $node instanceof Stmt\Class_ => [$node->extends, ...$node->implements],
+                $node instanceof Stmt\Interface_ => $node->extends,
+                $node instanceof Stmt\Enum_ => $node->implements,
+                $node instanceof Stmt\TraitUse => $node->traits,
+                $node instanceof Node\Attribute => [$node->name],
+                $node instanceof Expr\New_, $node instanceof Expr\StaticCall,
+                $node instanceof Expr\StaticPropertyFetch, $node instanceof Expr\ClassConstFetch,
+                $node instanceof Expr\Instanceof_ => [$node->class],
+                $node instanceof Node\Param, $node instanceof Stmt\Property,
+                $node instanceof Stmt\ClassConst => [$node->type],
+                $node instanceof Node\FunctionLike => [$node->getReturnType()],
+                $node instanceof Stmt\Catch_ => $node->types,
+                default => [],
+            };
+            foreach ($finder->findInstanceOf(array_filter($types), Node\Name::class) as $reference) {
+                $references[] = [$reference, $node];
+            }
+        }
+
+        return $references;
     }
 
     /**

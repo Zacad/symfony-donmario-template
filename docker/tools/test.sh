@@ -192,6 +192,8 @@ else
     step persistence-boundaries compose run --rm --no-deps runner php vendor/bin/phpunit tests/E2E/PersistenceBoundariesTest.php
     step cqrs compose run --rm --no-deps runner php vendor/bin/phpunit tests/E2E/CqrsTest.php
     step collections compose run --rm --no-deps runner php vendor/bin/phpunit tests/E2E/CollectionsTest.php
+    step authorizing compose run --rm --no-deps runner php vendor/bin/phpunit tests/E2E/AuthorizingTest.php
+    step authorization-enforcement compose run --rm --no-deps runner php vendor/bin/phpunit tests/E2E/AuthorizationEnforcementTest.php --exclude-group authorization-outage-prepare --exclude-group authorization-outage-down --exclude-group authorization-outage-recover
     step persistence-create compose run --rm --no-deps runner php vendor/bin/phpunit tests/E2E/PersistenceCreateTest.php
     step authenticating-provision compose run --rm --no-deps runner php vendor/bin/phpunit tests/E2E/AuthenticatingProvisionTest.php
     step authenticating-jwt compose run --rm --no-deps runner php vendor/bin/phpunit tests/E2E/AuthenticatingJwtTest.php
@@ -250,8 +252,11 @@ else
     test -z "$(compose --profile worker ps --status running --quiet worker)"
     step events-worker-remove compose --profile worker rm --force worker
     step events-outage-seed compose run --rm --no-deps runner php vendor/bin/phpunit tests/E2E/EventsTest.php --filter testSeedOutage
+    step authorization-enforcement-prepare compose run --rm --no-deps runner php vendor/bin/phpunit tests/E2E/AuthorizationEnforcementTest.php --filter testPrepareOutage
     step stop-database compose stop database
     step database-down compose run --rm --no-deps runner php vendor/bin/phpunit tests/E2E/DatabaseDownTest.php
+    step authorizing-database-down compose run --rm --no-deps runner php vendor/bin/phpunit tests/E2E/AuthorizingDatabaseDownTest.php
+    step authorization-enforcement-down compose run --rm --no-deps runner php vendor/bin/phpunit tests/E2E/AuthorizationEnforcementTest.php --filter testAssertOutage
     step authenticating-database-down compose run --rm --no-deps runner php vendor/bin/phpunit tests/E2E/AuthenticatingDatabaseDownTest.php
     step authenticating-jwt-database-down compose run --rm --no-deps runner php vendor/bin/phpunit tests/E2E/AuthenticatingJwtDatabaseDownTest.php
     old_database=$(compose ps --all --quiet database)
@@ -262,6 +267,8 @@ else
     step migration-repeat compose run --rm --no-deps runner php bin/console doctrine:migrations:migrate --no-interaction
     step recovery compose up --detach --wait --wait-timeout 60 app
     step persistence-read compose run --rm --no-deps runner php vendor/bin/phpunit tests/E2E/PersistenceReadTest.php
+    step authorizing-recovery compose run --rm --no-deps runner php vendor/bin/phpunit tests/E2E/AuthorizingTest.php --filter testRecoveryChecks
+    step authorization-enforcement-recover compose run --rm --no-deps runner php vendor/bin/phpunit tests/E2E/AuthorizationEnforcementTest.php --filter testRecoverOutage
     step authenticating-recovery compose run --rm --no-deps runner php vendor/bin/phpunit tests/E2E/AuthenticatingPersistenceTest.php --filter testExpiredLimiterAndDatabaseRecoveryKeepTheSameAccount
     step authenticating-jwt-database-recovery compose run --rm --no-deps runner php vendor/bin/phpunit tests/E2E/AuthenticatingJwtPersistenceTest.php --filter testDatabaseAndSigningRecoveryKeepIdentityAndAllowNewIssuance
     step events-outage-recovery compose run --rm --no-deps runner php vendor/bin/phpunit tests/E2E/EventsTest.php --filter testRecoverOutage

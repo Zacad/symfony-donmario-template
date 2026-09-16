@@ -11,6 +11,72 @@ final class ContractTypes
 
     public const string IMMUTABLE_PATTERN = '~^(?:DateTimeImmutable|Symfony\\\\Component\\\\Uid\\\\Uuid)$~D';
 
+    public const string POLICY_EXCEPTION_PATTERN = '~^(?:LogicException|RuntimeException|InvalidArgumentException|Exception|Throwable)$~D';
+
+    public static function isPolicy(string $class): bool
+    {
+        return 1 === preg_match(self::policyPattern(), $class);
+    }
+
+    public static function policyPattern(?string $module = null): string
+    {
+        return '~^'.self::modulePattern($module).'Application\\\\'.self::NAME.'\\\\'.self::NAME.'Policy$~D';
+    }
+
+    /** Includes legacy/synthetic handler names; placement/signatures have separate checks. */
+    public static function handlerPattern(?string $module = null): string
+    {
+        return '~^'.self::modulePattern($module).'Application\\\\(?:'.self::NAME.'\\\\)*(?:'.self::NAME.')?Handler$~D';
+    }
+
+    public static function isApplicationHandler(string $class): bool
+    {
+        return 1 === preg_match(self::handlerPattern(), $class);
+    }
+
+    /** Exact infrastructure-owned values/metadata, never injectable services or public DTOs. */
+    public static function isAuthorizationData(string $class): bool
+    {
+        return in_array($class, self::authorizationData(), true);
+    }
+
+    /** @return list<string> */
+    public static function authorizationData(): array
+    {
+        return array_map(static fn (string $name): string => 'App\\Platform\\Authorization\\'.$name, ['Actor', 'ActorKind', 'PolicyContext', 'AuthorizeWith', 'AuthorizationDenied']);
+    }
+
+    /** @return array<string, list<string>> */
+    public static function executionFacadeConsumers(): array
+    {
+        return [
+            'App\\Platform\\Authorization\\OperatorExecution' => [
+                'App\\Module\\Authenticating\\UI\\Console\\ProvisionAccountConsoleCommand',
+                'App\\Module\\Authorizing\\UI\\Console\\AuthorizationConsole',
+                'App\\Module\\TaskTracking\\UI\\Console\\CreateTaskConsoleCommand',
+                'App\\Module\\TaskTracking\\UI\\Console\\ShowTaskConsoleCommand',
+            ],
+            'App\\Platform\\Authorization\\AuthenticationExecution' => [
+                'App\\Module\\Authenticating\\UI\\Http\\Security\\AccountUserProvider',
+            ],
+        ];
+    }
+
+    public static function mayUseExecutionFacade(string $source, string $target): bool
+    {
+        return in_array($source, self::executionFacadeConsumers()[$target] ?? [], true);
+    }
+
+    public static function isAuthorizationRuntime(string $class): bool
+    {
+        return in_array($class, [
+            ...array_keys(self::executionFacadeConsumers()),
+            'App\\Platform\\Authorization\\ExecutionContext',
+            'App\\Platform\\Authorization\\AuthorizationMiddleware',
+            'App\\Platform\\Messaging\\InvocationContext',
+        ], true);
+    }
+
     public static function isPublic(string $class): bool
     {
         return self::isApplicationData($class) || self::isEventData($class);

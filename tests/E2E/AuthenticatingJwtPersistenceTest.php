@@ -18,7 +18,7 @@ final class AuthenticatingJwtPersistenceTest extends AuthenticatingTestCase
     {
         $email = 'jwt-persistence-'.bin2hex(random_bytes(8)).'@example.test';
         $password = Browser::secret();
-        $id = $this->commands()->dispatch(new RegisterAccountCommand($email, $password));
+        $id = $this->dispatch(new RegisterAccountCommand($email, $password));
         self::assertInstanceOf(Uuid::class, $id);
         $token = JwtHttp::token(JwtHttp::login($email, $password));
         JwtHttp::identity(JwtHttp::me($token), $id->toRfc4122(), $email);

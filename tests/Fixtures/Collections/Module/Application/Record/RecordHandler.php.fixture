@@ -5,9 +5,11 @@ declare(strict_types=1);
 namespace App\Module\CollectionChecking\Application\Record;
 
 use App\Module\CollectionChecking\Domain\ObservationRepository;
+use App\Platform\Authorization\AuthorizeWith;
 use Symfony\Component\Messenger\Attribute\AsMessageHandler;
 
 #[AsMessageHandler(bus: 'command.bus')]
+#[AuthorizeWith(RecordPolicy::class)]
 final readonly class RecordHandler
 {
     public function __construct(private ObservationRepository $observations)

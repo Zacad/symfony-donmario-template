@@ -6,6 +6,7 @@ namespace App\Module\TaskTracking\UI\Console;
 
 use App\Module\TaskTracking\Application\GetTask\GetTaskQuery;
 use App\Module\TaskTracking\Application\GetTask\GetTaskResult;
+use App\Platform\Authorization\OperatorExecution;
 use App\Platform\Messaging\QueryBus;
 use Psr\Log\LoggerInterface;
 use Symfony\Component\Console\Attribute\AsCommand;
@@ -18,7 +19,7 @@ use Symfony\Component\Messenger\Exception\ValidationFailedException;
 #[AsCommand(name: 'app:task:show', description: 'Read a task through the query bus.')]
 final class ShowTaskConsoleCommand extends Command
 {
-    public function __construct(private readonly QueryBus $queries, private readonly LoggerInterface $logger)
+    public function __construct(private readonly QueryBus $queries, private readonly LoggerInterface $logger, private readonly OperatorExecution $operator)
     {
         parent::__construct();
     }
@@ -35,7 +36,8 @@ final class ShowTaskConsoleCommand extends Command
             if (!is_string($id)) {
                 return Command::INVALID;
             }
-            $task = $this->queries->ask(new GetTaskQuery($id));
+            $message = new GetTaskQuery($id);
+            $task = $this->operator->run('tasks', fn (): mixed => $this->queries->ask($message));
             if (null === $task) {
                 $output->writeln('Task not found.', OutputInterface::OUTPUT_RAW);
 

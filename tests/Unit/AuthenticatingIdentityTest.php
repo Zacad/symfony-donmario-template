@@ -101,7 +101,7 @@ final class AuthenticatingIdentityTest extends TestCase
         $bus->expects(self::never())->method('dispatch');
 
         $this->expectException(UnauthorizedHttpException::class);
-        $this->expectExceptionMessage('Authentication required.');
+        $this->expectExceptionMessage('Access denied.');
         new AccountIdentityProvider($tokens, new QueryBus($bus))->provide(new Get());
     }
 

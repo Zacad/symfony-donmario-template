@@ -588,9 +588,9 @@ final class SourceRulesTest extends TestCase
             yield 'Domain cannot depend on foreign '.$kind => ['App\\Module\\TaskTracking\\Domain\\Leak', 'App\\Module\\Authorizing\\Application\\Lookup\\Lookup'.$kind, 'TaskTracking.Domain on Authorizing.ApplicationData'];
             yield 'event cannot expose Application '.$kind => ['App\\Module\\TaskTracking\\Application\\Leak\\LeakEvent', 'App\\Module\\Authorizing\\Application\\Lookup\\Lookup'.$kind, 'TaskTracking.EventData on Authorizing.ApplicationData'];
         }
-        yield 'foreign co-located handler' => ['App\\Module\\TaskTracking\\Application\\Leak', 'App\\Module\\Authorizing\\Application\\GetGrant\\GetGrantHandler', 'TaskTracking.Application on Authorizing.Application'];
+        yield 'foreign co-located handler' => ['App\\Module\\TaskTracking\\Application\\Leak', 'App\\Module\\Authorizing\\Application\\GetGrant\\GetGrantHandler', 'TaskTracking.Application on Authorizing.Handler'];
         yield 'foreign helper in a use case' => ['App\\Module\\TaskTracking\\Application\\Leak', 'App\\Module\\Authorizing\\Application\\GetGrant\\Formatter', 'TaskTracking.Application on Authorizing.Application'];
-        yield 'public data cannot expose its co-located handler' => ['App\\Module\\TaskTracking\\Application\\Lookup\\LookupResult', 'App\\Module\\TaskTracking\\Application\\Lookup\\LookupHandler', 'TaskTracking.ApplicationData on TaskTracking.Application'];
+        yield 'public data cannot expose its co-located handler' => ['App\\Module\\TaskTracking\\Application\\Lookup\\LookupResult', 'App\\Module\\TaskTracking\\Application\\Lookup\\LookupHandler', 'TaskTracking.ApplicationData on TaskTracking.Handler'];
         yield 'case variation cannot hide public data dependency from Domain' => ['App\\Module\\TaskTracking\\Domain\\Leak', 'app\\module\\authorizing\\application\\GetGrant\\GetGrantResult', 'TaskTracking.Domain on Authorizing.ApplicationData'];
         yield 'no blanket Platform access' => ['App\\Module\\TaskTracking\\Application\\Leak', 'App\\Platform\\Repository', 'TaskTracking.Application on Platform'];
         yield 'Domain has no blanket Platform access' => ['App\\Module\\TaskTracking\\Domain\\Leak', 'App\\Platform\\Repository', 'TaskTracking.Domain on Platform'];
@@ -607,11 +607,11 @@ final class SourceRulesTest extends TestCase
         yield 'raw Messenger bus' => ['App\\Module\\TaskTracking\\Application\\Leak', 'Symfony\\Component\\Messenger\\MessageBusInterface', 'TaskTracking.Application on MessagingRuntime'];
         yield 'raw handler locator' => ['App\\Module\\TaskTracking\\UI\\Http\\Leak', 'Symfony\\Component\\Messenger\\Handler\\HandlersLocatorInterface', 'TaskTracking.UI on MessagingRuntime'];
         yield 'Domain cannot dispatch' => ['App\\Module\\TaskTracking\\Domain\\Leak', 'App\\Platform\\Messaging\\CommandBus', 'TaskTracking.Domain on MessagingFacades'];
-        yield 'Infrastructure cannot dispatch' => ['App\\Module\\TaskTracking\\Infrastructure\\Leak', 'App\\Platform\\Messaging\\QueryBus', 'TaskTracking.Internal on MessagingFacades'];
+        yield 'Infrastructure cannot dispatch' => ['App\\Module\\TaskTracking\\Infrastructure\\Leak', 'App\\Platform\\Messaging\\QueryBus', 'TaskTracking.Internal on QueryBus'];
         yield 'invocation context remains private' => ['App\\Module\\TaskTracking\\Application\\Leak', 'App\\Platform\\Messaging\\InvocationContext', 'TaskTracking.Application on Platform'];
-        yield 'public DTO cannot dispatch' => ['App\\Module\\TaskTracking\\Application\\Leak\\LeakResult', 'App\\Platform\\Messaging\\QueryBus', 'TaskTracking.ApplicationData on MessagingFacades'];
+        yield 'public DTO cannot dispatch' => ['App\\Module\\TaskTracking\\Application\\Leak\\LeakResult', 'App\\Platform\\Messaging\\QueryBus', 'TaskTracking.ApplicationData on QueryBus'];
         foreach (['Infrastructure\\Persistence\\DoctrineTaskRepository', 'Application\\Handler', 'UI\\Http\\Controller'] as $target) {
-            yield 'domain must not depend on '.$target => ['App\\Module\\TaskTracking\\Domain\\Leak', 'App\\Module\\TaskTracking\\'.$target, 'TaskTracking.Domain on TaskTracking.'.(str_starts_with($target, 'Application') ? 'Application' : (str_starts_with($target, 'UI') ? 'UI' : 'Internal'))];
+            yield 'domain must not depend on '.$target => ['App\\Module\\TaskTracking\\Domain\\Leak', 'App\\Module\\TaskTracking\\'.$target, 'TaskTracking.Domain on TaskTracking.'.(str_starts_with($target, 'Application') ? 'Handler' : (str_starts_with($target, 'UI') ? 'UI' : 'Internal'))];
         }
         yield 'application concrete repository' => ['App\\Module\\TaskTracking\\Application\\Leak', 'App\\Module\\TaskTracking\\Infrastructure\\Persistence\\DoctrineTaskRepository', 'TaskTracking.Application on TaskTracking.Internal'];
         yield 'domain runtime ORM type' => ['App\\Module\\TaskTracking\\Domain\\Leak', 'Doctrine\\ORM\\EntityManagerInterface', 'TaskTracking.Domain on PersistenceRuntime'];
@@ -627,7 +627,7 @@ final class SourceRulesTest extends TestCase
         foreach (['Base', 'Application', 'Infrastructure'] as $category) {
             yield 'Domain cannot use '.$category.' primitive' => ['App\\Module\\TaskTracking\\Domain\\Leak', 'App\\Platform\\Event\\'.$category.'Event', 'TaskTracking.Domain on '.$category.'Event'];
         }
-        foreach (['Domain\\Task' => 'Domain', 'Application\\Observe\\ObserveHandler' => 'Application', 'Infrastructure\\Repository' => 'Internal', 'Domain\\Event\\ObservedEvent' => 'DomainEventData', 'Infrastructure\\Event\\ObservedEvent' => 'InfrastructureEventData'] as $target => $layer) {
+        foreach (['Domain\\Task' => 'Domain', 'Application\\Observe\\ObserveHandler' => 'Handler', 'Infrastructure\\Repository' => 'Internal', 'Domain\\Event\\ObservedEvent' => 'DomainEventData', 'Infrastructure\\Event\\ObservedEvent' => 'InfrastructureEventData'] as $target => $layer) {
             yield 'own listener cannot reach '.$target => ['App\\Module\\TaskTracking\\Infrastructure\\EventListener\\ObservedListener', 'App\\Module\\TaskTracking\\'.$target, 'TaskTracking.EventListener on TaskTracking.'.$layer];
         }
         foreach (['Doctrine\\ORM\\EntityManagerInterface' => 'PersistenceRuntime', 'Symfony\\Component\\Messenger\\MessageBusInterface' => 'MessagingRuntime', 'Symfony\\Component\\Messenger\\Exception\\ValidationFailedException' => 'MessagingDeclarations', 'Psr\\Log\\LoggerInterface' => 'Vendor', 'App\\Platform\\Messaging\\EventBus' => 'EventBus', 'App\\Platform\\Messaging\\InvocationContext' => 'Platform'] as $target => $layer) {
@@ -648,6 +648,152 @@ final class SourceRulesTest extends TestCase
             json_encode('App\\Module\\TaskTracking\\Application\\Leak must not depend on App\\Module\\Authorizing\\Domain\\Grant (TaskTracking.Application on Authorizing.Domain)', JSON_THROW_ON_ERROR),
             $process->getOutput(),
         );
+    }
+
+    public function testPolicyDeclarationAndReadDependenciesPassBothSourceAndDeptrac(): void
+    {
+        $this->writeClass('App\\Platform\\Authorization\\ActorKind', 'enum ActorKind { case Anonymous; case Account; case Operator; case Authentication; }');
+        $this->writeClass('App\\Platform\\Authorization\\Actor', 'final readonly class Actor { public function __construct(public ActorKind $kind) {} }');
+        $this->writeClass('App\\Module\\TaskTracking\\Domain\\TaskRepository', 'interface TaskRepository { public function find(): ?Task; }');
+        $this->writeClass('App\\Module\\TaskTracking\\Application\\Lookup\\LookupQuery', 'final readonly class LookupQuery {}');
+        $this->writeClass('App\\Module\\TaskTracking\\Application\\Lookup\\LookupPolicy', <<<'PHP'
+            use App\Platform\Authorization\{Actor, ActorKind as Kind, PolicyContext};
+            use App\Platform\Messaging\QueryBus;
+            use App\Module\TaskTracking\Domain\TaskRepository;
+            use App\Module\Authorizing\Application\GetGrant\GetGrantResult;
+            final readonly class LookupPolicy {
+                public function __construct(private QueryBus $queries, private TaskRepository $tasks) {}
+                public function __invoke(LookupQuery $query, PolicyContext $context): bool {
+                    $actor = $context->actor;
+                    if (!$actor instanceof Actor) { throw new \LogicException('Missing actor.'); }
+                    return Kind::Account === $actor->kind && $this->tasks->find() !== null;
+                }
+            }
+            PHP);
+        $this->writeClass('App\\Module\\TaskTracking\\Application\\Lookup\\LookupHandler', <<<'PHP'
+            use App\Platform\Authorization\AuthorizeWith as Admission;
+            use App\Module\TaskTracking\Application\Lookup\{LookupPolicy as Policy};
+            use Symfony\Component\Messenger\Attribute\AsMessageHandler;
+            #[AsMessageHandler(bus: 'query.bus')]
+            #[Admission(Policy::class)]
+            final class LookupHandler { public function __invoke(LookupQuery $query): bool { return true; } }
+            PHP);
+        self::assertSame([], (new SourceRules())->violations($this->root));
+        $process = $this->deptrac();
+        self::assertSame(0, $process->getExitCode(), $process->getOutput().$process->getErrorOutput());
+    }
+
+    public function testDeclaredActorKindEnumIsNotPublicApplicationData(): void
+    {
+        $this->writeClass('App\\Platform\\Authorization\\ActorKind', 'enum ActorKind { case Anonymous; case Account; case Operator; case Authentication; }');
+        $class = 'App\\Module\\TaskTracking\\Application\\Lookup\\LookupResult';
+        $this->writeClass($class, 'use App\\Platform\\Authorization\\ActorKind; final readonly class LookupResult { public function __construct(public ActorKind|string|null $kind) {} }');
+
+        $this->assertSourceDiagnostic('authorization.context', $class);
+        $this->assertSourceDiagnostic('contract.type', $class);
+    }
+
+    /** @return iterable<string, array{string, string, string}> */
+    public static function forbiddenAuthorizationSource(): iterable
+    {
+        foreach (['Application\\Lookup\\LookupHandler', 'Application\\Helper', 'UI\\Http\\Controller', 'Infrastructure\\Adapter', 'Domain\\Service'] as $source) {
+            $name = substr($source, (int) strrpos($source, '\\') + 1);
+            yield 'handler bypass from '.$source => [$source, 'use App\\Module\\TaskTracking\\Application\\Other\\OtherHandler as Other; final class '.$name.' { public function __construct(private Other $other) {} }', 'source.handler_dependency'];
+        }
+        foreach ([
+            'new LookupPolicy()',
+            'LookupPolicy::decide()',
+            '$factory = LookupPolicy::class',
+        ] as $operation) {
+            yield 'attribute does not permit '.$operation => ['Application\\Lookup\\LookupHandler', '#[\\App\\Platform\\Authorization\\AuthorizeWith(LookupPolicy::class)] final class LookupHandler { public function call(): void { '.$operation.'; } }', 'authorization.policy_reference'];
+        }
+        yield 'policy instance with valid metadata' => ['Application\\Lookup\\LookupHandler', '#[\\App\\Platform\\Authorization\\AuthorizeWith(LookupPolicy::class)] final class LookupHandler { public function __construct(private LookupPolicy $policy) {} }', 'authorization.policy_reference'];
+        yield 'policy in unrelated attribute' => ['Application\\Lookup\\LookupHandler', '#[\\Other(LookupPolicy::class)] final class LookupHandler {}', 'authorization.policy_reference'];
+        yield 'declaration on helper' => ['Application\\Lookup\\Helper', '#[\\App\\Platform\\Authorization\\AuthorizeWith(LookupPolicy::class)] final class Helper {}', 'authorization.declaration'];
+        yield 'declaration as handler runtime data' => ['Application\\Lookup\\LookupHandler', 'final class LookupHandler { public function __construct(private \\App\\Platform\\Authorization\\AuthorizeWith $attribute) {} }', 'authorization.declaration'];
+        yield 'nested policy path' => ['Application\\Lookup\\Nested\\LookupPolicy', 'final class LookupPolicy {}', 'authorization.policy_path'];
+        foreach (['Actor', 'ActorKind', 'PolicyContext'] as $type) {
+            yield 'context in DTO '.$type => ['Application\\Lookup\\LookupQuery', 'final readonly class LookupQuery { public function __construct(public \\App\\Platform\\Authorization\\'.$type.' $actor) {} }', 'authorization.context'];
+            yield 'context in handler '.$type => ['Application\\Lookup\\LookupHandler', 'use App\\Platform\\Authorization\\'.$type.'; final class LookupHandler {}', 'authorization.context'];
+        }
+        foreach (['Application\\Lookup\\LookupHandler', 'Application\\Helper', 'UI\\Http\\Controller', 'Infrastructure\\Adapter', 'Domain\\Service'] as $source) {
+            $name = substr($source, (int) strrpos($source, '\\') + 1);
+            yield 'actor kind case in '.$source => [$source, 'use App\\Platform\\Authorization\\{ActorKind as Kind}; final class '.$name.' { public function run(): void { $kind = Kind::Operator; } }', 'authorization.context'];
+        }
+        yield 'actor kind case variation' => ['Application\\Helper', 'final class Helper { public function run(): void { $kind = \\app\\platform\\authorization\\actorkind::Account; } }', 'authorization.context'];
+        foreach (['CommandBus', 'EventBus', 'InvocationContext'] as $type) {
+            yield 'policy messaging '.$type => ['Application\\Lookup\\LookupPolicy', 'use App\\Platform\\Messaging\\'.$type.'; final class LookupPolicy {}', 'authorization.policy_dependency'];
+        }
+        foreach (['\\App\\Module\\TaskTracking\\Application\\Helper', '\\App\\Module\\TaskTracking\\Application\\Other\\OtherPolicy', '\\Doctrine\\ORM\\EntityManagerInterface', '\\Symfony\\Component\\HttpFoundation\\RequestStack', '\\Psr\\Container\\ContainerInterface', '\\Psr\\Log\\LoggerInterface', '\\App\\Module\\Authorizing\\Domain\\Grant'] as $target) {
+            yield 'policy dependency '.$target => ['Application\\Lookup\\LookupPolicy', 'use '.$target.' as Proxy; final class LookupPolicy { public function __construct(private Proxy $proxy) {} }', 'authorization.policy_dependency'];
+        }
+        foreach (['OperatorExecution', 'AuthenticationExecution', 'ExecutionContext'] as $type) {
+            yield 'untrusted facade '.$type => ['UI\\Console\\OtherCommand', 'use App\\Platform\\Authorization\\'.$type.'; final class OtherCommand {}', 'authorization.runtime'];
+        }
+        yield 'denial construction' => ['UI\\Http\\Controller', 'final class Controller { public function run(): void { throw new \\App\\Platform\\Authorization\\AuthorizationDenied(true); } }', 'authorization.denied'];
+        yield 'handler catch denial' => ['Application\\Lookup\\LookupHandler', 'final class LookupHandler { public function run(): void { try {} catch (\\App\\Platform\\Authorization\\AuthorizationDenied $error) {} } }', 'authorization.denied'];
+    }
+
+    #[DataProvider('forbiddenAuthorizationSource')]
+    public function testAuthorizationSyntaxCannotBypassSourceBoundaries(string $suffix, string $declaration, string $rule): void
+    {
+        $class = 'App\\Module\\TaskTracking\\'.$suffix;
+        $this->writeClass($class, $declaration);
+        $this->assertSourceDiagnostic($rule, $class);
+    }
+
+    public function testExactExecutionAdaptersAndUiDenialCatchAreAccepted(): void
+    {
+        foreach (\App\Platform\Architecture\ContractTypes::executionFacadeConsumers() as $facade => $consumers) {
+            foreach ($consumers as $consumer) {
+                $name = substr($consumer, (int) strrpos($consumer, '\\') + 1);
+                $this->writeClass($consumer, 'final class '.$name.' { public function __construct(private \\'.$facade.' $execution) {} }');
+            }
+        }
+        $this->writeClass('App\\Module\\TaskTracking\\UI\\Http\\Controller', 'use App\\Platform\\Authorization\\AuthorizationDenied; final class Controller { public function run(): void { try {} catch (AuthorizationDenied $denied) {} } }');
+        self::assertSame([], (new SourceRules())->violations($this->root));
+        $process = $this->deptrac();
+        self::assertSame(0, $process->getExitCode(), $process->getOutput().$process->getErrorOutput());
+    }
+
+    /** @return iterable<string, array{string, string, string}> */
+    public static function forbiddenAuthorizationDependencies(): iterable
+    {
+        $policy = 'App\\Module\\TaskTracking\\Application\\Lookup\\LookupPolicy';
+        foreach ([
+            'App\\Platform\\Messaging\\CommandBus' => 'MessagingFacades',
+            'App\\Platform\\Messaging\\EventBus' => 'EventBus',
+            'App\\Platform\\Messaging\\InvocationContext' => 'Platform',
+            'App\\Platform\\Authorization\\ExecutionContext' => 'Platform',
+            'App\\Module\\TaskTracking\\Application\\Helper' => 'TaskTracking.Application',
+            'App\\Module\\TaskTracking\\Application\\Lookup\\LookupHandler' => 'TaskTracking.Handler',
+            'App\\Module\\TaskTracking\\Infrastructure\\Repository' => 'TaskTracking.Internal',
+            'App\\Module\\Authorizing\\Domain\\Grant' => 'Authorizing.Domain',
+            'Doctrine\\ORM\\EntityManagerInterface' => 'PersistenceRuntime',
+            'Symfony\\Component\\Messenger\\Attribute\\AsMessageHandler' => 'MessageHandlerAttribute',
+            'Symfony\\Component\\Messenger\\Exception\\ValidationFailedException' => 'MessagingDeclarations',
+            'Psr\\Log\\LoggerInterface' => 'Vendor',
+            'Psr\\Container\\ContainerInterface' => 'Vendor',
+            'Symfony\\Component\\HttpFoundation\\RequestStack' => 'Vendor',
+        ] as $target => $layer) {
+            yield $target => [$policy, $target, 'TaskTracking.Policy on '.$layer];
+        }
+        yield 'module handler bypass' => ['App\\Module\\TaskTracking\\UI\\Http\\Controller', 'App\\Module\\TaskTracking\\Application\\Lookup\\LookupHandler', 'TaskTracking.UI on TaskTracking.Handler'];
+        yield 'Platform cannot inject policies' => ['App\\Platform\\Technical', $policy, 'Platform on TaskTracking.Policy'];
+        yield 'context is not public DTO data' => ['App\\Module\\TaskTracking\\Application\\Lookup\\LookupQuery', 'App\\Platform\\Authorization\\Actor', 'TaskTracking.ApplicationData on PolicyContext'];
+        foreach (['Application\\Lookup\\LookupQuery' => 'ApplicationData', 'Application\\Lookup\\LookupHandler' => 'Handler', 'Application\\Helper' => 'Application', 'Domain\\Service' => 'Domain', 'Infrastructure\\Adapter' => 'Internal', 'UI\\Http\\Controller' => 'UI'] as $source => $layer) {
+            yield 'actor kind in '.$source => ['App\\Module\\TaskTracking\\'.$source, 'App\\Platform\\Authorization\\ActorKind', 'TaskTracking.'.$layer.' on PolicyContext'];
+        }
+        yield 'facade is exact adapter only' => ['App\\Module\\TaskTracking\\UI\\Console\\OtherCommand', 'App\\Platform\\Authorization\\OperatorExecution', 'TaskTracking.UI on OperatorExecution'];
+        yield 'operator cannot claim authentication scope' => ['App\\Module\\TaskTracking\\UI\\Console\\CreateTaskConsoleCommand', 'App\\Platform\\Authorization\\AuthenticationExecution', 'TaskTracking.OperatorAdapter on AuthenticationExecution'];
+        yield 'handler has no context' => ['App\\Module\\TaskTracking\\Application\\Lookup\\LookupHandler', 'App\\Platform\\Authorization\\PolicyContext', 'TaskTracking.Handler on PolicyContext'];
+        yield 'helper cannot declare admission' => ['App\\Module\\TaskTracking\\Application\\Lookup\\Helper', 'App\\Platform\\Authorization\\AuthorizeWith', 'TaskTracking.Application on AuthorizeWith'];
+    }
+
+    #[DataProvider('forbiddenAuthorizationDependencies')]
+    public function testDeptracAuthorizationLayersRemainNarrow(string $source, string $target, string $layers): void
+    {
+        $this->testRealDeptracRejectsTheSpecificBoundary($source, $target, $layers);
     }
 
     private function assertSourceDiagnostic(string $rule, string $offender): void

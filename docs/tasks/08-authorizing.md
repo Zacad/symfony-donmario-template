@@ -2,6 +2,16 @@
 
 ## Approval and current checkpoint
 
+**Current checkpoint (2026-09-15): 8b is IMPLEMENTED, VERIFIED, REVIEWED and USER
+ACCEPTED.** Following the full policy-only enforcement design, the user said
+**“accept and proceed”**. Main recorded 8b acceptance and approval to implement
+[Task 9](09-authorization-enforcement.md), now **IMPLEMENTED, VERIFIED, REVIEWED and
+USER ACCEPTED on 2026-09-16**, including its enum correction. Its task record contains final setup/check/E2E/consumer
+evidence and fresh independent approvals. The user's subsequent 2026-09-16
+“commit and push changes” request authorizes this accepted 8b/9 delivery.
+Earlier awaiting-acceptance
+and Task 9 design-gate records below are historical and superseded by this checkpoint.
+
 On 2026-09-14 the user approved trusted operator-console administration, requested
 global **and resource-scoped roles**, and explicitly chose Application DTO collections
 and batch capabilities from the start for reusable applications. After the revised
@@ -10,7 +20,7 @@ design, the user approved **“proceed”**, followed by **“continue”**.
 The approved sequence has two separately verified/reviewed/accepted checkpoints:
 
 1. **8a — Application DTO collections: IMPLEMENTED, VERIFIED, REVIEWED and USER ACCEPTED on 2026-09-15.**
-2. **8b — Authorizing model/management: APPROVED FOR IMPLEMENTATION on 2026-09-15; not yet implemented.**
+2. **8b — Authorizing model/management: IMPLEMENTED, VERIFIED, REVIEWED and USER ACCEPTED (2026-09-15).**
 
 ### User acceptance and authorization — 2026-09-15
 
@@ -20,12 +30,12 @@ In response to the request to accept 8a and proceed to 8b, the user said exactly
 
 This records **8a USER ACCEPTED on 2026-09-15**, explicit authorization to commit
 and push the verified 8a checkpoint, and approval to begin implementing the agreed
-8b design. Main owns the Git workflow and will begin 8b after that commit/push.
+8b design. Main committed and pushed 8a as `367fdfe` to `origin/main`, then began 8b.
 This authorization is limited to the verified 8a checkpoint; future commits/pushes
-require explicit authorization. 8b is not yet implemented and still requires its
-own verification, fresh independent review and user acceptance.
+require explicit authorization. 8b implementation, verification and fresh independent
+review were complete at that handoff; acceptance subsequently followed as recorded above.
 
-8a is now the latest accepted checkpoint. Its verification and implementation reviews
+8a was then the latest accepted checkpoint. Its verification and implementation reviews
 remain dated **2026-09-14**; Subtask 7's accepted evidence remains historical.
 The working tree was clean when 8a implementation resumed (latest existing commit
 `c29a3f9`); earlier handoff statements about uncommitted authentication work are historical.
@@ -146,7 +156,8 @@ Both reviewers inspected code and retained evidence and **did not rerun suites**
 No code changes followed their reviews; only completion documentation was updated.
 Final container inspection shows development app/database healthy, worker stopped,
 and no remaining verification-consumer containers. **8a was subsequently USER ACCEPTED
-on 2026-09-15; 8b was approved for implementation and has not yet been implemented.**
+on 2026-09-15; 8b was approved for implementation.** The completed 8b evidence and
+reviews appear below; these earlier 8a results do not establish 8b verification.
 
 ## Approved 8b design direction
 
@@ -197,6 +208,82 @@ changes; retired keys remain inspectable/removable and reuse needs deliberate cl
 100-item query budgets and populated query plans, unique indexes/concurrent mutations,
 rollback/recovery, orphan/retired-key cleanup, keyset pagination, atomic initial owner
 access and persistence/isolation. It requires its own full evidence and fresh review.
+
+## 8b implementation and verification — 2026-09-15
+
+Authorizing is installed with its Domain catalogue, four mapped assignment entities,
+Domain repository port and set-based Doctrine adapter, three public batch/page APIs,
+native YAML validation, and eight trusted operator console commands. Authenticating's
+new `CheckAccountExistenceQuery` returns only UUID/existence records through QueryBus;
+its owning repository performs a single parameterized read. No package/lock updates
+were needed for 8b. The applied module migration is `Version20260915010000`.
+
+The authority and consistency boundaries above remain explicit: CLI operator authority
+comes from deployment shell/container access. Application-user enforcement belongs to
+Task 9. A global check of a resource permission asks for all resources of its declared
+type and considers only global sources. Resource checks include exact scoped sources.
+Role additions must be compatible with the whole bundle. Account existence is read
+before the account advisory lock and is a snapshot, not a referential guarantee.
+
+| Command | Final result and evidence |
+| --- | --- |
+| `./bin/dev setup` | **PASS**; retained RSA3072 keys/dependencies, applied Authorizing migration, app/database healthy. |
+| `./bin/dev check` | **PASS**: **656 architecture tests / 3619 assertions + 449 unit tests / 2657 assertions = 1105 tests / 6276 assertions**. Deptrac **1679 allowed / 0 violations / 0 uncovered**. Native collection metadata, audit, static, style, lint, shell and native-event fixtures passed. `var/test-runs/run-5YVJm6fG/`. |
+| `./bin/dev test` | **PASS**: **219 tests / 5581 assertions**, all **42 PHPUnit phases**. Main Authorizing journey **15 tests / 848 assertions**, outage **1 / 8**, recovery **1 / 39**. `var/test-runs/run-mAZqm44t/`. |
+| `TMPDIR=/tmp/opencode ./bin/dev verify-setup` | **PASS**: `/tmp/opencode/donmario-setup-taLhYutC/`; embedded **219 tests / 5581 assertions**, all **42 phases**, at `application/var/test-runs/run-chCqGwQF/`. All four consumer assignment UUIDs/rows and eight ordered allow/deny decisions survive repeat setup, app/database recreation and embedded isolated tests; `authorizing.log` records five successful checkpoints. Existing authentication/key/cookie/consumer isolation and cleanup pass. |
+
+### Observable behavior and performance evidence
+
+- Each source independently allows, all sources union, and removal of the last source
+  denies. Wrong accounts/resources remain isolated; known incompatible scope rejects;
+  unknown permission/missing accounts deny. Orphan/retired rows remain listable/removable.
+- Native bus list bounds reject malformed/oversized inputs before SQL. Actual CLI tests
+  cover all commands, strict scopes and bounded stdin/cursors. Invalid input exits 2,
+  operation failure 1, and deny remains a successful exit 0 with `allowed: false`.
+- Real PostgreSQL uniqueness/non-null/index/FK inspection, late DML failure rollback,
+  and root/nested transaction tests pass. An unflushed Task can receive explicit nested
+  initial access; failure of either side or a caught nested failure prevents commit.
+- Native CLI processes demonstrably wait on the same account advisory lock while a
+  different account progresses. Duplicate grants produce one change; ordered opposing
+  changes follow transaction lock order rather than a special revoke-wins policy.
+  Lock timeout rolls back the root and subsequent operations recover.
+- At **N=100**, decisions use exactly **two business reads**, including account
+  existence; a 100-change write uses the bounded set-based path. Mixed source/add/remove
+  batches exercise all eight DML groups. Each page executes one bounded query.
+- Populated plans include **8,000 unrelated assignments** without forcing index use.
+  The 100-decision plan returns 100 rows and uses role natural-key indexes (estimated
+  cost **4229.93**). A limit-7 first page returns 8 lookahead rows with all four cursor
+  indexes and five Limit nodes (cost **26.22**). Source-3 continuation uses only its
+  cursor index, skips prior sources, and returns 8 rows (cost **8.23**). These are local
+  fixture observations, not workload-independent plan/latency guarantees.
+
+The first E2E run found a Domain exception classified as operational for a mismatched
+cursor; `InvalidAuthorizationInput` now extends `DomainException`, preserving the
+fixed invalid-input exit. PostgreSQL EXPLAIN numeric fields legitimately decode as
+floats, so numeric equality assertions replaced wire-integer assumptions. The final
+check/E2E/consumer evidence above covers both corrections. Earlier failed/partial runs
+are not final evidence.
+
+### Fresh independent 8b implementation reviews — 2026-09-15
+
+- **Policy/CLI reviewer `ses_f5beb07f6ffely21CI4G0EXW7N`: APPROVED, no findings.**
+  Inspected scope and additive policy, whole-role-bundle validation, owning account
+  query boundary, public DTO validation, bounded console input/cursors, fixed errors,
+  atomicity and catalogue customization. Confirmed relevant passing evidence.
+- **Persistence/evidence reviewer `ses_f5beb0781ffe8vZ9yo2cnH90jq`: APPROVED, no findings.**
+  Inspected entity/migration/index agreement, owned parameterized SQL, transaction
+  advisory locks, exact conflict targets and counts, nested/unflushed Task atomicity,
+  concurrency/timeouts, bounded keyset queries, actual N=100/populated plans and
+  consumer assignment-identity persistence, secrecy and cleanup.
+
+Both reviewers inspected code and retained evidence and **did not run suites**.
+Only completion documentation changed between 8b review and acceptance. Final 8b
+container inspection confirms development app/database healthy and the worker stopped.
+**Historical status: 8b was ready for user acceptance.** The subsequent “accept and
+proceed” accepted 8b and approved the full Task 9 policy-only implementation design.
+Its work remained uncommitted until the explicit 2026-09-16 Git delivery request;
+future commits/pushes require fresh authorization.
+Retained 8b verification and review above are not Task 9 evidence.
 
 ## Design review
 

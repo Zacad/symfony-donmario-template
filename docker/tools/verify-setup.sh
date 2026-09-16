@@ -119,6 +119,7 @@ original=$(cksum < "$CHECKOUT/var/docker/local.env")
 # The ORM marker is in this disposable DEVELOPMENT checkout only, never the caller's DB.
 docker exec "$app" php docker/tools/consumer-task.php create > "$WORK/marker.log"
 docker exec "$app" php docker/tools/consumer-authenticating.php create > "$WORK/authenticating.log"
+docker exec "$app" php docker/tools/consumer-authorizing.php create > "$WORK/authorizing.log"
 docker exec "$app" php docker/tools/consumer-jwt.php create > "$WORK/jwt.log"
 test -f "$CHECKOUT/var/docker/jwt-initialized"
 key_marker=$(cksum < "$CHECKOUT/var/docker/jwt-initialized")
@@ -129,6 +130,7 @@ app=$(docker ps --quiet --filter "label=com.docker.compose.project=$project" --f
 test -n "$app"
 test "$original" = "$(cksum < "$CHECKOUT/var/docker/local.env")"
 test "$key_marker" = "$(cksum < "$CHECKOUT/var/docker/jwt-initialized")"
+docker exec "$app" php docker/tools/consumer-authorizing.php read >> "$WORK/authorizing.log"
 docker exec "$app" php docker/tools/consumer-jwt.php read >> "$WORK/jwt.log"
 consumer_logs "$CHECKOUT" "$project" "$image" before-recreation
 sh "$CHECKOUT/bin/dev" down > "$WORK/down-up.log" 2>&1
@@ -136,6 +138,7 @@ sh "$CHECKOUT/bin/dev" up >> "$WORK/down-up.log" 2>&1
 app=$(docker ps --quiet --filter "label=com.docker.compose.project=$project" --filter label=com.docker.compose.service=app)
 docker exec "$app" php docker/tools/consumer-task.php read >> "$WORK/marker.log"
 docker exec "$app" php docker/tools/consumer-authenticating.php read >> "$WORK/authenticating.log"
+docker exec "$app" php docker/tools/consumer-authorizing.php read >> "$WORK/authorizing.log"
 docker exec "$app" php docker/tools/consumer-jwt.php read >> "$WORK/jwt.log"
 docker exec "$app" php bin/console app:architecture:check --database >> "$WORK/marker.log"
 
@@ -170,6 +173,7 @@ DATABASE_URL=postgresql://wrong:wrong@invalid.invalid/app COMPOSE_PROJECT_NAME=w
     sh "$CHECKOUT/bin/dev" test > "$WORK/isolated-test.log" 2>&1
 docker exec "$app" php docker/tools/consumer-task.php read >> "$WORK/marker.log"
 docker exec "$app" php docker/tools/consumer-authenticating.php read >> "$WORK/authenticating.log"
+docker exec "$app" php docker/tools/consumer-authorizing.php read >> "$WORK/authorizing.log"
 docker exec "$app" php docker/tools/consumer-jwt.php read >> "$WORK/jwt.log"
 test "$key_marker" = "$(cksum < "$CHECKOUT/var/docker/jwt-initialized")"
 docker exec "$app" php bin/console app:architecture:check --database >> "$WORK/marker.log"
@@ -193,4 +197,5 @@ address=$(docker compose --project-directory "$CHECKOUT" --env-file "$CHECKOUT/v
 peer_address=$(docker compose --project-directory "$PEER" --env-file "$PEER/var/docker/local.env" --project-name "$peer_project" --file "$PEER/compose.yaml" port app 8080)
 python3 "$CHECKOUT/docker/tools/authenticating-consumers.py" "$CHECKOUT" "$PEER" "$address" "$peer_address" >> "$WORK/authenticating.log" 2>&1
 docker exec "$app" php docker/tools/consumer-authenticating.php read >> "$WORK/authenticating.log"
-printf '%s\n' 'Verified clean checkout, HTTP, repeat setup, persistence, terminal/pipe provisioning, native authentication, JWT key retention and cross-consumer rejection, two-consumer cookie isolation, missing/incomplete-settings refusal, dev/test and build-context isolation; cleaning up.'
+docker exec "$app" php docker/tools/consumer-authorizing.php read >> "$WORK/authorizing.log"
+printf '%s\n' 'Verified clean checkout, HTTP, repeat setup, persistence, authorization assignment UUID/row and decision persistence, terminal/pipe provisioning, native authentication, JWT key retention and cross-consumer rejection, two-consumer cookie isolation, missing/incomplete-settings refusal, dev/test and build-context isolation; cleaning up.'

@@ -71,6 +71,7 @@ final readonly class CollectionsFixture
             $root['services']['test.collections.'.$alias] = ['alias' => $service, 'public' => true];
         }
         $root['services'][TransactionLogger::class] = ['arguments' => ['$fixtureRoot' => $this->projectDir]];
+        $root['services'][TaskExecution::class] = ['public' => true];
         $root['services']['test.collections.driver_logging'] = [
             'class' => 'Doctrine\\DBAL\\Logging\\Middleware',
             'arguments' => ['@'.TransactionLogger::class],

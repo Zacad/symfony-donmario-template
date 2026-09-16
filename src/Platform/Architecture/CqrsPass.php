@@ -4,6 +4,12 @@ declare(strict_types=1);
 
 namespace App\Platform\Architecture;
 
+use App\Platform\Authorization\Actor;
+use App\Platform\Authorization\AuthorizationDenied;
+use App\Platform\Authorization\AuthorizationMiddleware;
+use App\Platform\Authorization\AuthorizeWith;
+use App\Platform\Authorization\ExecutionContext;
+use App\Platform\Authorization\PolicyContext;
 use App\Platform\Event\ApplicationEvent;
 use App\Platform\Messaging\CommandBus;
 use App\Platform\Messaging\CommandTransactionMiddleware;
@@ -17,9 +23,11 @@ use App\Platform\Messaging\ResultValidationMiddleware;
 use Symfony\Component\DependencyInjection\Argument\IteratorArgument;
 use Symfony\Component\DependencyInjection\Argument\ServiceClosureArgument;
 use Symfony\Component\DependencyInjection\Compiler\CompilerPassInterface;
+use Symfony\Component\DependencyInjection\Compiler\ServiceLocatorTagPass;
 use Symfony\Component\DependencyInjection\ContainerBuilder;
 use Symfony\Component\DependencyInjection\Definition;
 use Symfony\Component\DependencyInjection\Reference;
+use Symfony\Component\DependencyInjection\ServiceLocator;
 use Symfony\Component\Messenger\Attribute\AsMessageHandler;
 use Symfony\Component\Messenger\Handler\BatchHandlerInterface;
 use Symfony\Component\Messenger\Handler\HandlerDescriptor;
@@ -49,7 +57,7 @@ final readonly class CqrsPass implements CompilerPassInterface
         $messages = $this->messages($container);
         $listeners = $this->listeners($container, $messages);
         $this->eventWiring($container, array_filter($messages, static fn (string $kind): bool => 'event' === $kind));
-        $seen = $seenListeners = [];
+        $seen = $seenListeners = $policyHandlers = [];
         foreach (['command' => CommandBus::class, 'query' => QueryBus::class, 'event' => EventBus::class] as $kind => $facade) {
             $bus = 'event' === $kind ? 'application.event.bus' : $kind.'.bus';
             if ('event' !== $kind) {
@@ -117,6 +125,7 @@ final readonly class CqrsPass implements CompilerPassInterface
                         $seenListeners[$class] = true;
                     }
                     $seen[$message] = true;
+                    $policyHandlers[] = [$message, $kind, $reflection];
                 }
             }
         }
@@ -130,6 +139,122 @@ final readonly class CqrsPass implements CompilerPassInterface
                 $this->fail('listener_inventory', $class.' is missing its declared application-event registration.');
             }
         }
+        $this->authorization($container, $policyHandlers);
+    }
+
+    /** @param list<array{string, string, \ReflectionClass<object>}> $handlers */
+    private function authorization(ContainerBuilder $container, array $handlers): void
+    {
+        foreach ($container->getDefinitions() as $definition) {
+            if (!$definition->isAbstract() && !$definition->hasTag('container.excluded')
+                && in_array(ltrim($definition->getClass() ?? '', '\\'), [Actor::class, PolicyContext::class, AuthorizeWith::class, AuthorizationDenied::class], true)) {
+                $this->fail('authorization', 'Authorization data must not be services.');
+            }
+        }
+        $map = [];
+        foreach ($handlers as [$message, $kind, $handler]) {
+            $attributes = $handler->getAttributes(AuthorizeWith::class);
+            foreach ($handler->getMethods() as $method) {
+                if ([] !== $method->getAttributes(AuthorizeWith::class)) {
+                    $this->fail('authorization', $handler->name.' requires class-level authorization only.');
+                }
+            }
+            if ('event' === $kind) {
+                if ([] !== $attributes) {
+                    $this->fail('authorization', 'Event listeners cannot declare handler policies.');
+                }
+                continue;
+            }
+            if (1 !== count($attributes)) {
+                $this->fail('authorization', $handler->name.' requires exactly one AuthorizeWith declaration.');
+            }
+            $arguments = $attributes[0]->getArguments();
+            $class = $arguments['policy'] ?? $arguments[0] ?? null;
+            if (1 !== count($arguments) || !is_string($class) || !class_exists($class)) {
+                $this->fail('authorization', $handler->name.' requires an exact policy class.');
+            }
+            $policy = $container->getReflectionClass($class);
+            if (null === $policy || $policy->name !== $class || !$policy->isFinal() || !$policy->isReadOnly()
+                || !$policy->isInstantiable() || $policy->getNamespaceName() !== $handler->getNamespaceName()
+                || !str_ends_with($policy->getShortName(), 'Policy') || !$policy->hasMethod('__invoke')) {
+                $this->fail('authorization', $class.' requires a co-located final readonly Policy.');
+            }
+            $method = $policy->getMethod('__invoke');
+            $parameters = $method->getParameters();
+            $return = $method->getReturnType();
+            if (!$method->isPublic() || $method->isStatic() || $method->returnsReference() || 2 !== count($parameters)
+                || !$return instanceof \ReflectionNamedType || 'bool' !== $return->getName() || $return->allowsNull()) {
+                $this->fail('authorization', $class.' requires public __invoke(Message, PolicyContext): bool.');
+            }
+            foreach ([$message, PolicyContext::class] as $index => $type) {
+                $parameter = $parameters[$index];
+                $actual = $parameter->getType();
+                if (!$actual instanceof \ReflectionNamedType || $actual->getName() !== $type || $actual->allowsNull()
+                    || $parameter->isOptional() || $parameter->isVariadic() || $parameter->isPassedByReference()) {
+                    $this->fail('authorization', $class.' requires two exact, required, by-value arguments.');
+                }
+            }
+            $definitions = [];
+            foreach ($container->getDefinitions() as $id => $definition) {
+                if (!$definition->isAbstract() && !$definition->hasTag('container.excluded')
+                    && 0 === strcasecmp(ltrim($definition->getClass() ?? '', '\\'), $class)) {
+                    $definitions[$id] = $definition;
+                }
+            }
+            if (1 !== count($definitions)) {
+                $this->fail('authorization', $class.' requires exactly one ordinary private policy service.');
+            }
+            $id = array_key_first($definitions);
+            $definition = $definitions[$id];
+            $this->assertDefinition($container, $definition, $id, $class);
+            if ($definition->isPublic() || $definition->isLazy() || null !== $definition->getDecoratedService()) {
+                $this->fail('authorization', $class.' requires an ordinary private policy service.');
+            }
+            foreach ($container->getAliases() as $aliasId => $alias) {
+                if ($alias->isPublic() && $container->findDefinition($aliasId) === $definition) {
+                    $this->fail('authorization', $class.' cannot have public aliases.');
+                }
+            }
+            $map[$message] = new Reference($id);
+        }
+        ksort($map);
+        $middleware = $this->definition($container, AuthorizationMiddleware::class, AuthorizationMiddleware::class);
+        $placeholder = $this->reference($container, $middleware->getArgument(2));
+        $this->assertDefinition($container, $placeholder, 'policy locator', ServiceLocator::class);
+        if ($placeholder->isPublic() || $placeholder->isLazy() || null !== $placeholder->getDecoratedService()
+            || [[]] !== $placeholder->getArguments()) {
+            $this->fail('authorization', 'The policy locator must start with an empty compiler-owned map.');
+        }
+        foreach ($container->getAliases() as $id => $alias) {
+            if ($alias->isPublic() && $container->findDefinition($id) === $placeholder) {
+                $this->fail('authorization', 'The policy locator cannot have public aliases.');
+            }
+        }
+        // Register a separate native locator: the empty placeholder can be shared
+        // with unrelated services after Symfony's locator deduplication.
+        $reference = ServiceLocatorTagPass::register($container, $map);
+        $locator = $this->reference($container, $reference);
+        $this->assertDefinition($container, $locator, 'compiled policy locator', ServiceLocator::class);
+        if ($locator->isPublic() || [0] !== array_keys($locator->getArguments())) {
+            $this->fail('authorization', 'The compiled policy locator must remain private and exact.');
+        }
+        foreach ($container->getAliases() as $id => $alias) {
+            if ($alias->isPublic() && $container->findDefinition($id) === $locator) {
+                $this->fail('authorization', 'The compiled policy locator cannot have public aliases.');
+            }
+        }
+        $values = $locator->getArgument(0);
+        if (!is_array($values) || array_keys($values) !== array_keys($map)) {
+            $this->fail('authorization', 'The compiled policy map must contain exactly the command/query inventory.');
+        }
+        foreach ($map as $message => $policyReference) {
+            $closure = $values[$message];
+            if (!$closure instanceof ServiceClosureArgument || 1 !== count($closure->getValues())) {
+                $this->fail('authorization', 'The compiled policy map requires native service closures.');
+            }
+            $this->assertReference($container, $closure->getValues()[0], (string) $policyReference);
+        }
+        $middleware->setArgument(2, $reference);
     }
 
     /** @return array<class-string, string> */
@@ -179,6 +304,15 @@ final readonly class CqrsPass implements CompilerPassInterface
             $this->assertReference($container, $transaction->getArgument(1), InvocationContext::class);
             $expected[] = CommandTransactionMiddleware::class;
         }
+        $authorization = $this->definition($container, AuthorizationMiddleware::class, AuthorizationMiddleware::class);
+        $this->assertReference($container, $authorization->getArgument(0), InvocationContext::class);
+        $this->assertReference($container, $authorization->getArgument(1), ExecutionContext::class);
+        $execution = $this->definition($container, ExecutionContext::class, ExecutionContext::class);
+        $this->assertReference($container, $execution->getArgument(0), InvocationContext::class);
+        $this->assertReference($container, $execution->getArgument(1), 'request_stack');
+        $this->assertReference($container, $execution->getArgument(2), 'security.token_storage');
+        $this->assertReference($container, $execution->getArgument(3), 'security.authentication.trust_resolver');
+        $expected[] = AuthorizationMiddleware::class;
         $resultValidation = $this->definition($container, ResultValidationMiddleware::class, ResultValidationMiddleware::class);
         $this->assertReference($container, $resultValidation->getArgument(0), 'validator');
         $expected[] = ResultValidationMiddleware::class;
@@ -190,7 +324,7 @@ final readonly class CqrsPass implements CompilerPassInterface
             array_shift($values);
         }
         if (count($expected) !== count($values)) {
-            $this->fail('middleware', $bus.' requires the synchronous scope/policy/input-validation/transaction/result-validation/handling order.');
+            $this->fail('middleware', $bus.' requires the synchronous scope/policy/input-validation/transaction/authorization/result-validation/handling order.');
         }
         foreach ($expected as $index => $id) {
             $this->assertReference($container, $values[$index], $id);
@@ -316,7 +450,8 @@ final readonly class CqrsPass implements CompilerPassInterface
         $send = array_search(SendMessageMiddleware::class, $classes, true);
         $handle = array_search(HandleMessageMiddleware::class, $classes, true);
         if (false === $position || false === $send || false === $handle || $position > $send || $position > $handle
-            || in_array(InvocationMiddleware::class, $classes, true) || in_array(CommandTransactionMiddleware::class, $classes, true)) {
+            || in_array(InvocationMiddleware::class, $classes, true) || in_array(CommandTransactionMiddleware::class, $classes, true)
+            || in_array(AuthorizationMiddleware::class, $classes, true)) {
             $this->fail('middleware', $bus.' requires public-event policy before native sending/handling, without an outer command transaction.');
         }
         $this->assertReference($container, $references[$position], EventPolicyMiddleware::class);

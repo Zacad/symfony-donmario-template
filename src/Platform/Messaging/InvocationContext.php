@@ -13,6 +13,7 @@ final class InvocationContext
     private bool $transaction = false;
     private bool $handlerTime = false;
     private bool $unusable = false;
+    private int $policyDepth = 0;
     private ?\Closure $invalidateTransaction = null;
 
     public function isRoot(): bool
@@ -24,6 +25,9 @@ final class InvocationContext
     {
         $this->assertUsable();
         $this->assertNotLifecycle();
+        if ('command' === $kind && $this->inPolicy()) {
+            throw new \LogicException('authorization.policy_write: Policies cannot dispatch commands.');
+        }
         if ($this->transaction && !$this->handlerTime) {
             throw new \LogicException('cqrs.phase: messaging requires handler execution.');
         }
@@ -40,7 +44,7 @@ final class InvocationContext
 
     public function fail(\Throwable $failure): void
     {
-        if (in_array('command', $this->stack, true)) {
+        if ($this->inPolicy() || in_array('command', $this->stack, true)) {
             $this->failure ??= $failure;
             if (null !== $this->invalidateTransaction) {
                 ($this->invalidateTransaction)();
@@ -81,6 +85,9 @@ final class InvocationContext
     {
         $this->assertUsable();
         $this->assertNotLifecycle();
+        if ($this->inPolicy()) {
+            throw new \LogicException('authorization.policy_write: Policies cannot dispatch events.');
+        }
         if (!$this->transaction || !$this->handlerTime || in_array('query', $this->stack, true) || 'command' !== end($this->stack)) {
             throw new \LogicException('event.scope: dispatch requires an owned command handler.');
         }
@@ -90,6 +97,21 @@ final class InvocationContext
     public function markUnusable(): void
     {
         $this->unusable = true;
+    }
+
+    public function enterPolicy(): void
+    {
+        ++$this->policyDepth;
+    }
+
+    public function leavePolicy(): void
+    {
+        --$this->policyDepth;
+    }
+
+    public function inPolicy(): bool
+    {
+        return $this->policyDepth > 0;
     }
 
     public function assertUsable(): void
@@ -122,6 +144,7 @@ final class InvocationContext
         $this->failure = null;
         $this->transaction = false;
         $this->handlerTime = false;
+        $this->policyDepth = 0;
         $this->invalidateTransaction = null;
     }
 }

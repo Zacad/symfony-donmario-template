@@ -8,6 +8,7 @@ use App\Module\CollectionChecking\Application\Collect\ItemInput;
 use App\Module\CollectionChecking\Application\Inspect\InspectQuery;
 use App\Module\CollectionChecking\Application\Inspect\InspectResult;
 use App\Module\CollectionChecking\Application\Record\RecordCommand;
+use App\Tests\Fixtures\Collections\TaskExecution;
 use Doctrine\DBAL\DriverManager;
 use Doctrine\ORM\Event\PostFlushEventArgs;
 use Doctrine\ORM\Events;
@@ -17,6 +18,7 @@ $kernel = require __DIR__.'/bootstrap.php';
 $container = $kernel->getContainer();
 $commands = $container->get('test.collections.commands');
 $queries = $container->get('test.collections.queries');
+$tasks = $container->get(TaskExecution::class);
 $manager = $container->get('doctrine.orm.default_entity_manager');
 $db = $container->get('doctrine.dbal.default_connection');
 Assert::assertSame('app_test', $db->fetchOne('SELECT current_database()'));
@@ -52,7 +54,7 @@ foreach (['invalid', 'caught-command', 'caught-query'] as $mode) {
     $beforeFlush = file_get_contents(__DIR__.'/flush.jsonl');
     $beforeTransactions = file_get_contents(__DIR__.'/transactions.txt');
     try {
-        $commands->dispatch(new CollectCommand($label, ['one', 'two'], [new ItemInput('item')], new ItemInput('nested'), $mode));
+        $tasks->run(static fn () => $commands->dispatch(new CollectCommand($label, ['one', 'two'], [new ItemInput('item')], new ItemInput('nested'), $mode)));
         Assert::fail('Invalid output must abort the root command: '.$mode);
     } catch (LogicException $failure) {
         Assert::assertSame('cqrs.result_validation: Handler returned invalid data.', $failure->getMessage());
@@ -66,7 +68,7 @@ foreach (['invalid', 'caught-command', 'caught-query'] as $mode) {
 
     $label = $prefix.'-recovery-'.$mode;
     $beforeTransactions = file_get_contents(__DIR__.'/transactions.txt');
-    $result = $commands->dispatch(new CollectCommand($label, 'invalid' === $mode ? [] : ['one', 'two'], 'invalid' === $mode ? [] : [new ItemInput('item')], new ItemInput('recovered')));
+    $result = $tasks->run(static fn () => $commands->dispatch(new CollectCommand($label, 'invalid' === $mode ? [] : ['one', 'two'], 'invalid' === $mode ? [] : [new ItemInput('item')], new ItemInput('recovered'))));
     Assert::assertInstanceOf(CollectResult::class, $result);
     Assert::assertSame('recovered', $result->items[0]->name);
     Assert::assertSame("Beginning transaction\nCommitting transaction\n", substr(file_get_contents(__DIR__.'/transactions.txt'), strlen($beforeTransactions)));

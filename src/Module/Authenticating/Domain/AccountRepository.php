@@ -16,5 +16,12 @@ interface AccountRepository
 
     public function findIdentityById(Uuid $id): ?AccountIdentity;
 
+    /**
+     * @param list<Uuid> $accountIds
+     *
+     * @return list<Uuid>
+     */
+    public function existingIds(array $accountIds): array;
+
     public function replacePasswordHash(Uuid $id, string $expectedPasswordHash, string $newPasswordHash): bool;
 }

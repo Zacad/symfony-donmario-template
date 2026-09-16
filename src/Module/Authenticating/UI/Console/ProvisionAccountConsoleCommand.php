@@ -7,6 +7,7 @@ namespace App\Module\Authenticating\UI\Console;
 use App\Module\Authenticating\Application\RegisterAccount\RegisterAccountCommand;
 use App\Module\Authenticating\Domain\InvalidEmailAddress;
 use App\Module\Authenticating\Domain\InvalidPassword;
+use App\Platform\Authorization\OperatorExecution;
 use App\Platform\Messaging\CommandBus;
 use Psr\Log\LoggerInterface;
 use Symfony\Component\Console\Attribute\AsCommand;
@@ -24,7 +25,7 @@ use Symfony\Component\Uid\Uuid;
 #[AsCommand(name: 'app:account:provision', description: 'Provision an account using a hidden password prompt or explicit standard input.')]
 final class ProvisionAccountConsoleCommand extends Command
 {
-    public function __construct(private readonly CommandBus $commands, private readonly LoggerInterface $logger)
+    public function __construct(private readonly CommandBus $commands, private readonly LoggerInterface $logger, private readonly OperatorExecution $operator)
     {
         parent::__construct();
     }
@@ -43,7 +44,8 @@ final class ProvisionAccountConsoleCommand extends Command
                 throw new InvalidEmailAddress();
             }
             $password = $this->readPassword($input, $output);
-            $id = $this->commands->dispatch(new RegisterAccountCommand($email, $password));
+            $message = new RegisterAccountCommand($email, $password);
+            $id = $this->operator->run('accounts', fn (): mixed => $this->commands->dispatch($message));
             if (!$id instanceof Uuid) {
                 throw new \LogicException('Unexpected account registration result.');
             }

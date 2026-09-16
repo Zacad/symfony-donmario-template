@@ -178,8 +178,8 @@ final class AuthenticatingWebTest extends AuthenticatingTestCase
         self::assertTrue(Browser::redirectedTo($browser, '/account'));
         $current = $this->storedHash($account['id']);
         $replacement = password_hash(Browser::secret(), PASSWORD_BCRYPT, ['cost' => 4]);
-        self::assertTrue($this->commands()->dispatch(new UpgradePasswordHashCommand(Uuid::fromString($account['id']), $current, $replacement)));
-        self::assertFalse($this->commands()->dispatch(new UpgradePasswordHashCommand(Uuid::fromString($account['id']), $current, $account['hash'])), 'Stale CAS must not overwrite the replacement.');
+        self::assertTrue($this->dispatch(new UpgradePasswordHashCommand(Uuid::fromString($account['id']), $current, $replacement)));
+        self::assertFalse($this->dispatch(new UpgradePasswordHashCommand(Uuid::fromString($account['id']), $current, $account['hash'])), 'Stale CAS must not overwrite the replacement.');
         self::assertTrue(hash_equals($replacement, $this->storedHash($account['id'])));
         $browser->request('GET', '/account');
         self::assertTrue(Browser::redirectedTo($browser, '/login'));

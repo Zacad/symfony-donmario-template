@@ -3,6 +3,7 @@ framework:
         mapping:
             paths:
                 - '%kernel.project_dir%/src/Module/Authenticating/Resources/config/validation.yaml'
+                - '%kernel.project_dir%/src/Module/Authorizing/Resources/config/validation.yaml'
                 - '%kernel.project_dir%/src/Module/TaskTracking/Resources/config/validation.yaml'
 
 when@test:

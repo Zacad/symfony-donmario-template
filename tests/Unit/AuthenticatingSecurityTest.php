@@ -13,12 +13,17 @@ use App\Module\Authenticating\Infrastructure\Framework\Symfony\Security\AccountP
 use App\Module\Authenticating\Infrastructure\Framework\Symfony\Security\LoginFailureHandler;
 use App\Module\Authenticating\Infrastructure\Framework\Symfony\Security\SecurityLogger;
 use App\Module\Authenticating\UI\Http\Security\AccountUserProvider;
+use App\Platform\Authorization\ActorKind;
+use App\Platform\Authorization\AuthenticationExecution;
+use App\Platform\Authorization\ExecutionContext;
 use App\Platform\Messaging\CommandBus;
+use App\Platform\Messaging\InvocationContext;
 use Monolog\Handler\TestHandler;
 use Monolog\Logger;
 use PHPUnit\Framework\Attributes\DataProvider;
 use PHPUnit\Framework\TestCase;
 use Symfony\Component\HttpFoundation\Request;
+use Symfony\Component\HttpFoundation\RequestStack;
 use Symfony\Component\HttpFoundation\Response;
 use Symfony\Component\HttpFoundation\Session\Session;
 use Symfony\Component\HttpFoundation\Session\Storage\MockArraySessionStorage;
@@ -30,6 +35,7 @@ use Symfony\Component\Messenger\MessageBus;
 use Symfony\Component\Messenger\Middleware\HandleMessageMiddleware;
 use Symfony\Component\PasswordHasher\Hasher\PasswordHasherFactory;
 use Symfony\Component\PasswordHasher\PasswordHasherInterface;
+use Symfony\Component\Security\Core\Authentication\AuthenticationTrustResolver;
 use Symfony\Component\Security\Core\Authentication\Token\Storage\TokenStorage;
 use Symfony\Component\Security\Core\Authentication\Token\UsernamePasswordToken;
 use Symfony\Component\Security\Core\Exception\AuthenticationException;
@@ -88,7 +94,7 @@ final class AuthenticatingSecurityTest extends TestCase
         $accounts->expects(self::never())->method('findCredentialsByEmail');
         $accounts->expects(self::once())->method('findCredentialsById')->with(self::equalTo($id))
             ->willReturn(null === $hash ? null : new AccountCredentials($id, $email, $hash));
-        $provider = new AccountUserProvider($accounts, new CommandBus(new MessageBus()));
+        $provider = new AccountUserProvider($accounts, new CommandBus(new MessageBus()), $this->authentication());
         $request = $this->request('/account');
         $request->getSession()->set('_security_main', serialize(new UsernamePasswordToken($original, 'main', [])));
         $request->cookies->set($request->getSession()->getName(), $request->getSession()->getId());
@@ -117,8 +123,16 @@ final class AuthenticatingSecurityTest extends TestCase
     {
         $user = new AccountPrincipal(Uuid::v7(), 'member@example.test', self::HASH);
         $called = false;
+        $execution = new ExecutionContext(new InvocationContext(), new RequestStack(), new TokenStorage(), new AuthenticationTrustResolver());
         $bus = new MessageBus([new HandleMessageMiddleware(new HandlersLocator([
-            UpgradePasswordHashCommand::class => [static function (UpgradePasswordHashCommand $command) use ($user, $result, $databaseFailure, &$called): bool {
+            UpgradePasswordHashCommand::class => [static function (UpgradePasswordHashCommand $command) use ($user, $result, $databaseFailure, $execution, &$called): bool {
+                $context = $execution->enter($command::class);
+                try {
+                    self::assertSame(ActorKind::Authentication, $context->actor->kind);
+                    self::assertEquals($command->accountId, $context->actor->accountId);
+                } finally {
+                    $execution->leave();
+                }
                 self::assertSame(self::HASH, $user->getPassword());
                 self::assertSame($user->id(), $command->accountId);
                 self::assertSame(self::HASH, $command->expectedPasswordHash);
@@ -131,7 +145,7 @@ final class AuthenticatingSecurityTest extends TestCase
                 return $result;
             }],
         ]))]);
-        $provider = new AccountUserProvider($this->createStub(AccountRepository::class), new CommandBus($bus));
+        $provider = new AccountUserProvider($this->createStub(AccountRepository::class), new CommandBus($bus), new AuthenticationExecution($execution));
         $hasher = $this->createStub(PasswordHasherInterface::class);
         $hasher->method('needsRehash')->willReturn(true);
         $hasher->method('hash')->willReturn('replacement-hash');
@@ -277,6 +291,11 @@ final class AuthenticatingSecurityTest extends TestCase
         $request->setSession(new Session(new MockArraySessionStorage()));
 
         return $request;
+    }
+
+    private function authentication(): AuthenticationExecution
+    {
+        return new AuthenticationExecution(new ExecutionContext(new InvocationContext(), new RequestStack(), new TokenStorage(), new AuthenticationTrustResolver()));
     }
 
     private function requestEvent(Request $request): RequestEvent

@@ -164,7 +164,7 @@ final class AuthenticatingProvisionTest extends AuthenticatingTestCase
         $count = $this->connection->fetchOne('SELECT count(*) FROM public.authenticating_account');
         $rejected = false;
         try {
-            $this->commands()->dispatch(new RegisterAccountCommand($this->prefix.'@example.test', $password));
+            $this->dispatch(new RegisterAccountCommand($this->prefix.'@example.test', $password));
         } catch (InvalidPassword|ValidationFailedException) {
             $rejected = true;
         } catch (\Throwable) {
@@ -186,7 +186,7 @@ final class AuthenticatingProvisionTest extends AuthenticatingTestCase
         $count = $this->connection->fetchOne('SELECT count(*) FROM public.authenticating_account');
         $rejected = false;
         try {
-            $this->commands()->dispatch(new RegisterAccountCommand($email, $password));
+            $this->dispatch(new RegisterAccountCommand($email, $password));
         } catch (InvalidEmailAddress|ValidationFailedException) {
             $rejected = true;
         } catch (\Throwable) {
@@ -216,7 +216,7 @@ final class AuthenticatingProvisionTest extends AuthenticatingTestCase
         });
         self::getContainer()->set(PasswordHasher::class, $hasher);
 
-        $id = $this->commands()->dispatch(new RegisterAccountCommand(" \t\r\n".strtoupper($email)."\n\t ", $password));
+        $id = $this->dispatch(new RegisterAccountCommand(" \t\r\n".strtoupper($email)."\n\t ", $password));
 
         self::assertInstanceOf(Uuid::class, $id);
         self::assertSame(1, $calls, 'Registration must hash exactly once.');
@@ -247,10 +247,9 @@ final class AuthenticatingProvisionTest extends AuthenticatingTestCase
         $logs = new TestHandler();
         $logger->setHandlers([$logs]);
         try {
-            $commands = $this->commands();
             $caught = null;
             try {
-                $commands->dispatch(new RegisterAccountCommand($this->prefix.'-direct@example.test', $directPassword));
+                $this->dispatch(new RegisterAccountCommand($this->prefix.'-direct@example.test', $directPassword));
             } catch (\Throwable $failure) {
                 $caught = $failure;
             }
@@ -272,7 +271,7 @@ final class AuthenticatingProvisionTest extends AuthenticatingTestCase
 
             $hasher->fail = false;
             $goodPassword = Browser::secret();
-            $id = $commands->dispatch(new RegisterAccountCommand($this->prefix.'-recovered@example.test', $goodPassword));
+            $id = $this->dispatch(new RegisterAccountCommand($this->prefix.'-recovered@example.test', $goodPassword));
             self::assertInstanceOf(Uuid::class, $id);
             self::assertTrue(password_verify($goodPassword, $this->storedHash($id->toRfc4122())), 'The same compiled bus must accept a subsequent good command.');
             self::assertSame([true, true, true], $hasher->activeTransactions, 'Both failures and recovery must run under owned transactions.');

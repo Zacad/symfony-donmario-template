@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace App\Module\TaskTracking\UI\Console;
 
 use App\Module\TaskTracking\Application\CreateTask\CreateTaskCommand;
+use App\Platform\Authorization\OperatorExecution;
 use App\Platform\Messaging\CommandBus;
 use Psr\Log\LoggerInterface;
 use Symfony\Component\Console\Attribute\AsCommand;
@@ -18,7 +19,7 @@ use Symfony\Component\Uid\Uuid;
 #[AsCommand(name: 'app:task:create', description: 'Create a task through the command bus.')]
 final class CreateTaskConsoleCommand extends Command
 {
-    public function __construct(private readonly CommandBus $commands, private readonly LoggerInterface $logger)
+    public function __construct(private readonly CommandBus $commands, private readonly LoggerInterface $logger, private readonly OperatorExecution $operator)
     {
         parent::__construct();
     }
@@ -35,7 +36,8 @@ final class CreateTaskConsoleCommand extends Command
             if (!is_string($title)) {
                 return Command::INVALID;
             }
-            $id = $this->commands->dispatch(new CreateTaskCommand($title));
+            $message = new CreateTaskCommand($title);
+            $id = $this->operator->run('tasks', fn (): mixed => $this->commands->dispatch($message));
             if (!$id instanceof Uuid) {
                 throw new \LogicException('Unexpected create result.');
             }

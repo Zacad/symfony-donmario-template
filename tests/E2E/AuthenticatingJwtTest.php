@@ -116,8 +116,8 @@ final class AuthenticatingJwtTest extends AuthenticatingTestCase
         $current = $this->storedHash($account['id']);
         $replacementPassword = Browser::secret();
         $replacementHash = password_hash($replacementPassword, PASSWORD_BCRYPT, ['cost' => 4]);
-        self::assertTrue($this->commands()->dispatch(new UpgradePasswordHashCommand(Uuid::fromString($account['id']), $current, $replacementHash)));
-        self::assertFalse($this->commands()->dispatch(new UpgradePasswordHashCommand(Uuid::fromString($account['id']), $current, $account['hash'])));
+        self::assertTrue($this->dispatch(new UpgradePasswordHashCommand(Uuid::fromString($account['id']), $current, $replacementHash)));
+        self::assertFalse($this->dispatch(new UpgradePasswordHashCommand(Uuid::fromString($account['id']), $current, $account['hash'])));
         JwtHttp::identity(JwtHttp::me($token), $account['id'], $renamed);
         JwtHttp::denied(JwtHttp::login($renamed, $account['password']));
         $renewed = JwtHttp::token(JwtHttp::login($renamed, $replacementPassword));

@@ -1,0 +1,16 @@
+<?php
+
+declare(strict_types=1);
+
+namespace App\Module\CollectionChecking\Application\Values;
+
+use App\Platform\Authorization\PolicyContext;
+
+/** Disposable, database-independent scalar/value result probes. */
+final readonly class ValuesPolicy
+{
+    public function __invoke(ValuesQuery $message, PolicyContext $context): bool
+    {
+        return true;
+    }
+}

@@ -83,6 +83,9 @@ final readonly class ModuleInventoryPass implements CompilerPassInterface
             if (is_string($name) && str_starts_with(strtolower(ltrim($name, '\\')), 'app\\')) {
                 $reflection = $container->getReflectionClass(ltrim($name, '\\'), false);
                 $class = $reflection->name ?? ltrim($name, '\\');
+                if (ContractTypes::isAuthorizationData($class)) {
+                    throw new \LogicException('module.inventory.data: '.$class.' is authorization data and must be excluded from service registration.');
+                }
                 if (ContractTypes::isAuthenticationPrincipal($class)) {
                     throw new \LogicException('module.inventory.data: '.$class.' is authentication principal data and must be excluded from service registration.');
                 }

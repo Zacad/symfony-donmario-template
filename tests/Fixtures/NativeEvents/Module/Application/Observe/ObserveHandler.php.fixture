@@ -5,9 +5,11 @@ declare(strict_types=1);
 namespace App\Module\NativeObserving\Application\Observe;
 
 use App\Module\NativeObserving\Domain\ObservationRepository;
+use App\Platform\Authorization\AuthorizeWith;
 use Symfony\Component\Messenger\Attribute\AsMessageHandler;
 
 #[AsMessageHandler(bus: 'command.bus')]
+#[AuthorizeWith(ObservePolicy::class)]
 final readonly class ObserveHandler
 {
     public function __construct(private ObservationRepository $observations)

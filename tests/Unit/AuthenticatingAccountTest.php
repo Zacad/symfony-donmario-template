@@ -18,7 +18,10 @@ use App\Module\Authenticating\Domain\PasswordHasher;
 use App\Module\Authenticating\Domain\PasswordPolicy;
 use App\Module\Authenticating\Infrastructure\Framework\Symfony\Security\SymfonyPasswordHasher;
 use App\Module\Authenticating\UI\Console\ProvisionAccountConsoleCommand;
+use App\Platform\Authorization\ExecutionContext;
+use App\Platform\Authorization\OperatorExecution;
 use App\Platform\Messaging\CommandBus;
+use App\Platform\Messaging\InvocationContext;
 use PHPUnit\Framework\Attributes\DataProvider;
 use PHPUnit\Framework\TestCase;
 use Psr\Log\LoggerInterface;
@@ -30,18 +33,26 @@ use Symfony\Component\Console\Output\BufferedOutput;
 use Symfony\Component\Console\Output\OutputInterface;
 use Symfony\Component\Console\Question\Question;
 use Symfony\Component\Console\Tester\CommandTester;
+use Symfony\Component\HttpFoundation\RequestStack;
 use Symfony\Component\Messenger\Envelope;
 use Symfony\Component\Messenger\Exception\HandlerFailedException;
 use Symfony\Component\Messenger\Exception\ValidationFailedException;
 use Symfony\Component\Messenger\MessageBusInterface;
 use Symfony\Component\Messenger\Stamp\HandledStamp;
 use Symfony\Component\PasswordHasher\Hasher\PasswordHasherFactory;
+use Symfony\Component\Security\Core\Authentication\AuthenticationTrustResolver;
+use Symfony\Component\Security\Core\Authentication\Token\Storage\TokenStorage;
 use Symfony\Component\Uid\Uuid;
 use Symfony\Component\Uid\UuidV7;
 use Symfony\Component\Validator\Validation;
 
 final class AuthenticatingAccountTest extends TestCase
 {
+    private function operator(): OperatorExecution
+    {
+        return new OperatorExecution(new ExecutionContext(new InvocationContext(), new RequestStack(), new TokenStorage(), new AuthenticationTrustResolver()));
+    }
+
     private const string HASH = '$2y$04$abcdefghijklmnopqrstuuYy7AtPAWqBDnJt5Mrk.CkOC7eCng1.O';
 
     public function testAccountNormalizesOnlyCaseAndOuterAsciiWhitespace(): void
@@ -213,7 +224,7 @@ final class AuthenticatingAccountTest extends TestCase
         $bus = $this->registrationBus($password, $dispatched, $email, $id);
         $logger = $this->createMock(LoggerInterface::class);
         $logger->expects(self::never())->method('error');
-        $command = new ProvisionAccountConsoleCommand($bus, $logger);
+        $command = new ProvisionAccountConsoleCommand($bus, $logger, $this->operator());
         $input = new ArrayInput(['email' => $email, '--password-stdin' => $explicitStdin]);
         $input->setInteractive(false);
         $stream = fopen('php://memory', 'r+');
@@ -258,7 +269,7 @@ final class AuthenticatingAccountTest extends TestCase
         $bus->expects(self::once())->method('dispatch')->willThrowException(new \RuntimeException('private database details '.self::HASH));
         $logger = $this->createMock(LoggerInterface::class);
         $logger->expects(self::once())->method('error')->with('Account provisioning failed.', ['operation' => 'provision_account'])->willThrowException(new \RuntimeException('private logger details'));
-        $command = new ProvisionAccountConsoleCommand(new CommandBus($bus), $logger);
+        $command = new ProvisionAccountConsoleCommand(new CommandBus($bus), $logger, $this->operator());
         $input = new ArrayInput(['email' => 'person@example.com', '--password-stdin' => true]);
         $input->setInteractive(false);
         $stream = fopen('php://memory', 'r+');
@@ -282,7 +293,7 @@ final class AuthenticatingAccountTest extends TestCase
         $bus = $this->registrationBus(null, true, $email, $id);
         $logger = $this->createMock(LoggerInterface::class);
         $logger->expects(self::never())->method('error');
-        $tester = new CommandTester(new ProvisionAccountConsoleCommand($bus, $logger));
+        $tester = new CommandTester(new ProvisionAccountConsoleCommand($bus, $logger, $this->operator()));
         $tester->setInputs(['a private password']);
 
         self::assertSame(2, $tester->execute(['email' => $email, '--password-stdin' => true], ['interactive' => false, 'verbosity' => OutputInterface::VERBOSITY_DEBUG]));
@@ -304,7 +315,7 @@ final class AuthenticatingAccountTest extends TestCase
         });
         $logger = $this->createMock(LoggerInterface::class);
         $logger->expects(self::never())->method('error');
-        $tester = new CommandTester(new ProvisionAccountConsoleCommand(new CommandBus($bus), $logger));
+        $tester = new CommandTester(new ProvisionAccountConsoleCommand(new CommandBus($bus), $logger, $this->operator()));
         $password = str_repeat('x', 4097);
         $tester->setInputs([$password]);
 
@@ -329,7 +340,7 @@ final class AuthenticatingAccountTest extends TestCase
 
             return array_shift($answers) ?? throw new \LogicException('Unexpected question.');
         });
-        $command = new ProvisionAccountConsoleCommand($bus, $logger);
+        $command = new ProvisionAccountConsoleCommand($bus, $logger, $this->operator());
         $command->setHelperSet(new HelperSet(['question' => $questions]));
         $input = new ArrayInput(['email' => 'person@example.com']);
         $input->setInteractive(true);

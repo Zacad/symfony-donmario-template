@@ -5,10 +5,12 @@ declare(strict_types=1);
 namespace App\Module\TaskTracking\Application\GetTask;
 
 use App\Module\TaskTracking\Domain\TaskRepository;
+use App\Platform\Authorization\AuthorizeWith;
 use Symfony\Component\Messenger\Attribute\AsMessageHandler;
 use Symfony\Component\Uid\Uuid;
 
 #[AsMessageHandler(bus: 'query.bus')]
+#[AuthorizeWith(GetTaskPolicy::class)]
 final readonly class GetTaskHandler
 {
     public function __construct(private TaskRepository $tasks)

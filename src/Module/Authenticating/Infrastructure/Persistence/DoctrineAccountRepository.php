@@ -9,6 +9,7 @@ use App\Module\Authenticating\Domain\AccountCredentials;
 use App\Module\Authenticating\Domain\AccountIdentity;
 use App\Module\Authenticating\Domain\AccountRepository;
 use App\Module\Authenticating\Domain\EmailAddress;
+use Doctrine\DBAL\ArrayParameterType;
 use Doctrine\ORM\EntityManagerInterface;
 use Symfony\Component\Uid\Uuid;
 
@@ -53,6 +54,24 @@ final readonly class DoctrineAccountRepository implements AccountRepository
         }
 
         return new AccountIdentity(Uuid::fromString($row['id']), $row['email']);
+    }
+
+    public function existingIds(array $accountIds): array
+    {
+        $rows = $this->entityManager->getConnection()->fetchFirstColumn(
+            'SELECT id FROM public.authenticating_account WHERE id IN (?)',
+            [array_map(static fn (Uuid $id): string => $id->toRfc4122(), $accountIds)],
+            [ArrayParameterType::STRING],
+        );
+        $ids = [];
+        foreach ($rows as $id) {
+            if (!is_string($id) || !Uuid::isValid($id)) {
+                throw new \UnexpectedValueException('Invalid stored account identifier.');
+            }
+            $ids[] = Uuid::fromString($id);
+        }
+
+        return $ids;
     }
 
     public function replacePasswordHash(Uuid $id, string $expectedPasswordHash, string $newPasswordHash): bool

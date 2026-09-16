@@ -1,5 +1,14 @@
 # Approved architecture
 
+**Current checkpoint (2026-09-16): Task 9 is IMPLEMENTED, VERIFIED, REVIEWED and
+USER ACCEPTED, including the `ActorKind` correction.** Following the full
+policy-only enforcement design, “accept and proceed” accepted 8b and approved Task 9
+implementation, as recorded by main. Task 9 acceptance followed its additional fresh
+design/implementation review; Task 10 discovery/design is deferred to the fresh session.
+Earlier awaiting-8b-acceptance records are superseded. Main owns final evidence in the
+[Task 9 record](tasks/09-authorization-enforcement.md); the subsequent explicit Git
+request authorizes this accepted 8b/9 delivery. Future commits/pushes need fresh authorization.
+
 ## Purpose and baseline
 
 A reusable template for multiple applications, with AI-assisted coding guidance,
@@ -8,7 +17,8 @@ Single tenancy by default. Linux-first Docker Compose development/testing.
 Symfony 8.1 initialized with Symfony CLI, PostgreSQL, Twig/AssetMapper, HTMX when
 useful, and API Platform for application APIs. Exact dependencies live in the locks.
 
-Subtasks 1, 2, 3a, 3b, 4, 5b, 6 (including the registration correction) and 7 are accepted.
+Subtasks 1, 2, 3a, 3b, 4, 5b, 6 (including the registration correction), 7, 8a, 8b and
+9 (including the enum correction) are accepted.
 The delivery designs in historical
 [Subtask 4](tasks/04-synchronous-events.md) and [Subtask 5](tasks/05-durable-events.md)
 are **superseded by approved [Subtask 5b](tasks/05b-native-event-bus.md)**.
@@ -35,21 +45,26 @@ passed with embedded **201 tests / 4607 assertions**, all 38 phases, at
 `application/var/test-runs/run-KkpCT8uO/`. Fresh authentication/runtime reviewers
 approved after inspecting code/evidence, without rerunning suites; task 7 records
 their identities and exact conclusions. Subtask 6's evidence above remains its
-accepted historical checkpoint. **Current Subtask 8a — Application DTO collections
+accepted historical checkpoint. **Accepted Subtask 8a — Application DTO collections
 is IMPLEMENTED, VERIFIED, REVIEWED and USER ACCEPTED on 2026-09-15** under the approved
 [8a/8b design](tasks/08-authorizing.md). Final verification passed on 2026-09-14 and both fresh
 independent implementation reviewers approved with no findings; neither ran suites.
 Reviews completed on 2026-09-14; earlier fixture YAML/static issues are resolved.
-**8b Authorizing model/management is approved for implementation, not yet implemented.**
-8a is the latest accepted checkpoint. The user's exact 2026-09-15 “commit, push and proceed”
+**8b Authorizing model/management is IMPLEMENTED, VERIFIED, REVIEWED and USER
+ACCEPTED (2026-09-15).**
+The user's earlier exact 2026-09-15 “commit, push and proceed”
 accepts 8a, authorizes commit/push of the verified 8a checkpoint only, and approves
-beginning 8b. Main will begin 8b after that commit/push; future commits/pushes require
-explicit authorization.
+beginning 8b. Main pushed 8a as `367fdfe` to `origin/main` that day. The subsequent
+2026-09-16 request authorizes this 8b/9 delivery; future commits/pushes require explicit authorization. Final 8b verification
+and fresh independent review are complete. Subsequent “accept and proceed” accepted
+8b and approved Task 9's full policy-only design; its verified/reviewed implementation
+was accepted on 2026-09-16. Setup/check/E2E/consumer passed and the fresh reviewers
+approved without findings; the Task 9 record contains exact final evidence.
 
 ## Modules and data ownership
 
-Planned business modules are **Authenticating**, **Authorizing** and
-**TaskTracking**; Authenticating and TaskTracking are currently installed. Names end in `-ing` and
+Installed business modules are **Authenticating**, **Authorizing** and
+**TaskTracking**. Authorizing's 8b implementation is user accepted. Names end in `-ing` and
 describe the responsibility.
 
 ```text
@@ -57,6 +72,7 @@ src/Module/<Module>/
   Application/<UseCase>/
     <Name>Command.php or <Name>Query.php
     <Name>Handler.php
+    <Name>Policy.php                  # private command/query admission service
     <Name>Result.php                  # when a result DTO is useful
     <Name>Input.php                   # nested CQRS data, not dispatchable
     <Name>Event.php                   # public Application integration fact
@@ -202,7 +218,8 @@ runtime-persistence dependencies.
   are not module-facing providers. The generated subscriber-locator diagnostic
   context and standard parameter-bag service have narrow allowances.
   Direct Platform-to-module edges and arbitrary module-to-Platform facades are
-  forbidden, including named aliases, apart from the exact helper permissions.
+   forbidden, including named aliases, apart from the exact helper permissions and
+   authorization middleware's private policy locator described below.
   EventBus is Application-only. Our listeners cannot inject repositories, handlers,
   ORM or raw buses, even from their own module. Native Messenger owns handler lookup;
   framework listeners do not inherit our listener permissions. Inline substitute
@@ -260,7 +277,7 @@ Separate synchronous `command.bus` and `query.bus` use Messenger and Validator 8
   and missing/duplicate application registrations fail the supported policy.
 - Command/query middleware order is explicit: invocation scope, message policy,
   bus-name stamp, standard input validation, command transaction (commands only),
-  result validation, handling. `ResultValidationMiddleware` validates on stack unwind
+  authorization, result validation, handling. `ResultValidationMiddleware` validates on stack unwind
   inside invocation scope and before command flush/commit.
   Checks cover these service classes, helper references and shared invocation wiring;
   standard handling's logger setter and leading debug tracing are supported.
@@ -362,7 +379,7 @@ standalone E2E preceded that compiler-only change, with runtime unchanged. Exact
 commands, evidence and review identities are in the [task record](tasks/08-authorizing.md)
 and [handoff](handoff.md#completed-8a-verification-and-review--2026-09-14).
 Verification and reviews completed on **2026-09-14**; **8a was USER ACCEPTED on
-2026-09-15** and is the latest accepted checkpoint.
+2026-09-15**; Task 9 is now the latest accepted checkpoint (2026-09-16).
 
 ### Native Application events (5b)
 
@@ -618,7 +635,8 @@ dumps safe.
 
 The web firewall excludes `/api`; no session-authenticated API is introduced.
 Self-registration, reset/disable administration, remember-me, MFA and OIDC are
-outside Subtask 6. Business authorization remains a later subtask.
+outside Subtask 6. Task 9 policy-only business authorization is verified/reviewed,
+user accepted on 2026-09-16.
 
 ### JWT authentication (Subtask 7)
 
@@ -731,34 +749,163 @@ gave median issuance **527.04 ms** and identity **21.27 ms**; consumer observati
 were **525.65 ms / 21.56 ms**. These are local measurements, not an SLA. Task 7
 records the evidence; token/key/password canaries establish exercised secrecy paths only.
 
-### Authorizing model/management (8b: approved for implementation, not yet implemented)
+### Authorizing model/management (8b: user accepted 2026-09-15)
 
-The user accepted the 8a collection checkpoint and approved implementation of the
-[8b design](tasks/08-authorizing.md) on 2026-09-15. No 8b implementation has started;
-main will begin after the authorized commit/push of the verified 8a checkpoint.
-8b then needs its own verification, fresh review and acceptance.
-Self-service and OIDC can add authentication adapters/use cases later. Safe principal
-identities cross boundaries; business API operations are not yet implemented.
+The [approved 8b design](tasks/08-authorizing.md) is **IMPLEMENTED, VERIFIED, REVIEWED and
+USER ACCEPTED on 2026-09-15**. Final 8b setup/check/E2E/consumer verification
+passed, covering the earlier cursor Domain-exception and EXPLAIN numeric fixes.
+Setup applied `Version20260915010000`, retaining existing keys and dependencies;
+lock files are unchanged. Both fresh independent reviewers approved with no findings
+and did not rerun suites; only documentation changed between 8b review and acceptance.
+Actual N=100 SQL budgets and populated plans passed: two business reads, grouped
+mutation DML and one page query, with observed indexed access paths. These are local
+observations, not universal plan or latency guarantees. See the compact
+[final handoff evidence](handoff.md#completed-8b-verification-and-review--2026-09-15);
+main owns the detailed task record.
 
-Authorizing will own code-defined flat permission/role bundles, persisted global
-and resource-scoped role assignments, and direct global/resource grants in four
-module-owned tables. Exact resources are `(type, UUID)` with opaque cross-module
-references. Deny by default. Effective permissions are the union
-of applicable grants and roles. Removing the last applicable source denies future
-checks after commit; already-authorized operations may finish. JWT claims/session
-roles do not become a stale second authority for business permissions.
+#### Ownership and permission semantics
 
-Trusted deployment shell/container access supplies 8b operator-console authority;
-single-item commands adapt atomic 1–100-item assignment changes, permission batches
-use at most two business reads, and assignment listing uses bounded keyset pages.
-Structured batch stdin is bounded to 64 KiB, depth 16 and 100 items. The task record
-owns the exact scope, SQL budgets, concurrency and pagination acceptance criteria.
+`Authorizing/Domain/AuthorizationCatalog` defines flat permission/role bundles.
+The four mapped Domain entities and their `public` tables are:
 
-Subtask 9 will enforce permissions on use-case paths for every entry point. Actors and restricted
-internal capabilities come from trusted infrastructure, never caller-controlled
-privilege flags. Grant/revoke commands require authority. Domain modules retain
-ownership rules and invariants. Bulk permission queries and bounded pagination
-avoid cross-module SQL; cursor pages can be underfilled and omit exact totals.
+| Entity | Table |
+| --- | --- |
+| `GlobalRoleAssignment` | `authorizing_global_role_assignment` |
+| `ResourceRoleAssignment` | `authorizing_resource_role_assignment` |
+| `GlobalPermissionGrant` | `authorizing_global_permission_grant` |
+| `ResourcePermissionGrant` | `authorizing_resource_permission_grant` |
+
+Each has an immutable UUID primary key, natural assignment uniqueness, and an
+`(account_id, id)` cursor index. Resource natural keys include exact `(type, UUID)`.
+Opaque account/resource references introduce no cross-module FK, ORM association,
+join or direct SQL access. The owning `AssignmentRepository` port is implemented by
+`Infrastructure/Persistence/DoctrineAssignmentRepository` on the default connection.
+
+Effective permissions are the additive union of applicable roles and direct grants,
+with deny by default. A global check for a resource-capable permission asks for that
+capability across **all resources of its declared type**, considering only global
+sources. An exact resource check also considers sources for its `(type, UUID)`.
+Known permissions with incompatible scopes/types invalidate the batch; syntactically
+valid unknown permission keys and missing accounts deny. No wildcard, role hierarchy,
+automatic grants or authorization cache exists. JWT claims/session roles are not a
+second permission authority. Removing the last source denies later checks after
+commit; already-authorized work may finish.
+
+Additions validate every permission in the entire role bundle against the requested
+scope; global-only permissions prohibit a resource assignment. Catalogue edits are
+reviewed code changes. Retired keys/types remain removable and listable, and key reuse
+needs deliberate cleanup. [README](../README.md#catalogue-and-scope) lists the installed
+keys and customization rules.
+
+#### Public bus APIs and transaction boundaries
+
+- **`ChangeAccountAssignmentsCommand`** accepts 1–100 distinct natural-key changes
+  for one account, rejecting duplicate/conflicting keys. Changes are atomic and
+  idempotent, with requested/added/removed/unchanged counts based on affected rows.
+  Additions observe existence through Authenticating's `CheckAccountExistenceQuery`
+  **before** acquiring the per-account transaction-scoped advisory lock. This is an
+  existence snapshot, not referential integrity or protection from account deletion.
+  Removal-only operations support orphan cleanup. The lock lasts until the root
+  transaction ends. Parameterized grouped inserts use the exact natural conflict
+  target; exact deletes remove only that source. At most eight DML statements cover
+  four sources and two operations; the lock query is separate. Handlers/repositories
+  never retry, flush or commit; the existing CommandBus root owns flush/commit.
+- **`EvaluatePermissionsQuery`** accepts 1–100 checks across accounts and returns a
+  named Result with one boolean decision per input in order. The budget is at most
+  two business SQL reads: the owning account-existence query and one Authorizing
+  statement covering all four sources. Invalid scope fails the batch; operational
+  failures do not become allow or partial success.
+- **`ListAccountAssignmentsQuery`** returns one account's assignments in a named
+  Result with a next cursor, using one bounded keyset SQL query. Pages are 1–100,
+  default 50, ordered by account/source/immutable assignment UUID. Source order is
+  global roles, resource roles, global grants, resource grants (0–3). Branch and
+  outer limits use one extra row to determine continuation. There are no offsets,
+  totals or cross-page snapshots; concurrent changes can affect later pages and
+  UUIDv7 is not commit ordering. Listing permits orphan and retired-key inspection.
+
+Authenticating owns `Application/CheckAccountExistence/CheckAccountExistenceQuery`
+and its co-located handler/results. It accepts 1–100 UUIDs, deduplicates the owning
+`AccountRepository::existingIds` read and returns only UUID/existence data in input
+order through QueryBus. No credentials or account internals cross the boundary.
+Authorizing performs no resource-existence SQL: the owning module establishes that
+invariant. This permits a nested initial-access command for an unflushed owned Task
+inside the existing root transaction. Unflushed account registration plus assignment
+is unsupported because the account-existence query does not flush pending registration.
+
+#### Operator authority and external bounds
+
+Trusted deployment shell/container access supplies authority for **eight console
+commands**, now expressed through explicit operator `assignments` scope. There are
+no HTTP/API management routes. Single-item adapters call the same batch use
+cases. `--global` is exclusive with the paired `--resource-type`/`--resource-id` options.
+Batch stdin accepts exact-field JSON arrays bounded to 64 KiB, depth 16 and 1–100
+items before DTO construction. Global items omit resource fields; explicit null is
+rejected. Cursors are opaque pagination data, at most 512 characters, strictly
+decoded and bound to account/source/assignment UUID, never authorization grants.
+Exit 2 is invalid input, 1 operational failure, 0 success including deny; errors
+use fixed messages. See [README commands and JSON examples](../README.md#single-item-commands-and-listing).
+
+### Policy-only authorization (Task 9)
+
+The [approved design](tasks/09-authorization-enforcement.md) is implemented, verified
+and independently reviewed, with user acceptance on 2026-09-16. Including the `ActorKind`
+correction, final evidence: check **1360 tests / 7959 assertions**, E2E **230 / 6306**,
+consumer **230 / 6310**; the correction also has a fresh independent approval.
+
+- Every command/query handler declares exactly one co-located private final readonly
+  policy with `#[AuthorizeWith(UseCasePolicy::class)]`. Its callable signature is
+  `__invoke(ExactCommandOrQuery $message, PolicyContext $context): bool`. Actor-dependent
+  admission, including state-sensitive decisions, belongs here. Handlers retain
+  operation logic, permission calculation/catalogue validation, password/hash checks
+  and Domain invariants; handlers neither inject nor call policies.
+- `CqrsPass` validates declarations, dependencies and exact middleware wiring and
+  builds the message-to-policy map. The authorization middleware needs a private
+  framework-generated locator to resolve cross-module private policies; this exact
+  infrastructure edge does not allow module policy injection. Source, compiled DI
+  and Deptrac classification agree on private policies and non-service `Actor`,
+  `ActorKind` and `PolicyContext` data. `Actor::$kind` uses the exact unbacked enum
+  (`Anonymous`, `Account`, `Operator`, `Authentication`), not string literals. Module
+  code cannot inject mutable execution context.
+- `ExecutionContext` derives an account UUID only from native fully authenticated
+  HTTP identity. The actor is separate from message targets and fixed for the bus
+  invocation tree; constructing context data grants no authority. Scope changes
+  during execution fail and invalidate the root. Independent execution clears scope;
+  console/worker execution alone cannot inherit authority from token storage.
+- Exact adapters alone may inject `OperatorExecution`: provisioning uses `accounts`,
+  eight authorization console commands use `assignments`, and existing Task create/
+  show CLI commands use `tasks`, with no new actor argument. Only the native account
+  provider receives `AuthenticationExecution` for the account-bound hash-upgrade scope.
+- Registration admits `accounts` operators; hash upgrade admits only matching
+  authentication-scope account UUID. `GetAccountIdentityQuery` is account-self-only,
+  including `/api/me`. Task Create requires global `task_tracking.task.create` and
+  Get requires `task_tracking.task.view` on the exact `(task_tracking.task, UUID)`;
+  both also admit `tasks` operators. Assignment change/list requires global
+  `authorizing.manage` for account actors, or `assignments` operator scope.
+- Foundation reads terminate with exact policies: `EvaluatePermissionsQuery` admits
+  `PolicyContext::supportRead` or `assignments` operators; `CheckAccountExistenceQuery`
+  admits support reads or exact direct callers `EvaluatePermissionsQuery` and
+  `ChangeAccountAssignmentsCommand`. `supportRead` reflects policy scope, not a
+  general internal bypass. All other nested operations evaluate their own policies.
+- Policies may inject QueryBus, approved immutable values and owning Domain read
+  ports/state. They cannot inject handlers, raw buses, ORM/SQL or outward adapters,
+  or dispatch commands/events, including through nested bus calls. Policy constructors
+  are side-effect-free; locator resolution also occurs inside policy scope. These
+  source/DI/runtime boundaries do not sandbox arbitrary PHP or SQL hidden behind a
+  Domain port. Reads need review for ownership, side effects and cost.
+- Input validation precedes authorization. Command policies run inside the owned
+  transaction before the handler; queries gain no automatic transaction. Caught
+  nested policy/query failures invalidate the root, and a health check prevents
+  handler admission even if a policy subsequently returns true. Existing rollback-
+  only handling prevents commit. Same-transaction admission does not serialize
+  against concurrent revocation; already-authorized work may finish. Policy and
+  handler reads can overlap; 8b budgets measure its APIs, not total protected journeys.
+  The verified direct Get journey uses exactly three business reads (owning account
+  existence, permission evaluation, Task lookup), excluding native HTTP authentication.
+- Dev/test `/_demo/tasks` uses web-session identity and fixed denial JSON
+  `{"error":"Access denied."}`: 401 anonymous, 403 authenticated. API bearer identity
+  belongs to `/api`, not these routes. Authorized missing Task reads return 404.
+  No automatic Task grant, permission-filtered resource list or durable service
+  identity is introduced; each retains a separate design gate.
 
 ## Adapters, cache and demo
 

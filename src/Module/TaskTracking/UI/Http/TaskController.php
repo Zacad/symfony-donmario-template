@@ -7,6 +7,7 @@ namespace App\Module\TaskTracking\UI\Http;
 use App\Module\TaskTracking\Application\CreateTask\CreateTaskCommand;
 use App\Module\TaskTracking\Application\GetTask\GetTaskQuery;
 use App\Module\TaskTracking\Application\GetTask\GetTaskResult;
+use App\Platform\Authorization\AuthorizationDenied;
 use App\Platform\Messaging\CommandBus;
 use App\Platform\Messaging\QueryBus;
 use Psr\Log\LoggerInterface;
@@ -25,7 +26,7 @@ final readonly class TaskController
     {
     }
 
-    #[Route('/_demo/tasks', name: 'demo_task_create', methods: ['POST'], stateless: true, env: ['dev', 'test'])]
+    #[Route('/_demo/tasks', name: 'demo_task_create', methods: ['POST'], env: ['dev', 'test'])]
     public function create(Request $request): JsonResponse
     {
         if ('application/json' !== strtolower(trim(explode(';', $request->headers->get('Content-Type') ?? '')[0]))) {
@@ -57,6 +58,8 @@ final readonly class TaskController
             }
 
             return $this->response(['id' => $id->toRfc4122()], 201, ['Location' => $this->urls->generate('demo_task_show', ['id' => $id->toRfc4122()])]);
+        } catch (AuthorizationDenied $failure) {
+            return $this->response(['error' => 'Access denied.'], $failure->authenticated ? 403 : 401);
         } catch (ValidationFailedException $failure) {
             return $this->validation($failure);
         } catch (\Throwable $failure) {
@@ -64,7 +67,7 @@ final readonly class TaskController
         }
     }
 
-    #[Route('/_demo/tasks/{id}', name: 'demo_task_show', methods: ['GET'], stateless: true, env: ['dev', 'test'])]
+    #[Route('/_demo/tasks/{id}', name: 'demo_task_show', methods: ['GET'], env: ['dev', 'test'])]
     public function show(string $id): JsonResponse
     {
         try {
@@ -77,6 +80,8 @@ final readonly class TaskController
             }
 
             return $this->response(['id' => $result->id->toRfc4122(), 'title' => $result->title]);
+        } catch (AuthorizationDenied $failure) {
+            return $this->response(['error' => 'Access denied.'], $failure->authenticated ? 403 : 401);
         } catch (ValidationFailedException $failure) {
             return $this->validation($failure);
         } catch (\Throwable $failure) {

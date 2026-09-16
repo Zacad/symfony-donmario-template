@@ -22,6 +22,13 @@ services:
         resource: '../src/Platform/'
         exclude:
             - '../src/Platform/Event/'
+            - '../src/Platform/Authorization/Actor.php'
+            - '../src/Platform/Authorization/ActorKind.php'
+            - '../src/Platform/Authorization/PolicyContext.php'
+            - '../src/Platform/Authorization/AuthorizeWith.php'
+            - '../src/Platform/Authorization/AuthorizationDenied.php'
+            - '../src/Platform/Authorization/AuthorizationMiddleware.php'
+            - '../src/Platform/Authorization/ExecutionContext.php'
             - '../src/Platform/Architecture/*Pass.php'
             - '../src/Platform/Messaging/InvocationMiddleware.php'
             - '../src/Platform/Messaging/MessagePolicyMiddleware.php'

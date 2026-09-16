@@ -15,7 +15,7 @@ final class AuthenticatingPersistenceTest extends AuthenticatingTestCase
     {
         $password = Browser::secret();
         $email = 'auth-persistence-'.bin2hex(random_bytes(8)).'@example.test';
-        $id = $this->commands()->dispatch(new RegisterAccountCommand($email, $password));
+        $id = $this->dispatch(new RegisterAccountCommand($email, $password));
         self::assertInstanceOf(Uuid::class, $id);
         $browser = Browser::create();
         Browser::login($browser, $email, $password);

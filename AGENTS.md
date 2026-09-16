@@ -2,17 +2,60 @@
 
 ## Start here
 
-**Latest accepted checkpoint: [Subtask 8a — Application DTO collections](docs/tasks/08-authorizing.md):
-IMPLEMENTED, VERIFIED, REVIEWED and USER ACCEPTED on 2026-09-15.** Final setup/check/E2E/
-consumer verification and fresh independent reviews completed on 2026-09-14. Both reviewers
-approved with no findings and did not run suites. Earlier fixture YAML/static issues
-are resolved; see [handoff evidence](docs/handoff.md#completed-8a-verification-and-review--2026-09-14).
-**8b Authorizing model/management is approved for implementation, not yet implemented.**
-On 2026-09-15, in response to the request to accept 8a and proceed to 8b, the user said
-exactly “commit, push and proceed”. This accepts 8a, authorizes commit/push of the
-verified 8a checkpoint only, and approves beginning 8b. Main owns the Git workflow
-and will begin 8b after that commit/push; future commits/pushes need explicit authorization.
-Main owns task 8's record; reconcile it with subsequent progress instructions.
+**Latest accepted checkpoint: [Task 9 — Policy-only authorization enforcement](docs/tasks/09-authorization-enforcement.md),
+including the `ActorKind` correction, is IMPLEMENTED, VERIFIED, REVIEWED and USER
+ACCEPTED on 2026-09-16.** Following additional fresh design/implementation reviewer
+`ses_f5691c623ffeKmeUgmFSPqCWQ7` approval with no findings or material coverage gaps,
+the user said exactly **“ok, i accept task, nest task will be continued in fresh session”**.
+Only acceptance/handoff docs changed afterward. **Next session starts Task 10 —
+TaskTracking use cases/CLI — discovery/design only; implementation needs separate
+design approval.** On 2026-09-16 the user explicitly requested **“commit and push changes”**.
+This delivery commit records the accepted 8b/9 work, enum correction and handoff.
+Earlier uncommitted/no-Git-authorization notes below predate that request; future
+commits/pushes require fresh authorization. Use Git history for the delivery hash.
+Do not rerun passing suites merely to resume. See `docs/handoff.md` for the next gate.
+
+**Completed correction (2026-09-16):** the user requested an enum for actor kind. `ActorKind` now
+types `Actor::$kind` (`Anonymous`, `Account`, `Operator`, `Authentication`), with
+matching non-service/source/DI/Deptrac classification. Post-correction setup passed;
+check `var/test-runs/run-SSb9mtrr/` passed **1360 tests / 7959 assertions**, Deptrac
+**1887 allowed / 0 violations / 0 uncovered**. E2E `var/test-runs/run-0BEEcpKm/` passed
+**230 / 6306**, all **46 phases**. Consumer `/tmp/opencode/donmario-setup-M4B96yAf/`
+passed with **230 / 6310** at `application/var/test-runs/run-uTaVmkbI/`, all 46 phases
+and five authorization/HTTP checkpoints. Fresh correction reviewer
+`ses_f574cd1afffet0VIFWAYaHvPMl` **APPROVED**, no findings, including completed consumer
+evidence; no suites rerun. Task 9 including this correction is now user accepted.
+The original Task 9 evidence below is historical. See
+`docs/tasks/09-authorization-enforcement.md`. Git delivery is authorized as recorded above.
+
+**Earlier accepted checkpoint: [8b Authorizing model/management](docs/tasks/08-authorizing.md)
+is IMPLEMENTED, VERIFIED, REVIEWED and USER ACCEPTED on 2026-09-15.** Following the
+full policy-only enforcement design, the user said **“accept and proceed”**; main
+recorded 8b acceptance and approval for [Task 9 implementation](docs/tasks/09-authorization-enforcement.md).
+Task 9 is now **IMPLEMENTED, VERIFIED, REVIEWED and USER ACCEPTED**.
+Main owns its [task record](docs/tasks/09-authorization-enforcement.md). Original setup
+passed retaining keys/dependencies/migration. Check `var/test-runs/run-1nmJjuRE/`:
+**1335 tests / 7775 assertions**, Deptrac **1878 allowed / 0 violations / 0 uncovered**.
+E2E `var/test-runs/run-K1eShLCh/`: **230 tests / 6306 assertions**, all **46 phases**.
+Consumer `/tmp/opencode/donmario-setup-zCUNToYg/` passed with embedded **230 / 6308**,
+all 46 phases at `application/var/test-runs/run-f78VOUau/`, and five stable assignment/
+session-authorized/anonymous-denied HTTP checkpoints. Fresh reviewers
+`ses_f59626304ffe7FfAL8d0URx8mX` and `ses_f596262c7ffelHpvG7S2VBGlix` approved without
+findings, including completed consumer evidence. No suites were rerun by reviewers.
+Full check preceded four E2E fixture-only changes with passing targeted PHPStan/style;
+final standalone and consumer E2E cover them. Only docs changed after final reviews.
+Earlier failed-check and awaiting-verification/8b-acceptance records are superseded.
+Do not rerun passing suites merely to resume; Task 10 discovery/design is next.
+
+8a remains accepted, verified/reviewed on 2026-09-14 and accepted on 2026-09-15;
+see [8a evidence](docs/handoff.md#completed-8a-verification-and-review--2026-09-14).
+The earlier “commit, push and proceed” authorized only 8a, pushed as `367fdfe` to
+`origin/main` on 2026-09-15. **The subsequent 2026-09-16 request authorizes this 8b/9 delivery.**
+Main owns Git. Final 8b setup/check/E2E/consumer verification included N=100 SQL
+budgets and populated plans; both fresh reviewers approved with no findings and did
+not rerun suites. Only docs changed between 8b review and acceptance. See
+[8b evidence](docs/handoff.md#completed-8b-verification-and-review--2026-09-15).
+Task 9 was accepted on 2026-09-16; continue with Task 10 discovery/design in a fresh session.
 
 **Earlier accepted checkpoint:** [Subtask 6](docs/tasks/06-web-authentication.md), including
 the user's 2026-09-13 correction making registration responsible for password-policy
@@ -44,9 +87,9 @@ all 38 phases, at `application/var/test-runs/run-KkpCT8uO/`. Fresh independent r
 See task 7 for exact findings/coverage and the acceptance quote. These are historical
 accepted results, not 8a evidence. 8a verification/review completed on 2026-09-14;
 user acceptance followed on 2026-09-15.
-The working tree was clean at existing `c29a3f9` before the new 8a implementation
-edits; earlier uncommitted authentication-work descriptions are historical. Preserve
-intended 8a work; the 2026-09-15 authorization covers commit/push of that verified checkpoint only.
+The working tree was clean at existing `c29a3f9` before 8a implementation;
+8a is now pushed as `367fdfe`. Earlier uncommitted authentication/8a descriptions
+are historical. Preserve the accepted 8b/9 implementation and evidence recorded in this delivery.
 
 Use subagents and paralelize work when possible and not affect results. Treat using subagents as default way of work for providing faster results.
 
@@ -171,8 +214,78 @@ tool output, test artifacts, source control or image contexts.
   and caught-nested rollback/recovery, and both fresh independent implementation reviews
   are complete. Final check and consumer E2E cover the final compiler-only return guard;
   standalone E2E preceded it, with runtime unchanged. Do not repeat passing suites
-  merely to resume. 8a was user accepted on 2026-09-15; 8b implementation is approved
-  and main will begin after committing/pushing the verified 8a checkpoint.
+  merely to resume. 8a was user accepted and pushed as `367fdfe` on 2026-09-15;
+  8b is user accepted; Task 9 is verified/reviewed and user accepted on 2026-09-16.
+
+## Policy-only enforcement (Task 9: user accepted 2026-09-16)
+
+- Each command/query handler declares a co-located private final readonly policy
+  with `#[AuthorizeWith(...)]`; its exact message plus immutable `PolicyContext`
+  returns bool. Actor-dependent admission belongs only in policies. Permission
+  calculation/catalogue validation, password/hash validation and Domain invariants
+  remain use-case logic. No policy injections into handlers.
+- Source/DI/Deptrac classifications align. Authorization middleware needs its exact
+  private framework locator to resolve policies; no general module access to policy
+  services or mutable execution context. Policies may use QueryBus and owning Domain
+  read ports/state, not handlers, commands/events, ORM/SQL or outward adapters. These
+  guardrails are not an arbitrary PHP/SQL sandbox; constructors remain side-effect-free.
+- `PolicyContext(actor, supportRead, caller)` comes from infrastructure. Native fully
+  authenticated HTTP identity supplies the account UUID, separate from DTO targets.
+  `/api/me` is self-only. Exact adapters alone receive scoped helpers: provisioning
+  uses operator `accounts`, authorization CLI `assignments`, existing Task create/show
+  CLI `tasks` (no actor argument); native account provider alone uses account-bound
+  `AuthenticationExecution` for hash upgrades. CLI/worker execution alone grants nothing.
+- Foundation policies are exact: permission evaluation admits policy support reads
+  or `assignments` operators; account existence admits support reads or direct callers
+  `EvaluatePermissionsQuery`/`ChangeAccountAssignmentsCommand`. No general internal
+  bypass; ordinary nested operations reauthorize. Policy resolution/execution cannot
+  dispatch commands/events, including through nested bus calls.
+- Input validation precedes admission; command policy runs inside the owned transaction,
+  before result-validation/handling; queries gain no automatic transaction. Caught
+  nested failures invalidate the root and prevent admission/commit even if the policy
+  returns true. No actor changes within bus execution. Same-transaction checks do not
+  serialize against revocation; policy and handler reads may overlap.
+- Account actors need global create for Task Create, exact-resource view for Task Get,
+  and global `authorizing.manage` for assignment change/list. Explicit corresponding
+  operator scopes also admit. Dev/test Task HTTP uses web sessions and fixed denial
+  JSON `{"error":"Access denied."}` (401 anonymous / 403 authenticated). No automatic
+  Task grant, list filtering or durable service identity yet.
+
+## Authorizing boundaries (8b: user accepted 2026-09-15)
+
+- Trusted deployment shell/container access supplies operator authority for eight
+  console commands, now using explicit operator `assignments` scope. There are no new
+  HTTP/API management routes. Task 9's verified/reviewed policy-only implementation is user accepted.
+- Authorizing owns the four mapped global/resource role-assignment and direct-grant
+  tables and `Domain/AuthorizationCatalog`. Migration `Version20260915010000` was
+  applied by passing setup; dependencies and locks are unchanged. See architecture
+  for exact table names and README for catalogue customization and console contracts.
+- Public bus APIs are `ChangeAccountAssignmentsCommand`, `EvaluatePermissionsQuery`
+  and `ListAccountAssignmentsQuery`. Authenticating owns `CheckAccountExistenceQuery`,
+  returning only UUID/existence data through QueryBus. No cross-module SQL/FK/association.
+- Sources are additive. A global permission check asks for all resources of its
+  declared type and uses only global sources; resource checks also include exact
+  `(type, UUID)` sources. Known permissions with incompatible scope are invalid;
+  missing accounts/unknown permission keys deny. No cache or JWT/session permission authority.
+- Changes are 1–100 distinct natural keys for one account, atomic and idempotent,
+  with rows-actually-changed counts. Validate additions against the whole role bundle's
+  scope. Removal/listing allow retired keys and orphan cleanup. Existence is observed
+  **before** the account advisory lock and is only a snapshot. The transaction-scoped
+  lock lasts until the root ends; at most eight DML statements, no handler/repository
+  flush, commit or retry. Resource existence belongs to its owning module; omitting
+  resource-existence SQL permits nested initial access for an unflushed owned Task. Unflushed account
+  registration plus assignment is unsupported.
+- Evaluation uses at most two business SQL reads, including owning account existence;
+  listing uses one bounded keyset query. Pages are 1–100/default 50, ordered by
+  account/source/immutable assignment UUID, without totals or cross-page snapshots.
+  Actual N=100 budgets and populated-plan verification passed; see final handoff
+  evidence for observed access paths, without universal plan or latency guarantees.
+- Console scope is explicit: `--global` is exclusive with the paired resource options.
+  Batch JSON stdin is at most 64 KiB, depth 16 and 1–100 items, with exact fields;
+  global items omit resource fields (explicit null is rejected). Opaque cursors are
+  at most 512 characters, strictly decoded and bound to account/source/UUID; they
+  are pagination data, not authorization grants. Exit 2 is invalid input, 1 operational
+  failure, 0 success including deny. Preserve fixed errors and bounded parsing.
 
 ## Web authentication boundaries
 
@@ -216,8 +329,9 @@ tool output, test artifacts, source control or image contexts.
   (411) and external `/index.php` aliases (404). Preserve those pre-PHP protections.
   Actual storage/log canaries verify exercised paths, not universal secrecy.
 - The web firewall excludes `/api`. JWT is implemented under Subtask 7's approved
-  design, verified, independently reviewed and user accepted on 2026-09-14. Business authorization is
-  not implemented and retains its later approval gate.
+  design, verified, independently reviewed and user accepted on 2026-09-14. 8b model/
+  management is user accepted; Task 9 policy enforcement is verified/reviewed,
+  user accepted on 2026-09-16.
 
 ## JWT authentication boundaries
 
@@ -334,7 +448,10 @@ Subtask 5b**. Subtask 6 including its registration correction is verified, fresh
 independently reviewed and **USER ACCEPTED on 2026-09-13**. Subtask 7's approved
 implementation, including the identity-query correction, is **IMPLEMENTED, VERIFIED,
 REVIEWED and USER ACCEPTED on 2026-09-14** and remains an accepted historical checkpoint.
-Latest accepted Subtask 8a is **IMPLEMENTED, VERIFIED, REVIEWED and USER ACCEPTED on 2026-09-15**.
-Final verification and both fresh independent implementation reviews completed on
-2026-09-14 with no findings. 8b is approved for implementation but not yet implemented;
-main will begin after the explicitly authorized commit/push of the verified 8a checkpoint.
+Accepted Subtask 8a is **IMPLEMENTED, VERIFIED, REVIEWED and USER ACCEPTED on 2026-09-15**.
+Final 8a verification and both fresh independent implementation reviews completed on
+2026-09-14 with no findings; 8a was pushed as `367fdfe` on 2026-09-15. Earlier accepted
+8b is IMPLEMENTED, VERIFIED, REVIEWED and USER ACCEPTED on 2026-09-15. Task 9's full
+policy-only design was approved with “accept and proceed”; it is implemented, verified
+and reviewed, with user acceptance on 2026-09-16. Main owns Task 9's record/final evidence.
+8b/9 are included in this authorized delivery; future commits/pushes need authorization.

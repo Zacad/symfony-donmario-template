@@ -7,6 +7,7 @@ namespace App\Tests\Architecture;
 use App\Module\TaskTracking\Application\CreateTask\CreateTaskCommand;
 use App\Module\TaskTracking\Application\CreateTask\TaskCreatedEvent;
 use App\Module\TaskTracking\Application\GetTask\GetTaskQuery;
+use App\Platform\Authorization\AuthorizationMiddleware;
 use App\Platform\Messaging\CommandBus;
 use App\Platform\Messaging\QueryBus;
 use App\Tests\Fixtures\Collections\CollectionsFixture;
@@ -16,7 +17,12 @@ use Doctrine\Persistence\ManagerRegistry;
 use PHPUnit\Framework\Attributes\DataProvider;
 use PHPUnit\Framework\TestCase;
 use Psr\Container\ContainerInterface;
+use Symfony\Component\DependencyInjection\Argument\ServiceClosureArgument;
+use Symfony\Component\DependencyInjection\Compiler\CompilerPassInterface;
+use Symfony\Component\DependencyInjection\Compiler\PassConfig;
 use Symfony\Component\DependencyInjection\ContainerBuilder;
+use Symfony\Component\DependencyInjection\Reference;
+use Symfony\Component\DependencyInjection\ServiceLocator;
 use Symfony\Component\Messenger\Envelope;
 use Symfony\Component\Messenger\Exception\ValidationFailedException;
 use Symfony\Component\Messenger\Message\RedispatchMessage;
@@ -86,6 +92,14 @@ final class CqrsTest extends TestCase
         yield 'public handler alias' => ['public-handler', 'handler_visibility'];
         yield 'public handler alias chain' => ['public-handler-chain', 'handler_visibility'];
         yield 'public alias to an untagged handler copy' => ['public-handler-copy', 'handler_visibility'];
+        foreach (['missing', 'duplicate', 'method', 'policy-missing', 'policy-mutable', 'policy-nonfinal', 'policy-foreign', 'policy-message', 'policy-context', 'policy-return', 'policy-optional', 'policy-variadic', 'policy-reference', 'policy-public', 'policy-alias', 'policy-copy', 'data-service', 'locator-map', 'locator-public', 'locator-alias'] as $scenario) {
+            yield 'authorization '.$scenario => ['authorization-'.$scenario, 'authorization'];
+        }
+        foreach (['context', 'policy-factory', 'locator-factory', 'after-result'] as $scenario) {
+            yield 'authorization '.$scenario => ['authorization-'.$scenario, 'wiring'];
+        }
+        yield 'missing command authorization' => ['authorization-missing-command', 'middleware'];
+        yield 'missing query authorization' => ['authorization-missing-query', 'middleware'];
     }
 
     #[DataProvider('invalidWiring')]
@@ -111,6 +125,48 @@ final class CqrsTest extends TestCase
                 self::assertTrue($container->isCompiled());
             });
         }
+    }
+
+    public function testCompilationBuildsExactLazyPolicyMap(): void
+    {
+        CompilationKernel::run('authorization-valid', static function (ContainerBuilder $container): void {
+            $inspection = new class implements CompilerPassInterface {
+                public bool $inspected = false;
+
+                public function process(ContainerBuilder $container): void
+                {
+                    $reference = $container->getDefinition(AuthorizationMiddleware::class)->getArgument(2);
+                    TestCase::assertInstanceOf(Reference::class, $reference);
+                    $locator = $container->findDefinition((string) $reference);
+                    TestCase::assertSame(ServiceLocator::class, $locator->getClass());
+                    TestCase::assertFalse($locator->isPublic());
+                    TestCase::assertNull($locator->getFactory());
+                    $map = $locator->getArgument(0);
+                    TestCase::assertIsArray($map);
+                    $inventory = $container->getDefinition('app.command_policy')->getArgument(1);
+                    TestCase::assertIsArray($inventory);
+                    $expected = array_keys(array_filter($inventory, static fn (mixed $kind): bool => 'event' !== $kind));
+                    sort($expected);
+                    TestCase::assertSame($expected, array_keys($map));
+                    TestCase::assertArrayHasKey(CreateTaskCommand::class, $map);
+                    TestCase::assertArrayHasKey(GetTaskQuery::class, $map);
+                    TestCase::assertArrayNotHasKey(TaskCreatedEvent::class, $map);
+                    foreach ($map as $message => $closure) {
+                        TestCase::assertInstanceOf(ServiceClosureArgument::class, $closure);
+                        $policy = $closure->getValues()[0];
+                        TestCase::assertInstanceOf(Reference::class, $policy);
+                        $definition = $container->findDefinition((string) $policy);
+                        TestCase::assertFalse($definition->isPublic());
+                        $invoke = new \ReflectionMethod($definition->getClass() ?? '', '__invoke');
+                        TestCase::assertSame($message, (string) $invoke->getParameters()[0]->getType());
+                    }
+                    $this->inspected = true;
+                }
+            };
+            $container->addCompilerPass($inspection, PassConfig::TYPE_BEFORE_REMOVING, 5);
+            $container->compile();
+            self::assertTrue($inspection->inspected);
+        });
     }
 
     public function testCompiledBusesRejectInvalidInputAndStampsWithoutDatabaseAccess(): void

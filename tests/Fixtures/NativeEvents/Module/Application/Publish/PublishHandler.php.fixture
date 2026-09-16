@@ -6,11 +6,13 @@ namespace App\Module\NativeObserving\Application\Publish;
 
 use App\Module\NativeObserving\Application\Probe\ProbeQuery;
 use App\Module\NativeObserving\Domain\ObservationRepository;
+use App\Platform\Authorization\AuthorizeWith;
 use App\Platform\Messaging\EventBus;
 use App\Platform\Messaging\QueryBus;
 use Symfony\Component\Messenger\Attribute\AsMessageHandler;
 
 #[AsMessageHandler(bus: 'command.bus')]
+#[AuthorizeWith(PublishPolicy::class)]
 final readonly class PublishHandler
 {
     public function __construct(private ObservationRepository $observations, private EventBus $events, private QueryBus $queries)
