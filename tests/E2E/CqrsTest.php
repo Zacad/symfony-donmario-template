@@ -76,7 +76,7 @@ final class CqrsTest extends DatabaseTestCase
         $this->actorId = Uuid::v7();
         $this->observer->executeStatement('INSERT INTO authenticating_account (id, email, password_hash) VALUES (?, ?, ?)', [$this->actorId->toRfc4122(), $this->prefix.'@example.test', 'unused-cqrs-fixture']);
         foreach (['task_tracking.task.create', 'task_tracking.task.view'] as $permission) {
-            $this->observer->executeStatement('INSERT INTO authorizing_global_permission_grant (id, account_id, permission_key) VALUES (?, ?, ?)', [Uuid::v7()->toRfc4122(), $this->actorId->toRfc4122(), $permission]);
+            $this->observer->executeStatement('INSERT INTO authorizing_permission_grant (subject_id, permission_key) VALUES (?, ?)', [$this->actorId->toRfc4122(), $permission]);
         }
         $requests = $container->get('request_stack');
         $tokens = $container->get('security.token_storage');
@@ -85,7 +85,7 @@ final class CqrsTest extends DatabaseTestCase
         $this->requests = $requests;
         $this->tokens = $tokens;
         // Direct bus verification uses the same native identity sources as HTTP.
-        // Permissions still come from the real policy and isolated PostgreSQL rows.
+        // Permissions still come from the real voter and isolated PostgreSQL rows.
         $this->requests->push(Request::create('/_demo/tasks'));
         $this->tokens->setToken(new UsernamePasswordToken(new AccountPrincipal($this->actorId, $this->prefix.'@example.test', 'unused-cqrs-fixture'), 'main', []));
     }
@@ -99,7 +99,7 @@ final class CqrsTest extends DatabaseTestCase
         if (isset($this->observer)) {
             $this->observer->executeStatement('DELETE FROM task_tracking_task WHERE title LIKE ?', [$this->prefix.'%']);
             if (isset($this->actorId)) {
-                $this->observer->executeStatement('DELETE FROM authorizing_global_permission_grant WHERE account_id = ?', [$this->actorId->toRfc4122()]);
+                $this->observer->executeStatement('DELETE FROM authorizing_permission_grant WHERE subject_id = ?', [$this->actorId->toRfc4122()]);
                 $this->observer->executeStatement('DELETE FROM authenticating_account WHERE id = ?', [$this->actorId->toRfc4122()]);
             }
             $this->observer->close();
@@ -121,15 +121,15 @@ final class CqrsTest extends DatabaseTestCase
         self::assertSame($title, $this->observer->fetchOne('SELECT title FROM task_tracking_task WHERE id = ?', [$id]));
         $show = $this->cli(['app:task:show', $id]);
         self::assertSame(0, $show->getExitCode(), $show->getErrorOutput());
-        self::assertSame(['id' => $id, 'title' => $title], json_decode($show->getOutput(), true, flags: JSON_THROW_ON_ERROR));
+        self::assertSame(['id' => $id, 'title' => $title, 'ownerAccountId' => $this->actorId->toRfc4122(), 'completedAt' => null], json_decode($show->getOutput(), true, flags: JSON_THROW_ON_ERROR));
         self::assertStringNotContainsString("\x1b", $show->getOutput());
 
         $create = $this->cli(['app:task:create', $this->prefix.'from-cli']);
         self::assertSame(0, $create->getExitCode(), $create->getErrorOutput());
         $cliId = trim($create->getOutput());
         self::assertTrue(Uuid::isValid($cliId));
-        self::assertSame(['id' => $cliId, 'title' => $this->prefix.'from-cli'], $http->request('GET', '/_demo/tasks/'.$cliId)->toArray());
-        self::assertSame(404, $http->request('GET', '/_demo/tasks/'.Uuid::v7())->getStatusCode());
+        self::assertSame(403, $http->request('GET', '/_demo/tasks/'.$cliId)->getStatusCode(), 'An account cannot view an operator-created unowned task.');
+        self::assertSame(403, $http->request('GET', '/_demo/tasks/'.Uuid::v7())->getStatusCode(), 'Missing tasks deny before the handler to avoid disclosing existence.');
         self::assertSame(1, $this->cli(['app:task:show', Uuid::v7()->toRfc4122()])->getExitCode());
     }
 
@@ -150,7 +150,7 @@ final class CqrsTest extends DatabaseTestCase
             self::fail('Validation must prevent persistence.');
         };
         try {
-            $this->commands->dispatch(new CreateTaskCommand($title));
+            $this->commands->dispatch(new CreateTaskCommand($title, $this->actorId));
             self::fail('Expected validation failure.');
         } catch (ValidationFailedException $failure) {
             self::assertGreaterThan(0, count($failure->getViolations()));
@@ -168,7 +168,7 @@ final class CqrsTest extends DatabaseTestCase
     public function testValidationBoundariesAndUnmodifiedTitle(): void
     {
         foreach (['0', str_repeat('é', 200), '  preserved  '] as $title) {
-            $id = $this->commands->dispatch(new CreateTaskCommand($title));
+            $id = $this->commands->dispatch(new CreateTaskCommand($title, $this->actorId));
             self::assertInstanceOf(Uuid::class, $id);
             $result = $this->queries->ask(new GetTaskQuery($id->toRfc4122()));
             self::assertInstanceOf(GetTaskResult::class, $result);
@@ -222,11 +222,11 @@ final class CqrsTest extends DatabaseTestCase
             self::assertSame(0, $this->countRows());
             throw new \RuntimeException('synthetic handler failure');
         };
-        $this->assertFails(fn () => $this->commands->dispatch(new CreateTaskCommand($this->prefix.'failed')), 'synthetic handler failure');
+        $this->assertFails(fn () => $this->commands->dispatch(new CreateTaskCommand($this->prefix.'failed', $this->actorId)), 'synthetic handler failure');
         self::assertSame(0, $this->countRows());
         self::assertFalse($this->connection->isTransactionActive());
         $this->fault->afterAdd = null;
-        $id = $this->commands->dispatch(new CreateTaskCommand($this->prefix.'recovered'));
+        $id = $this->commands->dispatch(new CreateTaskCommand($this->prefix.'recovered', $this->actorId));
         self::assertInstanceOf(Uuid::class, $id);
         self::assertSame($managerIdentity, spl_object_id($this->manager));
         self::assertTrue($this->manager->isOpen());
@@ -239,11 +239,11 @@ final class CqrsTest extends DatabaseTestCase
     {
         $this->fault->afterAdd = function (): void {
             $this->fault->afterAdd = null;
-            self::assertInstanceOf(Uuid::class, $this->commands->dispatch(new CreateTaskCommand($this->prefix.'inner')));
+            self::assertInstanceOf(Uuid::class, $this->commands->dispatch(new CreateTaskCommand($this->prefix.'inner', $this->actorId)));
             self::assertTrue($this->connection->isTransactionActive());
             self::assertSame(0, $this->countRows(), 'Nested results must not commit independently.');
         };
-        $this->commands->dispatch(new CreateTaskCommand($this->prefix.'outer'));
+        $this->commands->dispatch(new CreateTaskCommand($this->prefix.'outer', $this->actorId));
         self::assertSame(2, $this->countRows());
     }
 
@@ -251,13 +251,13 @@ final class CqrsTest extends DatabaseTestCase
     {
         $this->connection->beginTransaction();
         try {
-            $this->assertFails(fn () => $this->commands->dispatch(new CreateTaskCommand($this->prefix.'external')), 'cqrs.transaction');
+            $this->assertFails(fn () => $this->commands->dispatch(new CreateTaskCommand($this->prefix.'external', $this->actorId)), 'cqrs.transaction');
             self::assertTrue($this->connection->isTransactionActive());
             self::assertSame(0, $this->countRows());
         } finally {
             $this->connection->rollBack();
         }
-        $this->commands->dispatch(new CreateTaskCommand($this->prefix.'normal'));
+        $this->commands->dispatch(new CreateTaskCommand($this->prefix.'normal', $this->actorId));
         self::assertSame(1, $this->countRows());
     }
 
@@ -269,7 +269,7 @@ final class CqrsTest extends DatabaseTestCase
         self::assertInstanceOf(\PDO::class, $native);
         $native->beginTransaction();
         try {
-            $this->assertFails(fn () => $this->commands->dispatch(new CreateTaskCommand($this->prefix.'begin-failure')), 'already an active transaction');
+            $this->assertFails(fn () => $this->commands->dispatch(new CreateTaskCommand($this->prefix.'begin-failure', $this->actorId)), 'already an active transaction');
             self::assertFalse($this->connection->isTransactionActive());
             self::assertFalse($this->connection->isConnected());
         } finally {
@@ -277,7 +277,7 @@ final class CqrsTest extends DatabaseTestCase
                 $native->rollBack();
             }
         }
-        $this->commands->dispatch(new CreateTaskCommand($this->prefix.'reconnected'));
+        $this->commands->dispatch(new CreateTaskCommand($this->prefix.'reconnected', $this->actorId));
         self::assertSame(1, $this->countRows());
     }
 
@@ -299,7 +299,7 @@ final class CqrsTest extends DatabaseTestCase
                 if ('query' === $mode) {
                     $this->queries->ask(new GetTaskQuery('invalid'));
                 } else {
-                    $this->commands->dispatch(new CreateTaskCommand('validation' === $mode ? '' : $this->prefix.'inner'));
+                    $this->commands->dispatch(new CreateTaskCommand('validation' === $mode ? '' : $this->prefix.'inner', $this->actorId));
                 }
             } catch (\Throwable) {
                 // Intentionally swallowed to establish the rollback-only contract.
@@ -310,7 +310,7 @@ final class CqrsTest extends DatabaseTestCase
         };
         $failure = null;
         try {
-            $this->commands->dispatch(new CreateTaskCommand($this->prefix.'outer'));
+            $this->commands->dispatch(new CreateTaskCommand($this->prefix.'outer', $this->actorId));
         } catch (\Throwable $caught) {
             $failure = $caught;
         }
@@ -322,34 +322,42 @@ final class CqrsTest extends DatabaseTestCase
         }
         self::assertSame(0, $this->countRows());
         $this->fault->afterAdd = null;
-        $this->commands->dispatch(new CreateTaskCommand($this->prefix.'recovery'));
+        $this->commands->dispatch(new CreateTaskCommand($this->prefix.'recovery', $this->actorId));
         self::assertSame(1, $this->countRows());
     }
 
     public function testQueryCannotDispatchCommandsAndCannotLeakScheduledChanges(): void
     {
-        $this->fault->afterFind = function (): void {
-            $this->commands->dispatch(new CreateTaskCommand($this->prefix.'forbidden'));
+        $taskId = $this->commands->dispatch(new CreateTaskCommand($this->prefix.'target', $this->actorId));
+        self::assertInstanceOf(Uuid::class, $taskId);
+        $calls = 0;
+        $this->fault->afterFind = function () use (&$calls): void {
+            if (2 === ++$calls) {
+                $this->commands->dispatch(new CreateTaskCommand($this->prefix.'forbidden', $this->actorId));
+            }
         };
-        $this->assertFails(fn () => $this->queries->ask(new GetTaskQuery(Uuid::v7()->toRfc4122())), 'cqrs.query_write');
-        self::assertSame(0, $this->countRows());
-        $this->fault->afterFind = function (): void {
-            $this->manager->persist(new Task($this->prefix.'unflushed'));
+        $this->assertFails(fn () => $this->queries->ask(new GetTaskQuery($taskId->toRfc4122())), 'cqrs.query_write');
+        self::assertSame(1, $this->countRows());
+        $calls = 0;
+        $this->fault->afterFind = function () use (&$calls): void {
+            if (2 === ++$calls) {
+                $this->manager->persist(new Task($this->prefix.'unflushed'));
+            }
         };
-        self::assertNull($this->queries->ask(new GetTaskQuery(Uuid::v7()->toRfc4122())));
-        self::assertSame(0, $this->countRows());
+        self::assertInstanceOf(GetTaskResult::class, $this->queries->ask(new GetTaskQuery($taskId->toRfc4122())));
+        self::assertSame(1, $this->countRows());
         $this->fault->afterFind = null;
-        $this->commands->dispatch(new CreateTaskCommand($this->prefix.'valid'));
-        self::assertSame(1, $this->countRows(), 'The query must not flush or retain scheduled entities.');
+        $this->commands->dispatch(new CreateTaskCommand($this->prefix.'valid', $this->actorId));
+        self::assertSame(2, $this->countRows(), 'The query must not flush or retain scheduled entities.');
     }
 
     public function testNestedQueryDoesNotClearTheParentUnitOfWork(): void
     {
-        $this->fault->afterAdd = function (): void {
-            self::assertNull($this->queries->ask(new GetTaskQuery(Uuid::v7()->toRfc4122())));
+        $this->fault->afterAdd = function (Task $task): void {
+            self::assertInstanceOf(GetTaskResult::class, $this->queries->ask(new GetTaskQuery($task->id()->toRfc4122())));
             self::assertTrue($this->connection->isTransactionActive());
         };
-        $this->commands->dispatch(new CreateTaskCommand($this->prefix.'retained'));
+        $this->commands->dispatch(new CreateTaskCommand($this->prefix.'retained', $this->actorId));
         self::assertSame(1, $this->countRows());
     }
 
@@ -359,7 +367,7 @@ final class CqrsTest extends DatabaseTestCase
         $this->connection->executeStatement("CREATE FUNCTION public.cqrs_test_failure() RETURNS trigger LANGUAGE plpgsql AS 'BEGIN IF NEW.title = TG_ARGV[0] THEN RAISE EXCEPTION ''synthetic private SQL detail''; END IF; RETURN NEW; END'");
         try {
             $this->connection->executeStatement('CREATE CONSTRAINT TRIGGER cqrs_test_failure AFTER INSERT ON task_tracking_task DEFERRABLE INITIALLY DEFERRED FOR EACH ROW EXECUTE FUNCTION public.cqrs_test_failure('.$this->connection->quote($title).')');
-            $this->assertFails(fn () => $this->commands->dispatch(new CreateTaskCommand($title)), 'synthetic private SQL detail');
+            $this->assertFails(fn () => $this->commands->dispatch(new CreateTaskCommand($title, $this->actorId)), 'synthetic private SQL detail');
             self::assertSame(0, $this->countRows());
             $response = $this->authenticatedHttp()->request('POST', '/_demo/tasks', ['json' => ['title' => $title]]);
             self::assertSame(500, $response->getStatusCode());
@@ -372,7 +380,7 @@ final class CqrsTest extends DatabaseTestCase
             $this->connection->executeStatement('DROP TRIGGER IF EXISTS cqrs_test_failure ON task_tracking_task');
             $this->connection->executeStatement('DROP FUNCTION public.cqrs_test_failure()');
         }
-        $this->commands->dispatch(new CreateTaskCommand($this->prefix.'recovered'));
+        $this->commands->dispatch(new CreateTaskCommand($this->prefix.'recovered', $this->actorId));
         self::assertSame(1, $this->countRows());
     }
 

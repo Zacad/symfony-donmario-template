@@ -7,6 +7,7 @@ namespace App\Tests\Fixtures\Cqrs;
 use App\Kernel;
 use App\Module\TaskTracking\Application\CreateTask\CreateTaskCommand;
 use App\Module\TaskTracking\Application\CreateTask\CreateTaskHandler;
+use App\Module\TaskTracking\Infrastructure\Framework\Symfony\Security\TaskTrackingVoter;
 use App\Platform\Authorization\Actor;
 use App\Platform\Authorization\AuthorizationMiddleware;
 use App\Platform\Authorization\ExecutionContext;
@@ -17,6 +18,7 @@ use App\Platform\Messaging\QueryBus;
 use App\Platform\Messaging\ResultValidationMiddleware;
 use Psr\Container\ContainerInterface;
 use Symfony\Component\DependencyInjection\Argument\IteratorArgument;
+use Symfony\Component\DependencyInjection\Argument\TaggedIteratorArgument;
 use Symfony\Component\DependencyInjection\Compiler\CompilerPassInterface;
 use Symfony\Component\DependencyInjection\Compiler\PassConfig;
 use Symfony\Component\DependencyInjection\ContainerBuilder;
@@ -85,25 +87,6 @@ final class CompilationKernel extends Kernel
                     case 'authorization-data-service':
                         $container->register('test.actor', Actor::class);
                         break;
-                    case 'authorization-locator-factory':
-                    case 'authorization-locator-map':
-                    case 'authorization-locator-public':
-                    case 'authorization-locator-alias':
-                        $reference = $container->getDefinition(AuthorizationMiddleware::class)->getArgument(2);
-                        if (!$reference instanceof Reference) {
-                            throw new \LogicException('Expected compiled policy locator reference.');
-                        }
-                        $locator = $container->findDefinition((string) $reference);
-                        if ('authorization-locator-factory' === $this->scenario) {
-                            $locator->setFactory('test_factory');
-                        } elseif ('authorization-locator-public' === $this->scenario) {
-                            $locator->setPublic(true);
-                        } elseif ('authorization-locator-alias' === $this->scenario) {
-                            $container->setAlias('test.policy.locator', (string) $reference)->setPublic(true);
-                        } else {
-                            $locator->setArgument(0, ['unexpected' => new Reference(CreateTaskHandler::class)]);
-                        }
-                        break;
                     case 'authorization-missing-command':
                     case 'authorization-missing-query':
                     case 'authorization-after-result':
@@ -145,44 +128,108 @@ final class CompilationKernel extends Kernel
         $container->setAlias('test.cqrs.queries', QueryBus::class)->setPublic(true);
     }
 
-    /** Generated classes keep synthetic compilation scenarios explicit without changing production policies. */
+    /** Generated classes keep synthetic compilation scenarios explicit without changing production handlers. */
     public static function authorizationFixture(ContainerBuilder $container, string $scenario): void
     {
-        $policyScenarios = ['authorization-missing', 'authorization-duplicate', 'authorization-method', 'authorization-policy-missing', 'authorization-policy-mutable', 'authorization-policy-nonfinal', 'authorization-policy-foreign', 'authorization-policy-message', 'authorization-policy-context', 'authorization-policy-return', 'authorization-policy-optional', 'authorization-policy-variadic', 'authorization-policy-reference', 'authorization-policy-public', 'authorization-policy-alias', 'authorization-policy-factory', 'authorization-policy-copy'];
-        if (!in_array($scenario, [...$policyScenarios, 'accepted-data-result', 'void-result', 'authorization-valid'], true)) {
+        $metadataScenarios = ['authorization-missing', 'authorization-duplicate', 'authorization-method', 'authorization-missing-voter', 'authorization-public-voter', 'authorization-public-permission', 'authorization-public-label', 'authorization-public-direct-voter', 'authorization-foreign-voter', 'authorization-foreign-permission', 'authorization-permission-integer', 'authorization-permission-suffix', 'authorization-permission-key', 'authorization-permission-prefix', 'authorization-permission-layer', 'authorization-invalid-label', 'authorization-missing-label', 'authorization-long-label', 'authorization-label-without-permission', 'authorization-invalid-metadata'];
+        $voterScenarios = ['authorization-voter-missing', 'authorization-voter-duplicate', 'authorization-voter-public', 'authorization-voter-eager', 'authorization-voter-nonautowired', 'authorization-voter-autoconfigured', 'authorization-voter-security-tag', 'authorization-voter-tag-metadata', 'authorization-voter-copy', 'authorization-voter-unreferenced', 'authorization-voter-public-alias'];
+        $managerScenarios = ['authorization-manager-public', 'authorization-strategy-public', 'authorization-strategy-allow-abstain', 'authorization-manager-reference', 'authorization-manager-voters-literal', 'authorization-manager-voters-tag', 'authorization-manager-voters-index', 'authorization-manager-voters-exclude', 'authorization-manager-voters-self'];
+        if (!in_array($scenario, [...$metadataScenarios, ...$voterScenarios, ...$managerScenarios, 'accepted-data-result', 'void-result', 'authorization-public', 'authorization-valid'], true)) {
+            return;
+        }
+        if (in_array($scenario, $voterScenarios, true)) {
+            $voter = $container->getDefinition(TaskTrackingVoter::class);
+            if ('authorization-voter-missing' === $scenario) {
+                $voter->clearTag('app.authorization.voter');
+            } elseif ('authorization-voter-duplicate' === $scenario) {
+                $voter->addTag('app.authorization.voter');
+            } elseif ('authorization-voter-public' === $scenario) {
+                $voter->setPublic(true);
+            } elseif ('authorization-voter-eager' === $scenario) {
+                $voter->setLazy(false);
+            } elseif ('authorization-voter-nonautowired' === $scenario) {
+                $voter->setAutowired(false);
+            } elseif ('authorization-voter-autoconfigured' === $scenario) {
+                $voter->setAutoconfigured(true);
+            } elseif ('authorization-voter-security-tag' === $scenario) {
+                $voter->addTag('security.voter');
+            } elseif ('authorization-voter-tag-metadata' === $scenario) {
+                $voter->clearTag('app.authorization.voter');
+                $voter->addTag('app.authorization.voter', ['message' => CreateTaskCommand::class]);
+            } elseif ('authorization-voter-copy' === $scenario) {
+                $container->setDefinition('test.voter.copy', clone $voter)->clearTag('app.authorization.voter');
+            } elseif ('authorization-voter-unreferenced' === $scenario) {
+                $container->setDefinition('test.voter.unreferenced', clone $voter);
+            } else {
+                $container->setAlias('test.voter.public.alias', TaskTrackingVoter::class)->setPublic(true);
+            }
+
+            return;
+        }
+        if (in_array($scenario, $managerScenarios, true)) {
+            if ('authorization-manager-public' === $scenario) {
+                $container->getDefinition('app.authorization.decision_manager')->setPublic(true);
+            } elseif ('authorization-strategy-public' === $scenario) {
+                $container->getDefinition('app.authorization.unanimous_strategy')->setPublic(true);
+            } elseif ('authorization-strategy-allow-abstain' === $scenario) {
+                $container->getDefinition('app.authorization.unanimous_strategy')->setArguments([true]);
+            } elseif ('authorization-manager-reference' === $scenario) {
+                $container->getDefinition(AuthorizationMiddleware::class)->setArgument(2, new Reference('app.authorization.unanimous_strategy'));
+            } elseif ('authorization-manager-voters-literal' === $scenario) {
+                $container->getDefinition('app.authorization.decision_manager')->setArgument(0, new IteratorArgument([]));
+            } elseif ('authorization-manager-voters-tag' === $scenario) {
+                $container->getDefinition('app.authorization.decision_manager')->setArgument(0, new TaggedIteratorArgument('security.voter'));
+            } elseif ('authorization-manager-voters-index' === $scenario) {
+                $container->getDefinition('app.authorization.decision_manager')->setArgument(0, new TaggedIteratorArgument('app.authorization.voter', 'message'));
+            } elseif ('authorization-manager-voters-exclude' === $scenario) {
+                $container->getDefinition('app.authorization.decision_manager')->setArgument(0, new TaggedIteratorArgument('app.authorization.voter', exclude: [TaskTrackingVoter::class]));
+            } else {
+                $container->getDefinition('app.authorization.decision_manager')->setArgument(0, new TaggedIteratorArgument('app.authorization.voter', excludeSelf: false));
+            }
+
             return;
         }
         $namespace = 'App\\Module\\TaskTracking\\Application\\CreateTask';
         $suffix = ucfirst(substr(hash('sha256', $scenario), 0, 12));
-        $policyName = 'Compilation'.$suffix.'Policy';
         $handlerName = 'Compilation'.$suffix.'Handler';
-        $policyNamespace = 'authorization-policy-foreign' === $scenario ? 'App\\Module\\TaskTracking\\Application\\GetTask' : $namespace;
-        $policyClass = $policyNamespace.'\\'.$policyName;
         $handlerClass = $namespace.'\\'.$handlerName;
         $handler = $container->getDefinition(CreateTaskHandler::class);
         if (!class_exists($handlerClass, false)) {
-            $modifiers = match ($scenario) {
-                'authorization-policy-mutable' => 'final',
-                'authorization-policy-nonfinal' => 'readonly',
-                default => 'final readonly',
-            };
-            $messageType = 'authorization-policy-message' === $scenario ? '\\stdClass' : '\\'.CreateTaskCommand::class;
-            $contextType = 'authorization-policy-context' === $scenario ? '\\stdClass' : '\\App\\Platform\\Authorization\\PolicyContext';
-            $context = match ($scenario) {
-                'authorization-policy-optional' => $contextType.' $context = new '.$contextType.'(new \\App\\Platform\\Authorization\\Actor("anonymous"), false, null)',
-                'authorization-policy-variadic' => $contextType.' ...$context',
-                'authorization-policy-reference' => $contextType.' &$context',
-                default => $contextType.' $context',
-            };
-            $return = 'authorization-policy-return' === $scenario ? '?bool' : 'bool';
-            eval('namespace '.$policyNamespace.'; '.$modifiers.' class '.$policyName.' { public function __invoke('.$messageType.' $message, '.$context.'): '.$return.' { return true; } }');
-            $attribute = '#[\\App\\Platform\\Authorization\\AuthorizeWith(\\'.$policyClass.'::class)]';
+            $voter = '\\App\\Module\\TaskTracking\\Infrastructure\\Framework\\Symfony\\Security\\TaskTrackingVoter::class';
+            $permission = '\\App\\Module\\TaskTracking\\Domain\\TaskPermission::Create';
+            if (str_starts_with($scenario, 'authorization-permission-')) {
+                $permissionNamespace = 'authorization-permission-layer' === $scenario ? $namespace : 'App\\Module\\TaskTracking\\Domain';
+                $permissionName = 'Compilation'.$suffix.('authorization-permission-suffix' === $scenario ? 'Capability' : 'Permission');
+                $backingType = 'authorization-permission-integer' === $scenario ? 'int' : 'string';
+                $value = match ($scenario) {
+                    'authorization-permission-integer' => '1',
+                    'authorization-permission-key' => '"TaskTracking.Invalid"',
+                    'authorization-permission-prefix' => '"authorizing.manage"',
+                    default => '"task_tracking.invalid"',
+                };
+                eval('namespace '.$permissionNamespace.'; enum '.$permissionName.': '.$backingType.' { case Invalid = '.$value.'; }');
+                $permission = '\\'.$permissionNamespace.'\\'.$permissionName.'::Invalid';
+            }
+            $valid = '#[\\App\\Platform\\Authorization\\Authorize('.$voter.', '.$permission.', "Create tasks")]';
             $declaration = match ($scenario) {
                 'authorization-missing', 'authorization-method' => '',
-                'authorization-duplicate' => $attribute.$attribute,
-                default => $attribute,
+                'authorization-duplicate' => $valid.$valid,
+                'authorization-missing-voter' => '#[\\App\\Platform\\Authorization\\Authorize]',
+                'authorization-public' => '#[\\App\\Platform\\Authorization\\Authorize(public: true)]',
+                'authorization-public-voter' => '#[\\App\\Platform\\Authorization\\Authorize(voter: '.$voter.', public: true)]',
+                'authorization-public-permission' => '#[\\App\\Platform\\Authorization\\Authorize(permission: \\App\\Module\\TaskTracking\\Domain\\TaskPermission::Create, label: "Create tasks", public: true)]',
+                'authorization-public-label' => '#[\\App\\Platform\\Authorization\\Authorize(label: "Create tasks", public: true)]',
+                'authorization-public-direct-voter' => '#[\\App\\Platform\\Authorization\\Authorize(\\App\\Platform\\Authorization\\PublicAccessVoter::class)]',
+                'authorization-foreign-voter' => '#[\\App\\Platform\\Authorization\\Authorize(\\App\\Module\\Authenticating\\Infrastructure\\Framework\\Symfony\\Security\\AuthenticatingVoter::class)]',
+                'authorization-foreign-permission' => '#[\\App\\Platform\\Authorization\\Authorize('.$voter.', \\App\\Module\\Authorizing\\Domain\\Capability\\AuthorizingPermissionEnum::Manage, "Manage authorization assignments")]',
+                'authorization-invalid-label' => '#[\\App\\Platform\\Authorization\\Authorize('.$voter.', \\App\\Module\\TaskTracking\\Domain\\TaskPermission::Create, " ")]',
+                'authorization-missing-label' => '#[\\App\\Platform\\Authorization\\Authorize('.$voter.', \\App\\Module\\TaskTracking\\Domain\\TaskPermission::Create)]',
+                'authorization-long-label' => '#[\\App\\Platform\\Authorization\\Authorize('.$voter.', \\App\\Module\\TaskTracking\\Domain\\TaskPermission::Create, "'.str_repeat('a', 101).'")]',
+                'authorization-label-without-permission' => '#[\\App\\Platform\\Authorization\\Authorize('.$voter.', label: "Create tasks")]',
+                'authorization-invalid-metadata' => '#[\\App\\Platform\\Authorization\\Authorize("not-a-class")]',
+                default => $valid,
             };
-            $methodAttribute = 'authorization-method' === $scenario ? $attribute : '';
+            $methodAttribute = 'authorization-method' === $scenario ? $valid : '';
             $handlerReturn = 'void';
             if (in_array($scenario, ['accepted-data-result', 'void-result'], true)) {
                 $reflection = new \ReflectionMethod($handler->getClass() ?? '', '__invoke');
@@ -199,25 +246,6 @@ final class CompilationKernel extends Kernel
             eval('namespace '.$namespace.'; '.$declaration.' final class '.$handlerName.' { '.$methodAttribute.' public function __invoke(\\'.CreateTaskCommand::class.' $message): '.$handlerReturn.' { throw new \\LogicException("Compilation-only fixture."); } }');
         }
         $handler->setClass($handlerClass)->setArguments([]);
-        if ('authorization-policy-missing' === $scenario) {
-            return;
-        }
-        $policy = $container->register($policyClass, $policyClass);
-        switch ($scenario) {
-            case 'authorization-policy-public':
-                $policy->setPublic(true);
-                break;
-            case 'authorization-policy-alias':
-                $container->setAlias('test.policy.private.alias', $policyClass);
-                $container->setAlias('test.policy.public.alias', 'test.policy.private.alias')->setPublic(true);
-                break;
-            case 'authorization-policy-factory':
-                $policy->setFactory('test_factory');
-                break;
-            case 'authorization-policy-copy':
-                $container->setDefinition('test.policy.copy', clone $policy);
-                break;
-        }
     }
 
     public function getCacheDir(): string

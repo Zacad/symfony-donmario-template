@@ -13,16 +13,15 @@ use Symfony\Component\Console\Output\OutputInterface;
 #[AsCommand(name: 'app:authorization:role:remove', description: 'Remove a role using trusted operator shell authority.')]
 final class RemoveRoleConsoleCommand extends Command
 {
-    public function __construct(private readonly AuthorizationConsole $console, private readonly AuthorizationConsoleInput $transport)
+    public function __construct(private readonly AuthorizationConsole $console)
     {
         parent::__construct();
     }
 
     protected function configure(): void
     {
-        $this->addArgument('account', InputArgument::REQUIRED, 'Account UUID')
+        $this->addArgument('subject', InputArgument::REQUIRED, 'Subject UUID')
             ->addArgument('role', InputArgument::REQUIRED, 'Role key');
-        $this->transport->configureScope($this);
     }
 
     protected function execute(InputInterface $input, OutputInterface $output): int

@@ -64,7 +64,22 @@ final readonly class InventoryFixture
         $id = 'App\\Module\\'.$module.'\\Infrastructure\\ConfiguredService';
         // Exercise the application's module prototype, with only the namespace
         // adapted and an ordinary module-owned service customization appended.
-        $configuration = str_replace('App\\Module\\TaskTracking\\', 'App\\Module\\'.$module.'\\', $this->source('src/Module/TaskTracking/Resources/config/services.yaml'));
+        $prototype = Yaml::parse($this->source('src/Module/TaskTracking/Resources/config/services.yaml'));
+        if (!\is_array($prototype) || !\is_array($prototype['services'] ?? null)) {
+            throw new \LogicException('Expected module service prototype.');
+        }
+        $moduleDefaults = $prototype['services']['App\\Module\\TaskTracking\\'] ?? null;
+        if (!\is_array($moduleDefaults) || !\is_array($moduleDefaults['exclude'] ?? null)) {
+            throw new \LogicException('Expected module resource exclusions.');
+        }
+        $exclusions = array_values(array_filter($moduleDefaults['exclude'], static fn (mixed $exclusion): bool => '../../Infrastructure/Framework/Symfony/Security/TaskTrackingVoter.php' !== $exclusion));
+        if (count($moduleDefaults['exclude']) - 1 !== count($exclusions)) {
+            throw new \LogicException('Expected exactly one TaskTracking voter exclusion.');
+        }
+        $moduleDefaults['exclude'] = $exclusions;
+        $prototype['services']['App\\Module\\TaskTracking\\'] = $moduleDefaults;
+        unset($prototype['services']['App\\Module\\TaskTracking\\Infrastructure\\Framework\\Symfony\\Security\\TaskTrackingVoter']);
+        $configuration = str_replace('App\\Module\\TaskTracking\\', 'App\\Module\\'.$module.'\\', Yaml::dump($prototype, 12));
         $configuration .= "\n    $id:\n        bind:\n            string \$label: ".Yaml::dump($label)."\n";
         $this->write($this->configurationPath($module), $configuration);
 

@@ -7,13 +7,13 @@ namespace App\Module\CollectionChecking\Application\Collect;
 use App\Module\CollectionChecking\Application\Inspect\InspectQuery;
 use App\Module\CollectionChecking\Domain\ObservationRepository;
 use App\Module\TaskTracking\Application\CreateTask\CreateTaskCommand;
-use App\Platform\Authorization\AuthorizeWith;
+use App\Platform\Authorization\Authorize;
 use App\Platform\Messaging\CommandBus;
 use App\Platform\Messaging\QueryBus;
 use Symfony\Component\Messenger\Attribute\AsMessageHandler;
 
 #[AsMessageHandler(bus: 'command.bus')]
-#[AuthorizeWith(CollectPolicy::class)]
+#[Authorize(public: true)]
 final readonly class CollectHandler
 {
     public function __construct(private ObservationRepository $observations, private CommandBus $commands, private QueryBus $queries)

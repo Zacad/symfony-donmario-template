@@ -5,10 +5,10 @@ compiler passes, EventBus, Doctrine connection and native Messenger transports.
 It is physically generated in a private temporary directory and autoloaded only
 inside subprocesses. No production runtime service is replaced.
 
-Every disposable command/query handler declares a co-located exact-message policy.
-Those policies explicitly admit only the fixture's publish, observation and query
-probes, including identity-free async delivery. They let the existing failure probes
-reach their intended event/transaction guards. They grant no production authority.
+Every disposable command/query handler declares `#[Authorize(public: true)]`.
+The compiler-inventoried public voter admits these internal fixture messages for every
+actor, including identity-free async delivery, so the failure probes reach their
+event/transaction guards. This admission does not expose a production transport route.
 
 `PublishCommand` stages a producer ORM row and dispatches one `PublishedEvent`.
 Two ordinary private listeners call `ObserveCommand`; its module-owned

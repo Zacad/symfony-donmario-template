@@ -30,4 +30,17 @@ final readonly class FaultTaskRepository implements TaskRepository
 
         return $task;
     }
+
+    public function findForCompletion(Uuid $id): ?Task
+    {
+        $task = $this->inner->findForCompletion($id);
+        $this->fault->afterFindForCompletion?->__invoke($task);
+
+        return $task;
+    }
+
+    public function findPage(int $limit, ?Uuid $after = null, ?Uuid $ownerAccountId = null): array
+    {
+        return $this->inner->findPage($limit, $after, $ownerAccountId);
+    }
 }

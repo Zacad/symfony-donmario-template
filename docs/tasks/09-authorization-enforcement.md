@@ -1,5 +1,14 @@
 # Subtask 9 — Policy-only authorization enforcement
 
+> **Superseded authorization behavior:** This accepted policy-only record and all evidence
+> below are retained as historical provenance. Current handlers use `#[Authorize]`, native
+> module voters and the exact Platform public voter under the
+> [clean Authorizing/native-voter/Task-ownership rework](10-authorizing-rework.md), not
+> Application authorization policies or a policy locator. This accepted record remains
+> historical provenance. The newly approved fresh-template four-table model supersedes
+> the later verified intermediate reworks; its implementation, verification and fresh review
+> are complete and user acceptance is pending.
+
 ## Approval and scope
 
 The user rejected authorization checks in handlers: “i dont like the authorization in the handler”.

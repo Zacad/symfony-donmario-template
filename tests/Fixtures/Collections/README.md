@@ -5,11 +5,12 @@ temporary project and installs `App\Module\CollectionChecking` there. Its DTOs,
 native YAML validation, module service exclusions and handlers pass the production
 source, DI, CQRS and dependency checks. No fixture feature is installed in the app.
 
-Each fixture command/query declares its own co-located authorization policy. These
-policies explicitly allow only their exact disposable test operations. The runtime
-script enters the production `tasks` operator scope through the trusted
+Each fixture command/query declares `#[Authorize(public: true)]`. The production compiler
+routes only those exact disposable operations through its private Platform public voter;
+the fixture has no module voter. The runtime script enters the production `tasks`
+operator scope through the trusted
 `App\Tests\Fixtures\Collections\TaskExecution` adapter for each collection command
-that nests production TaskTracking creation. Production policies still reauthorize
+that nests production TaskTracking creation. TaskTracking's voter still reauthorizes
 those nested calls; the scope is released on both success and failure. The adapter
 uses `ExecutionContext` outside module code and does not expose an execution facade
 through a public alias.

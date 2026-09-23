@@ -7,9 +7,86 @@ App\Module\TaskTracking\Application\CreateTask\CreateTaskCommand:
                     - Regex: { pattern: '/\x00/', match: false, message: 'Title cannot contain NUL.' }
                     - NotBlank: { normalizer: trim, message: 'Title must not be blank.' }
                     - Length: { max: 200, maxMessage: 'Title must contain at most 200 characters.' }
+        ownerAccountId:
+            - Type: Symfony\Component\Uid\Uuid
 
 App\Module\TaskTracking\Application\GetTask\GetTaskQuery:
     properties:
         id:
             - NotBlank: { message: 'Task ID must not be blank.' }
             - Uuid: { message: 'Task ID must be a valid UUID.' }
+
+App\Module\TaskTracking\Application\GetTask\GetTaskResult:
+    properties:
+        id:
+            - NotNull: ~
+            - Type: Symfony\Component\Uid\Uuid
+        title:
+            - Sequentially:
+                constraints:
+                    - Charset: { encodings: ['UTF-8'] }
+                    - Regex: { pattern: '/\x00/', match: false }
+                    - NotBlank: { normalizer: trim }
+                    - Length: { max: 200 }
+        ownerAccountId:
+            - Type: Symfony\Component\Uid\Uuid
+        completedAt:
+            - Type: DateTimeImmutable
+
+App\Module\TaskTracking\Application\ListTasks\ListTasksQuery:
+    properties:
+        ownerAccountId:
+            - Type: Symfony\Component\Uid\Uuid
+        limit:
+            - Range: { min: 1, max: 100 }
+        after:
+            - Length: { max: 512, countUnit: bytes }
+            - Regex: { pattern: '/\A[A-Za-z0-9_-]+\z/D' }
+
+App\Module\TaskTracking\Application\ListTasks\ListTasksResult:
+    properties:
+        tasks:
+            - Type: list
+            - Count: { max: 100 }
+            - All:
+                constraints:
+                    - NotNull: ~
+                    - Type: App\Module\TaskTracking\Application\ListTasks\TaskListItemResult
+            - Valid: ~
+        next:
+            - Length: { max: 512, countUnit: bytes }
+            - Regex: { pattern: '/\A[A-Za-z0-9_-]+\z/D' }
+
+App\Module\TaskTracking\Application\ListTasks\TaskListItemResult:
+    properties:
+        id:
+            - NotNull: ~
+            - Type: Symfony\Component\Uid\Uuid
+        title:
+            - Sequentially:
+                constraints:
+                    - Charset: { encodings: ['UTF-8'] }
+                    - Regex: { pattern: '/\x00/', match: false }
+                    - NotBlank: { normalizer: trim }
+                    - Length: { max: 200 }
+        ownerAccountId:
+            - Type: Symfony\Component\Uid\Uuid
+        completedAt:
+            - Type: DateTimeImmutable
+
+App\Module\TaskTracking\Application\CompleteTask\CompleteTaskCommand:
+    properties:
+        id:
+            - NotBlank: { message: 'Task ID must not be blank.' }
+            - Uuid: { message: 'Task ID must be a valid UUID.' }
+
+App\Module\TaskTracking\Application\CompleteTask\CompleteTaskResult:
+    properties:
+        id:
+            - NotNull: ~
+            - Type: Symfony\Component\Uid\Uuid
+        changed:
+            - Type: bool
+        completedAt:
+            - NotNull: ~
+            - Type: DateTimeImmutable

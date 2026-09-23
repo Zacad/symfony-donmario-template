@@ -47,7 +47,8 @@ try {
     }
     $manager->clear();
     $task = $repository->find(Uuid::fromString($saved['id']));
-    if (!$task instanceof Task || 'consumer-setup-marker' !== $task->title() || $saved['id'] !== $task->id()->toRfc4122()) {
+    if (!$task instanceof Task || 'consumer-setup-marker' !== $task->title() || $saved['id'] !== $task->id()->toRfc4122()
+        || null !== $task->ownerAccountId() || null !== $task->completedAt()) {
         throw new RuntimeException('Consumer task was lost or changed.');
     }
     fwrite(STDOUT, "Consumer Task UUID/title and migration history verified.\n");

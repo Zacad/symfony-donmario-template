@@ -40,7 +40,7 @@ final class PersistenceReadTest extends RepositoryTestCase
             $browser = Browser::create($state['session']);
             $browser->request('GET', '/_demo/tasks/'.$id);
             self::assertSame(200, $browser->getResponse()->getStatusCode());
-            self::assertSame(['id' => $id, 'title' => 'cqrs-before-recreation'], json_decode((string) $browser->getResponse()->getContent(), true, flags: JSON_THROW_ON_ERROR));
+            self::assertSame(['id' => $id, 'title' => 'cqrs-before-recreation', 'ownerAccountId' => $account->toRfc4122(), 'completedAt' => null], json_decode((string) $browser->getResponse()->getContent(), true, flags: JSON_THROW_ON_ERROR));
             self::assertTrue(hash_equals($state['session'], Browser::session($browser)), 'The native session established before recreation is retained.');
             self::assertSame(0, $connection->fetchOne('SELECT count(*) FROM task_tracking_task WHERE title = ?', ['outage-must-not-persist']));
         } finally {

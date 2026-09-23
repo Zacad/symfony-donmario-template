@@ -8,7 +8,7 @@ use Symfony\Component\Uid\Uuid;
 
 final readonly class GetTaskResult
 {
-    public function __construct(public Uuid $id, public string $title)
+    public function __construct(public Uuid $id, public string $title, public ?Uuid $ownerAccountId = null, public ?\DateTimeImmutable $completedAt = null)
     {
     }
 }

@@ -9,7 +9,7 @@ use Psr\Log\AbstractLogger;
 /**
  * Bounded, opt-in, memory-only capture. Never retain connection/exception contexts.
  * Fixtures seed credentials on a different, uninstrumented connection. Parameters
- * are retained only for authorization statements and the safe UUID existence read.
+ * are retained only for authorization statements, task reads and the safe UUID existence read.
  *
  * @phpstan-type Statement array{sql: string, params: list<bool|int|float|string|null>}
  */
@@ -42,7 +42,8 @@ final class SqlLog extends AbstractLogger
         if (!is_string($sql)) {
             return;
         }
-        $safe = str_contains($sql, 'authorizing_') || str_starts_with($sql, 'SELECT id FROM public.authenticating_account WHERE id IN (');
+        $safe = str_contains($sql, 'authorizing_') || str_starts_with($sql, 'SELECT id FROM public.authenticating_account WHERE id IN (')
+            || (str_starts_with($sql, 'SELECT ') && 1 === preg_match('/\bFROM (?:public\.)?task_tracking_task\b/', $sql));
         if (!$safe) {
             // Count unexpected statements too, without retaining their parameters.
             $this->append($sql, []);

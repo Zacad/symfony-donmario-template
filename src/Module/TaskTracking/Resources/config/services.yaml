@@ -14,7 +14,17 @@ services:
             - '../../Application/*/*Event.php'
             - '../../Domain/'
             - '../../Infrastructure/Event/'
+            - '../../Infrastructure/Framework/Symfony/Security/TaskTrackingVoter.php'
             - '../../Resources/'
 
     App\Module\TaskTracking\Domain\TaskRepository:
         alias: App\Module\TaskTracking\Infrastructure\Persistence\DoctrineTaskRepository
+
+    App\Module\TaskTracking\Infrastructure\Framework\Symfony\Security\TaskTrackingVoter:
+        autowire: true
+        autoconfigure: false
+        lazy: true
+        arguments:
+            $permissions: []
+        tags:
+            - { name: app.authorization.voter }

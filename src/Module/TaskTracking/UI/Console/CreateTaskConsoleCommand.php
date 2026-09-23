@@ -12,6 +12,7 @@ use Symfony\Component\Console\Attribute\AsCommand;
 use Symfony\Component\Console\Command\Command;
 use Symfony\Component\Console\Input\InputArgument;
 use Symfony\Component\Console\Input\InputInterface;
+use Symfony\Component\Console\Input\InputOption;
 use Symfony\Component\Console\Output\OutputInterface;
 use Symfony\Component\Messenger\Exception\ValidationFailedException;
 use Symfony\Component\Uid\Uuid;
@@ -27,6 +28,7 @@ final class CreateTaskConsoleCommand extends Command
     protected function configure(): void
     {
         $this->addArgument('title', InputArgument::REQUIRED, 'Task title');
+        $this->addOption('owner', null, InputOption::VALUE_REQUIRED, 'Owner account UUID (business target)');
     }
 
     protected function execute(InputInterface $input, OutputInterface $output): int
@@ -36,7 +38,13 @@ final class CreateTaskConsoleCommand extends Command
             if (!is_string($title)) {
                 return Command::INVALID;
             }
-            $message = new CreateTaskCommand($title);
+            $owner = $input->getOption('owner');
+            if (null !== $owner && (!is_string($owner) || 36 !== strlen($owner) || !Uuid::isValid($owner))) {
+                $output->writeln('Invalid task input.', OutputInterface::OUTPUT_RAW);
+
+                return Command::INVALID;
+            }
+            $message = new CreateTaskCommand($title, null === $owner ? null : Uuid::fromString($owner));
             $id = $this->operator->run('tasks', fn (): mixed => $this->commands->dispatch($message));
             if (!$id instanceof Uuid) {
                 throw new \LogicException('Unexpected create result.');

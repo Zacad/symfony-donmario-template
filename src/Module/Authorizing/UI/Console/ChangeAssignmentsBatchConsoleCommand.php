@@ -20,8 +20,8 @@ final class ChangeAssignmentsBatchConsoleCommand extends Command
 
     protected function configure(): void
     {
-        $this->addArgument('account', InputArgument::REQUIRED, 'Account UUID');
-        $this->setHelp('Each item requires operation, kind, key and scope; resource scope also requires resourceType and resourceId. Trusted operator shell access is administration authority.');
+        $this->addArgument('subject', InputArgument::REQUIRED, 'Subject UUID');
+        $this->setHelp('Each item requires exactly operation, kind and key. Trusted operator shell access is administration authority.');
     }
 
     protected function execute(InputInterface $input, OutputInterface $output): int

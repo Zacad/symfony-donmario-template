@@ -7,9 +7,10 @@ namespace App\Platform\Architecture;
 use App\Platform\Authorization\Actor;
 use App\Platform\Authorization\AuthorizationDenied;
 use App\Platform\Authorization\AuthorizationMiddleware;
-use App\Platform\Authorization\AuthorizeWith;
+use App\Platform\Authorization\AuthorizationToken;
+use App\Platform\Authorization\Authorize;
 use App\Platform\Authorization\ExecutionContext;
-use App\Platform\Authorization\PolicyContext;
+use App\Platform\Authorization\PublicAccessVoter;
 use App\Platform\Event\ApplicationEvent;
 use App\Platform\Messaging\CommandBus;
 use App\Platform\Messaging\CommandTransactionMiddleware;
@@ -22,12 +23,11 @@ use App\Platform\Messaging\QueryBus;
 use App\Platform\Messaging\ResultValidationMiddleware;
 use Symfony\Component\DependencyInjection\Argument\IteratorArgument;
 use Symfony\Component\DependencyInjection\Argument\ServiceClosureArgument;
+use Symfony\Component\DependencyInjection\Argument\TaggedIteratorArgument;
 use Symfony\Component\DependencyInjection\Compiler\CompilerPassInterface;
-use Symfony\Component\DependencyInjection\Compiler\ServiceLocatorTagPass;
 use Symfony\Component\DependencyInjection\ContainerBuilder;
 use Symfony\Component\DependencyInjection\Definition;
 use Symfony\Component\DependencyInjection\Reference;
-use Symfony\Component\DependencyInjection\ServiceLocator;
 use Symfony\Component\Messenger\Attribute\AsMessageHandler;
 use Symfony\Component\Messenger\Handler\BatchHandlerInterface;
 use Symfony\Component\Messenger\Handler\HandlerDescriptor;
@@ -38,6 +38,9 @@ use Symfony\Component\Messenger\Middleware\HandleMessageMiddleware;
 use Symfony\Component\Messenger\Middleware\SendMessageMiddleware;
 use Symfony\Component\Messenger\Middleware\TraceableMiddleware;
 use Symfony\Component\Messenger\Middleware\ValidationMiddleware;
+use Symfony\Component\Security\Core\Authorization\AccessDecisionManager;
+use Symfony\Component\Security\Core\Authorization\Strategy\UnanimousStrategy;
+use Symfony\Component\Security\Core\Authorization\Voter\VoterInterface;
 
 /** After Messenger/autowiring, before module edge checking and service removal. */
 final readonly class CqrsPass implements CompilerPassInterface
@@ -57,7 +60,7 @@ final readonly class CqrsPass implements CompilerPassInterface
         $messages = $this->messages($container);
         $listeners = $this->listeners($container, $messages);
         $this->eventWiring($container, array_filter($messages, static fn (string $kind): bool => 'event' === $kind));
-        $seen = $seenListeners = $policyHandlers = [];
+        $seen = $seenListeners = $authorizedHandlers = [];
         foreach (['command' => CommandBus::class, 'query' => QueryBus::class, 'event' => EventBus::class] as $kind => $facade) {
             $bus = 'event' === $kind ? 'application.event.bus' : $kind.'.bus';
             if ('event' !== $kind) {
@@ -125,7 +128,7 @@ final readonly class CqrsPass implements CompilerPassInterface
                         $seenListeners[$class] = true;
                     }
                     $seen[$message] = true;
-                    $policyHandlers[] = [$message, $kind, $reflection];
+                    $authorizedHandlers[] = [$message, $kind, $reflection];
                 }
             }
         }
@@ -139,7 +142,7 @@ final readonly class CqrsPass implements CompilerPassInterface
                 $this->fail('listener_inventory', $class.' is missing its declared application-event registration.');
             }
         }
-        $this->authorization($container, $policyHandlers);
+        $this->authorization($container, $authorizedHandlers);
     }
 
     /** @param list<array{string, string, \ReflectionClass<object>}> $handlers */
@@ -147,114 +150,169 @@ final readonly class CqrsPass implements CompilerPassInterface
     {
         foreach ($container->getDefinitions() as $definition) {
             if (!$definition->isAbstract() && !$definition->hasTag('container.excluded')
-                && in_array(ltrim($definition->getClass() ?? '', '\\'), [Actor::class, PolicyContext::class, AuthorizeWith::class, AuthorizationDenied::class], true)) {
+                && in_array(ltrim($definition->getClass() ?? '', '\\'), [Actor::class, AuthorizationToken::class, Authorize::class, AuthorizationDenied::class], true)) {
                 $this->fail('authorization', 'Authorization data must not be services.');
             }
         }
-        $map = [];
+
+        $routes = $capabilities = $voterPermissions = [];
         foreach ($handlers as [$message, $kind, $handler]) {
-            $attributes = $handler->getAttributes(AuthorizeWith::class);
+            $attributes = $handler->getAttributes(Authorize::class);
             foreach ($handler->getMethods() as $method) {
-                if ([] !== $method->getAttributes(AuthorizeWith::class)) {
+                if ([] !== $method->getAttributes(Authorize::class)) {
                     $this->fail('authorization', $handler->name.' requires class-level authorization only.');
                 }
             }
             if ('event' === $kind) {
                 if ([] !== $attributes) {
-                    $this->fail('authorization', 'Event listeners cannot declare handler policies.');
+                    $this->fail('authorization', 'Event listeners cannot declare authorization capabilities.');
                 }
                 continue;
             }
             if (1 !== count($attributes)) {
-                $this->fail('authorization', $handler->name.' requires exactly one AuthorizeWith declaration.');
+                $this->fail('authorization', $handler->name.' requires exactly one Authorize declaration.');
             }
-            $arguments = $attributes[0]->getArguments();
-            $class = $arguments['policy'] ?? $arguments[0] ?? null;
-            if (1 !== count($arguments) || !is_string($class) || !class_exists($class)) {
-                $this->fail('authorization', $handler->name.' requires an exact policy class.');
+            try {
+                $metadata = $attributes[0]->newInstance();
+            } catch (\Throwable) {
+                $this->fail('authorization', $handler->name.' has invalid authorization metadata.');
             }
-            $policy = $container->getReflectionClass($class);
-            if (null === $policy || $policy->name !== $class || !$policy->isFinal() || !$policy->isReadOnly()
-                || !$policy->isInstantiable() || $policy->getNamespaceName() !== $handler->getNamespaceName()
-                || !str_ends_with($policy->getShortName(), 'Policy') || !$policy->hasMethod('__invoke')) {
-                $this->fail('authorization', $class.' requires a co-located final readonly Policy.');
+            if ($metadata->public && (null !== $metadata->voter || null !== $metadata->permission || null !== $metadata->label)) {
+                $this->fail('authorization', $handler->name.' public authorization cannot declare a voter, permission or label.');
             }
-            $method = $policy->getMethod('__invoke');
-            $parameters = $method->getParameters();
-            $return = $method->getReturnType();
-            if (!$method->isPublic() || $method->isStatic() || $method->returnsReference() || 2 !== count($parameters)
-                || !$return instanceof \ReflectionNamedType || 'bool' !== $return->getName() || $return->allowsNull()) {
-                $this->fail('authorization', $class.' requires public __invoke(Message, PolicyContext): bool.');
+            if (!$metadata->public && null === $metadata->voter) {
+                $this->fail('authorization', $handler->name.' requires a voter or explicit public authorization.');
             }
-            foreach ([$message, PolicyContext::class] as $index => $type) {
-                $parameter = $parameters[$index];
-                $actual = $parameter->getType();
-                if (!$actual instanceof \ReflectionNamedType || $actual->getName() !== $type || $actual->allowsNull()
-                    || $parameter->isOptional() || $parameter->isVariadic() || $parameter->isPassedByReference()) {
-                    $this->fail('authorization', $class.' requires two exact, required, by-value arguments.');
+            if (null === $metadata->permission && null !== $metadata->label
+                || (null !== $metadata->permission && (null === $metadata->label || '' === trim($metadata->label) || mb_strlen($metadata->label) > 100 || 1 === preg_match('/[\x00\r\n]/', $metadata->label)))) {
+                $this->fail('authorization', $handler->name.' has invalid capability metadata.');
+            }
+            $module = ModuleMap::owner($handler->name);
+            if (null === $module || $module !== ModuleMap::owner($message)) {
+                $this->fail('authorization', $handler->name.' must be owned by its message module.');
+            }
+            $voterName = $metadata->public ? PublicAccessVoter::class : (string) $metadata->voter;
+            $voter = $container->getReflectionClass($voterName);
+            if (null === $voter || $voter->name !== $voterName || !$voter->isFinal() || !$voter->isInstantiable()
+                || !ContractTypes::isAuthorizationVoter($voter->name) || !$voter->implementsInterface(VoterInterface::class)
+                || (!$metadata->public && ModuleMap::owner($voter->name) !== $module)) {
+                $this->fail('authorization_voter', $handler->name.' requires its approved concrete final voter class.');
+            }
+            $permission = null;
+            $enum = $metadata->permission;
+            if (null !== $enum) {
+                $enumClass = new \ReflectionEnum($enum::class);
+                if (!$enumClass->isBacked() || 'string' !== $enumClass->getBackingType()->getName()
+                    || 1 !== preg_match('/Permission(?:Enum)?\z/D', $enumClass->getShortName())
+                    || ModuleMap::owner($enumClass->name) !== $module || 'Domain' !== ModuleMap::layer($enumClass->name)
+                    || !is_string($enum->value) || 1 !== preg_match('/\A[a-z0-9._-]{1,64}\z/D', $enum->value)
+                    || !str_starts_with($enum->value, rtrim(ModuleMap::prefix($module), '_').'.')) {
+                    $this->fail('authorization', $handler->name.' requires module-owned string-backed Permission metadata.');
                 }
+                $permission = $enum->value;
             }
-            $definitions = [];
-            foreach ($container->getDefinitions() as $id => $definition) {
-                if (!$definition->isAbstract() && !$definition->hasTag('container.excluded')
-                    && 0 === strcasecmp(ltrim($definition->getClass() ?? '', '\\'), $class)) {
-                    $definitions[$id] = $definition;
+            $routes[$message] = $voter->name;
+            $voterPermissions[$voter->name][$message] = $permission;
+            if (null === $permission) {
+                continue;
+            }
+            $label = $metadata->label;
+            $short = $container->getReflectionClass($message)?->getShortName();
+            if (null === $short) {
+                $this->fail('authorization', 'Capability operation '.$message.' cannot be reflected.');
+            }
+            if (isset($capabilities[$permission])) {
+                if ($capabilities[$permission]['module'] !== rtrim(ModuleMap::prefix($module), '_')
+                    || $capabilities[$permission]['label'] !== $label) {
+                    $this->fail('authorization', 'Capability '.$permission.' has inconsistent metadata.');
                 }
+                $capabilities[$permission]['operations'][] = $short;
+                $capabilities[$permission]['kinds'][] = $kind;
+            } else {
+                $capabilities[$permission] = [
+                    'module' => rtrim(ModuleMap::prefix($module), '_'),
+                    'key' => $permission,
+                    'label' => $label,
+                    'operations' => [$short],
+                    'kinds' => [$kind],
+                ];
             }
-            if (1 !== count($definitions)) {
-                $this->fail('authorization', $class.' requires exactly one ordinary private policy service.');
-            }
-            $id = array_key_first($definitions);
-            $definition = $definitions[$id];
-            $this->assertDefinition($container, $definition, $id, $class);
-            if ($definition->isPublic() || $definition->isLazy() || null !== $definition->getDecoratedService()) {
-                $this->fail('authorization', $class.' requires an ordinary private policy service.');
+        }
+
+        if (!isset($voterPermissions[PublicAccessVoter::class])) {
+            $this->definition($container, PublicAccessVoter::class, PublicAccessVoter::class)->clearTag('app.authorization.voter');
+        }
+
+        $taggedVoters = [];
+        foreach ($container->findTaggedServiceIds('app.authorization.voter', true) as $id => $tags) {
+            $definition = $container->getDefinition($id);
+            $class = ltrim($definition->getClass() ?? '', '\\');
+            $reflection = $container->getReflectionClass($class);
+            if ((string) $id !== $class || 1 !== count($tags) || [[]] !== array_values($tags)
+                || !isset($voterPermissions[$class]) || null === $reflection || !$reflection->isFinal() || !$reflection->isInstantiable()
+                || !ContractTypes::isAuthorizationVoter($class) || !$reflection->implementsInterface(VoterInterface::class)
+                || $definition->isPublic() || !$definition->isLazy() || !$definition->isAutowired() || $definition->isAutoconfigured()
+                || $definition->hasTag('security.voter') || null !== $definition->getFactory() || null !== $definition->getConfigurator()
+                || $definition->isSynthetic() || null !== $definition->getFile() || null !== $definition->getDecoratedService()) {
+                $this->fail('authorization_voter', $id.' requires one bare tag on its canonical private lazy autowired non-autoconfigured voter service.');
             }
             foreach ($container->getAliases() as $aliasId => $alias) {
                 if ($alias->isPublic() && $container->findDefinition($aliasId) === $definition) {
-                    $this->fail('authorization', $class.' cannot have public aliases.');
+                    $this->fail('authorization_voter', $class.' cannot have public aliases.');
                 }
             }
-            $map[$message] = new Reference($id);
+            ksort($voterPermissions[$class]);
+            $definition->setArgument(0, $voterPermissions[$class]);
+            $taggedVoters[$class] = true;
         }
-        ksort($map);
+        foreach ($voterPermissions as $voter => $_) {
+            $definitions = [];
+            foreach ($container->getDefinitions() as $id => $definition) {
+                if (!$definition->isAbstract() && !$definition->hasTag('container.excluded') && $voter === ltrim($definition->getClass() ?? '', '\\')) {
+                    $definitions[] = (string) $id;
+                }
+            }
+            if (!isset($taggedVoters[$voter]) || [$voter] !== $definitions) {
+                $this->fail('authorization_voter', $voter.' requires exactly one referenced and tagged canonical service.');
+            }
+        }
+
+        ksort($capabilities);
+        $descriptors = [];
+        foreach ($capabilities as $capability) {
+            $operations = array_values(array_unique($capability['operations']));
+            sort($operations);
+            $descriptors[] = [
+                'module' => $capability['module'],
+                'key' => $capability['key'],
+                'label' => $capability['label'],
+                'access' => [] === array_diff($capability['kinds'], ['query']) ? 'read' : 'write',
+                'operations' => $operations,
+            ];
+        }
+
+        $catalog = $this->definition($container, 'App\\Module\\Authorizing\\Domain\\Capability\\AuthorizationCatalogService', 'App\\Module\\Authorizing\\Domain\\Capability\\AuthorizationCatalogService');
+        $catalog->setArgument(0, $descriptors);
+        ksort($routes);
         $middleware = $this->definition($container, AuthorizationMiddleware::class, AuthorizationMiddleware::class);
-        $placeholder = $this->reference($container, $middleware->getArgument(2));
-        $this->assertDefinition($container, $placeholder, 'policy locator', ServiceLocator::class);
-        if ($placeholder->isPublic() || $placeholder->isLazy() || null !== $placeholder->getDecoratedService()
-            || [[]] !== $placeholder->getArguments()) {
-            $this->fail('authorization', 'The policy locator must start with an empty compiler-owned map.');
+        $middleware->setArgument(3, $routes);
+
+        $manager = $this->definition($container, 'app.authorization.decision_manager', AccessDecisionManager::class);
+        $strategy = $this->definition($container, 'app.authorization.unanimous_strategy', UnanimousStrategy::class);
+        $voters = $manager->getArgument(0);
+        if ($manager->isPublic() || $strategy->isPublic() || [false] !== $strategy->getArguments()
+            || !$voters instanceof TaggedIteratorArgument || 'app.authorization.voter' !== $voters->getTag()
+            || null !== $voters->getIndexAttribute() || $voters->needsIndexes() || [] !== $voters->getExclude() || !$voters->excludeSelf()
+            || null !== $voters->getDefaultIndexMethod(false) || null !== $voters->getDefaultPriorityMethod(false)) {
+            $this->fail('authorization_manager', 'The isolated manager requires the exact app.authorization.voter tagged iterator and private UnanimousStrategy(false) wiring.');
         }
+        $this->assertReference($container, $manager->getArgument(1), 'app.authorization.unanimous_strategy');
+        $this->assertReference($container, $middleware->getArgument(2), 'app.authorization.decision_manager');
         foreach ($container->getAliases() as $id => $alias) {
-            if ($alias->isPublic() && $container->findDefinition($id) === $placeholder) {
-                $this->fail('authorization', 'The policy locator cannot have public aliases.');
+            if ($alias->isPublic() && in_array($container->findDefinition($id), [$manager, $strategy], true)) {
+                $this->fail('authorization_manager', 'The isolated authorization manager cannot have public aliases.');
             }
         }
-        // Register a separate native locator: the empty placeholder can be shared
-        // with unrelated services after Symfony's locator deduplication.
-        $reference = ServiceLocatorTagPass::register($container, $map);
-        $locator = $this->reference($container, $reference);
-        $this->assertDefinition($container, $locator, 'compiled policy locator', ServiceLocator::class);
-        if ($locator->isPublic() || [0] !== array_keys($locator->getArguments())) {
-            $this->fail('authorization', 'The compiled policy locator must remain private and exact.');
-        }
-        foreach ($container->getAliases() as $id => $alias) {
-            if ($alias->isPublic() && $container->findDefinition($id) === $locator) {
-                $this->fail('authorization', 'The compiled policy locator cannot have public aliases.');
-            }
-        }
-        $values = $locator->getArgument(0);
-        if (!is_array($values) || array_keys($values) !== array_keys($map)) {
-            $this->fail('authorization', 'The compiled policy map must contain exactly the command/query inventory.');
-        }
-        foreach ($map as $message => $policyReference) {
-            $closure = $values[$message];
-            if (!$closure instanceof ServiceClosureArgument || 1 !== count($closure->getValues())) {
-                $this->fail('authorization', 'The compiled policy map requires native service closures.');
-            }
-            $this->assertReference($container, $closure->getValues()[0], (string) $policyReference);
-        }
-        $middleware->setArgument(2, $reference);
     }
 
     /** @return array<class-string, string> */
@@ -430,6 +488,7 @@ final readonly class CqrsPass implements CompilerPassInterface
         $this->assertReference($container, $facade->getArgument(0), $bus);
         $this->assertReference($container, $facade->getArgument(1), InvocationContext::class);
         $policy = $this->definition($container, EventPolicyMiddleware::class, EventPolicyMiddleware::class);
+        $this->assertReference($container, $policy->getArgument(1), ExecutionContext::class);
         $policy->setArgument(0, $events);
         $definition = $this->definition($container, $bus, MessageBus::class);
         if ($definition->isPublic()) {
@@ -682,7 +741,8 @@ final readonly class CqrsPass implements CompilerPassInterface
 
     private function assertReference(ContainerBuilder $container, mixed $value, string $id): void
     {
-        if (!$container->has($id) || $this->reference($container, $value) !== $container->findDefinition($id)) {
+        if (!$value instanceof Reference || !$container->has($id) || !$container->has((string) $value)
+            || $container->findDefinition((string) $value) !== $container->findDefinition($id)) {
             $this->fail('wiring', 'Expected a reference to '.$id.'.');
         }
     }

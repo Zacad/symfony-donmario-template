@@ -46,7 +46,12 @@ final class ShowTaskConsoleCommand extends Command
             if (!$task instanceof GetTaskResult) {
                 throw new \LogicException('Unexpected lookup result.');
             }
-            $output->writeln(json_encode(['id' => $task->id->toRfc4122(), 'title' => $task->title], JSON_THROW_ON_ERROR), OutputInterface::OUTPUT_RAW);
+            $output->writeln(json_encode([
+                'id' => $task->id->toRfc4122(),
+                'title' => $task->title,
+                'ownerAccountId' => $task->ownerAccountId?->toRfc4122(),
+                'completedAt' => $task->completedAt?->setTimezone(new \DateTimeZone('UTC'))->format('Y-m-d\TH:i:s\Z'),
+            ], JSON_THROW_ON_ERROR), OutputInterface::OUTPUT_RAW);
 
             return Command::SUCCESS;
         } catch (ValidationFailedException $failure) {

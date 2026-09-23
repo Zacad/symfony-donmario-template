@@ -10,11 +10,10 @@ use Symfony\Component\Security\Core\Authentication\AuthenticationTrustResolverIn
 use Symfony\Component\Security\Core\Authentication\Token\Storage\TokenStorageInterface;
 use Symfony\Component\Uid\Uuid;
 
-/** Infrastructure-owned scopes. Modules receive only immutable PolicyContext values. */
+/** Infrastructure-owned scopes. Voters receive only an explicit credential-free token. */
 final class ExecutionContext
 {
-    /** @var list<class-string> */
-    private array $messages = [];
+    private int $depth = 0;
     private ?Actor $override = null;
     private ?Actor $actor = null;
 
@@ -22,23 +21,25 @@ final class ExecutionContext
     {
     }
 
-    /** @param class-string $message */
-    public function enter(string $message): PolicyContext
+    public function enter(): AuthorizationToken
     {
-        $caller = [] === $this->messages ? null : $this->messages[array_key_last($this->messages)];
-        if ([] === $this->messages) {
+        $this->invocation->assertHealthy();
+        if (0 === $this->depth) {
             $this->actor = $this->override ?? $this->httpActor();
         }
         $actor = $this->actor ?? throw new \LogicException('authorization.context: Missing invocation identity.');
-        $this->messages[] = $message;
+        ++$this->depth;
 
-        return new PolicyContext($actor, $this->invocation->inPolicy(), $caller);
+        return new AuthorizationToken($actor, $this->invocation->inAuthorizationDecision());
     }
 
     public function leave(): void
     {
-        array_pop($this->messages);
-        if ([] === $this->messages) {
+        if ($this->depth < 1) {
+            throw new \LogicException('authorization.context: Execution frame underflow.');
+        }
+        --$this->depth;
+        if (0 === $this->depth) {
             $this->actor = null;
         }
     }
@@ -52,7 +53,7 @@ final class ExecutionContext
      */
     public function run(Actor $actor, callable $operation): mixed
     {
-        if (!$this->invocation->isRoot() || [] !== $this->messages || null !== $this->override) {
+        if (!$this->invocation->isRoot() || 0 !== $this->depth || null !== $this->override) {
             $failure = new \LogicException('authorization.context: Authority cannot change during execution.');
             $this->invocation->fail($failure);
             throw $failure;

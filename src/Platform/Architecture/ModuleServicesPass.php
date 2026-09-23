@@ -4,7 +4,6 @@ declare(strict_types=1);
 
 namespace App\Platform\Architecture;
 
-use App\Platform\Authorization\AuthorizationMiddleware;
 use App\Platform\Messaging\CommandBus;
 use App\Platform\Messaging\EventBus;
 use App\Platform\Messaging\QueryBus;
@@ -47,13 +46,10 @@ final class ModuleServicesPass implements CompilerPassInterface
     /** @var array<int, true> */
     private array $repositoryLocators = [];
 
-    private bool $authorizationLocator = false;
-
     public function process(ContainerBuilder $container): void
     {
         $this->container = $container;
         $this->injectionClass = '';
-        $this->authorizationLocator = false;
         $this->visited = $this->repositoryLocators = [];
 
         try {
@@ -78,7 +74,6 @@ final class ModuleServicesPass implements CompilerPassInterface
         } finally {
             unset($this->container);
             $this->injectionClass = '';
-            $this->authorizationLocator = false;
             $this->visited = $this->repositoryLocators = [];
         }
     }
@@ -101,7 +96,7 @@ final class ModuleServicesPass implements CompilerPassInterface
         if ($definition->isAbstract()) {
             return;
         }
-        if (ContractTypes::isAuthorizationRuntime($class) || ContractTypes::isPolicy($class)) {
+        if (ContractTypes::isAuthorizationRuntime($class) || ContractTypes::isAuthorizationVoter($class)) {
             if ($definition->isPublic()) {
                 throw new \LogicException('module.services.authorization_private: '.$id.' must be private.');
             }
@@ -146,19 +141,11 @@ final class ModuleServicesPass implements CompilerPassInterface
         $this->visited[$key][$objectId] = true;
 
         $previousSite = $this->injectionClass;
-        $previousLocator = $this->authorizationLocator;
         $this->injectionClass = $site;
-        $this->authorizationLocator = AuthorizationMiddleware::class === $site && AuthorizationMiddleware::class === $source
-            && ServiceLocator::class === $class && $definition->hasTag('container.service_locator') && str_starts_with($id, '.service_locator.')
-            && !$definition->isPublic() && !$definition->isLazy() && null === $definition->getDecoratedService()
-            && null === $definition->getFactory() && null === $definition->getConfigurator()
-            && [] === $definition->getProperties() && [] === $definition->getMethodCalls()
-            && [0] === array_keys($definition->getArguments()) && is_array($definition->getArgument(0));
         try {
             $this->inspectDefinition($definition, $id, $module, $source, $class);
         } finally {
             $this->injectionClass = $previousSite;
-            $this->authorizationLocator = $previousLocator;
         }
     }
 
@@ -244,38 +231,35 @@ final class ModuleServicesPass implements CompilerPassInterface
         }
         $this->assertServiceClass($class, $id);
         $owner = ModuleMap::owner($class);
-        $policyMap = self::PLATFORM === $module && AuthorizationMiddleware::class === $this->injectionClass
-            && AuthorizationMiddleware::class === $source && $this->authorizationLocator && ContractTypes::isPolicy($class)
-            && $this->container->hasDefinition($id) && $this->container->getDefinition($id) === $target;
-        if (null !== $owner && $owner !== $module && !$policyMap) {
+        if (null !== $owner && $owner !== $module) {
             throw new \LogicException(sprintf('module.services.foreign: "%s" (%s) -> "%s" [%s] (%s); cross-module service dependencies are forbidden.', $source, $module, $id, $class, $owner));
-        }
-        if (ContractTypes::isPolicy($class) && !$policyMap) {
-            throw new \LogicException(sprintf('module.services.policy_target: "%s" -> "%s" [%s]; policies are resolved only by the authorization middleware locator.', $source, $id, $class));
         }
         if (ContractTypes::isApplicationHandler($class) || ('Application' === ModuleMap::layer($class) && $target->hasTag('messenger.message_handler'))) {
             throw new \LogicException(sprintf('module.services.handler_target: "%s" -> "%s" [%s]; invoke application handlers through their bus.', $source, $id, $class));
+        }
+        if (ContractTypes::isAuthorizationVoter($class)) {
+            throw new \LogicException(sprintf('module.services.voter_target: "%s" -> "%s" [%s]; authorization voters are private decision-manager implementations.', $source, $id, $class));
         }
         if (ContractTypes::isOwnEventListener($class)) {
             throw new \LogicException(sprintf('module.services.listener_target: "%s" (%s) -> "%s" [%s]; event listeners are invoked through Messenger, not injected into module services.', $source, $module, $id, $class));
         }
         if (self::PLATFORM !== $module && str_starts_with($class, 'App\\Platform\\')) {
-            $policy = ContractTypes::isPolicy($this->injectionClass);
-            $application = 'Application' === ModuleMap::layer($this->injectionClass) && !ContractTypes::isDataCandidate($this->injectionClass) && !$policy;
+            $voter = ContractTypes::isAuthorizationVoter($this->injectionClass);
+            $application = 'Application' === ModuleMap::layer($this->injectionClass) && !ContractTypes::isDataCandidate($this->injectionClass);
             $bus = in_array($class, [CommandBus::class, QueryBus::class], true)
-                && ($application || ($policy && QueryBus::class === $class) || 'UI' === ModuleMap::layer($this->injectionClass) || ContractTypes::isOwnEventListener($this->injectionClass));
+                && ($application || ($voter && QueryBus::class === $class) || 'UI' === ModuleMap::layer($this->injectionClass) || ContractTypes::isOwnEventListener($this->injectionClass));
             $events = EventBus::class === $class && $application;
             $execution = ContractTypes::mayUseExecutionFacade($this->injectionClass, $class);
             if ($id !== $class || (!$bus && !$events && !$execution)) {
                 throw new \LogicException(sprintf('module.services.platform: "%s" (%s) -> "%s" [%s]; Platform is not a module-facing facade.', $source, $module, $id, $class));
             }
         }
-        if (ContractTypes::isPolicy($this->injectionClass)
+        if (ContractTypes::isAuthorizationVoter($this->injectionClass)
             && !(QueryBus::class === $class && $id === $class)
             && !ContractTypes::isImmutable($class)
             && !($owner === $module && ('Domain' === ModuleMap::layer($class)
                 || ('Infrastructure' === ModuleMap::layer($class) && null !== $port && is_a($class, $port, true))))) {
-            throw new \LogicException(sprintf('module.services.policy_dependency: "%s" -> "%s" [%s]; policies may inject only QueryBus, immutable values and owning Domain ports/state.', $source, $id, $class));
+            throw new \LogicException(sprintf('module.services.voter_dependency: "%s" -> "%s" [%s]; voters may inject only QueryBus, immutable values and owning Domain ports/state.', $source, $id, $class));
         }
         if (self::PLATFORM !== $module && str_starts_with($class, 'Symfony\\Component\\Messenger\\')) {
             throw new \LogicException(sprintf('module.services.messenger: "%s" (%s) -> "%s"; use the approved command/query facade instead of raw Messenger services.', $source, $module, $id));

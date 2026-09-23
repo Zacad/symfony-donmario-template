@@ -6,17 +6,15 @@ namespace App\Tests\Architecture;
 
 use App\Module\DiConsuming\Application\Consumer;
 use App\Module\DiConsuming\Application\Lookup\LookupHandler;
-use App\Module\DiConsuming\Application\Lookup\LookupPolicy;
-use App\Module\DiConsuming\Domain\LocalDependency;
 use App\Module\DiConsuming\Domain\RepositoryPort;
+use App\Module\DiConsuming\Infrastructure\Framework\Symfony\Security\DiConsumingVoter;
 use App\Module\DiConsuming\Infrastructure\RepositoryAdapter;
 use App\Platform\Architecture\ContractTypes;
 use App\Platform\Architecture\ModuleInventoryPass;
 use App\Platform\Architecture\ModuleMap;
 use App\Platform\Architecture\ModuleServicesPass;
-use App\Platform\Authorization\AuthorizationMiddleware;
 use App\Platform\Authorization\OperatorExecution;
-use App\Platform\DiFixture\Wrapper;
+use App\Platform\Authorization\PublicAccessVoter;
 use App\Platform\Messaging\CommandBus;
 use App\Platform\Messaging\EventBus;
 use App\Platform\Messaging\QueryBus;
@@ -36,7 +34,7 @@ require_once __DIR__.'/../Fixtures/Services/ModuleServices.php';
 
 final class AuthorizationServicesPassTest extends TestCase
 {
-    public function testPolicyRetainsItsOwnDomainPortAfterAutowiringAndAliasResolution(): void
+    public function testVoterRetainsQueryBusAndItsOwnDomainPortAfterAutowiringAndAliasResolution(): void
     {
         $container = new ContainerBuilder();
         $container->addCompilerPass(new ModuleServicesPass(), PassConfig::TYPE_BEFORE_REMOVING);
@@ -44,37 +42,37 @@ final class AuthorizationServicesPassTest extends TestCase
         $container->setAlias(RepositoryPort::class, 'repository');
         $container->register('query.bus', MessageBus::class)->setArgument(0, []);
         $container->register(QueryBus::class)->setArgument(0, new Reference('query.bus'));
-        $container->register('policy', LookupPolicy::class)->setAutowired(true)->setArgument(0, new Reference(QueryBus::class));
-        $container->register('test.root', \stdClass::class)->setPublic(true)->setProperty('policy', new Reference('policy'));
+        $container->register('voter', DiConsumingVoter::class)->setAutowired(true)->setArgument(0, new Reference(QueryBus::class));
+        $container->register('test.root', \stdClass::class)->setPublic(true)->setProperty('voter', new Reference('voter'));
         $container->compile();
 
         $root = $container->get('test.root');
         self::assertInstanceOf(\stdClass::class, $root);
-        self::assertInstanceOf(LookupPolicy::class, $root->policy);
-        self::assertInstanceOf(QueryBus::class, $root->policy->dependency);
-        self::assertInstanceOf(RepositoryPort::class, $root->policy->repository);
-        self::assertSame('bound-domain-port', $root->policy->repository->label());
-        self::assertFalse($container->has('policy'));
+        self::assertInstanceOf(DiConsumingVoter::class, $root->voter);
+        self::assertInstanceOf(QueryBus::class, $root->voter->queries);
+        self::assertInstanceOf(RepositoryPort::class, $root->voter->repository);
+        self::assertSame('bound-domain-port', $root->voter->repository->label());
+        self::assertFalse($container->has('voter'));
     }
 
     /** @return iterable<string, array{string, string}> */
-    public static function policyDependencies(): iterable
+    public static function voterDependencies(): iterable
     {
         foreach ([CommandBus::class, EventBus::class] as $class) {
             yield $class => [$class, 'module.services.platform:'];
         }
         foreach ([Consumer::class, RepositoryAdapter::class, \stdClass::class, \Doctrine\DBAL\Connection::class, \Symfony\Component\HttpFoundation\RequestStack::class, ServiceLocator::class] as $class) {
-            yield $class => [$class, 'module.services.policy_dependency:'];
+            yield $class => [$class, 'module.services.voter_dependency:'];
         }
         yield 'handler proxy' => [LookupHandler::class, 'module.services.handler_target:'];
-        yield 'another policy' => [LookupPolicy::class, 'module.services.policy_target:'];
+        yield 'another voter' => [DiConsumingVoter::class, 'module.services.voter_target:'];
     }
 
-    #[DataProvider('policyDependencies')]
-    public function testPolicyCannotInjectAServiceProxyOrRuntimeDependency(string $target, string $diagnostic): void
+    #[DataProvider('voterDependencies')]
+    public function testVoterCannotInjectAServiceProxyOrRuntimeDependency(string $target, string $diagnostic): void
     {
         $container = new ContainerBuilder();
-        $container->register('policy', LookupPolicy::class)->setArgument(0, new Reference('friendly.alias'));
+        $container->register('voter', DiConsumingVoter::class)->setArgument(0, new Reference('friendly.alias'));
         $id = in_array($target, [CommandBus::class, EventBus::class], true) ? $target : 'target';
         $container->register($id, $target);
         $container->setAlias('friendly.alias', $id);
@@ -86,7 +84,7 @@ final class AuthorizationServicesPassTest extends TestCase
     /** @return iterable<string, array{string, string}> */
     public static function directUseCaseWiring(): iterable
     {
-        foreach ([LookupHandler::class, LookupPolicy::class] as $class) {
+        foreach ([LookupHandler::class, DiConsumingVoter::class, PublicAccessVoter::class] as $class) {
             foreach (['alias', 'closure', 'locator', 'inline', 'factory', 'property', 'method'] as $wiring) {
                 yield $class.' '.$wiring => [$class, $wiring];
             }
@@ -94,7 +92,7 @@ final class AuthorizationServicesPassTest extends TestCase
     }
 
     #[DataProvider('directUseCaseWiring')]
-    public function testModuleCannotInjectHandlersOrPoliciesThroughAlternateWiring(string $target, string $wiring): void
+    public function testModuleCannotInjectHandlersOrVotersThroughAlternateWiring(string $target, string $wiring): void
     {
         $container = new ContainerBuilder();
         $container->register('target', $target);
@@ -111,7 +109,7 @@ final class AuthorizationServicesPassTest extends TestCase
             default => $consumer->setArgument(0, $reference),
         };
         $this->expectException(\LogicException::class);
-        $this->expectExceptionMessage(LookupHandler::class === $target ? 'module.services.handler_target:' : 'module.services.policy_target:');
+        $this->expectExceptionMessage(LookupHandler::class === $target ? 'module.services.handler_target:' : 'module.services.voter_target:');
         new ModuleServicesPass()->process($container);
     }
 
@@ -124,49 +122,6 @@ final class AuthorizationServicesPassTest extends TestCase
         $reference = $container->getDefinition('.messenger.handler_descriptor.fixture')->getArgument(0);
         self::assertInstanceOf(Reference::class, $reference);
         self::assertSame('handler', (string) $reference);
-    }
-
-    public function testMiddlewareGeneratedContextLocatorCanResolveAPolicy(): void
-    {
-        $container = new ContainerBuilder();
-        $container->register('policy', LookupPolicy::class)->setArgument(0, new Reference('state'));
-        $container->register('state', LocalDependency::class);
-        $middleware = $container->register(AuthorizationMiddleware::class);
-        $locator = ServiceLocatorTagPass::register($container, ['message' => new Reference('policy')], AuthorizationMiddleware::class);
-        $middleware->setArgument(2, $locator);
-        new ModuleServicesPass()->process($container);
-        self::assertSame($locator, $middleware->getArgument(2));
-    }
-
-    /** @return iterable<string, array{string}> */
-    public static function invalidMiddlewareEdges(): iterable
-    {
-        foreach (['direct policy', 'wrong source id', 'other Platform consumer', 'nonpolicy target', 'module reuse', 'inline wrapper'] as $case) {
-            yield $case => [$case];
-        }
-    }
-
-    #[DataProvider('invalidMiddlewareEdges')]
-    public function testMiddlewareExceptionCannotBecomeAGeneralPlatformModuleBridge(string $case): void
-    {
-        $container = new ContainerBuilder();
-        $container->register('policy', 'nonpolicy target' === $case ? LookupHandler::class : LookupPolicy::class);
-        $source = 'wrong source id' === $case ? 'friendly.middleware' : AuthorizationMiddleware::class;
-        $class = 'other Platform consumer' === $case ? Wrapper::class : AuthorizationMiddleware::class;
-        $consumer = $container->register($source, $class);
-        $reference = new Reference('policy');
-        if ('inline wrapper' === $case) {
-            $argument = (new Definition(Wrapper::class))->setArgument(0, ServiceLocatorTagPass::register($container, ['policy' => $reference]));
-        } else {
-            $argument = 'direct policy' === $case ? $reference : ServiceLocatorTagPass::register($container, ['policy' => $reference]);
-        }
-        $consumer->setArgument(2, $argument);
-        if ('module reuse' === $case) {
-            $container->register('module.consumer', Consumer::class)->setArgument(0, $argument);
-        }
-        $this->expectException(\LogicException::class);
-        $this->expectExceptionMessage('module.services.'.('module reuse' === $case ? 'policy_target:' : 'foreign:'));
-        new ModuleServicesPass()->process($container);
     }
 
     /** @return iterable<string, array{string, string, bool}> */
@@ -223,6 +178,13 @@ final class AuthorizationServicesPassTest extends TestCase
 
     public function testTrustedExecutionFacadeEdgesAreExact(): void
     {
+        foreach (['ListTasksConsoleCommand', 'CompleteTaskConsoleCommand'] as $name) {
+            $consumer = 'App\\Module\\TaskTracking\\UI\\Console\\'.$name;
+            self::assertTrue(ContractTypes::mayUseExecutionFacade($consumer, OperatorExecution::class));
+            self::assertFalse(ContractTypes::mayUseExecutionFacade($consumer.'Child', OperatorExecution::class));
+            self::assertFalse(ContractTypes::mayUseExecutionFacade(str_replace('Console', 'Http', $consumer), OperatorExecution::class));
+            self::assertFalse(ContractTypes::mayUseExecutionFacade($consumer, \App\Platform\Authorization\AuthenticationExecution::class));
+        }
         $container = new ContainerBuilder();
         foreach (ContractTypes::executionFacadeConsumers() as $facade => $consumers) {
             $container->register($facade);

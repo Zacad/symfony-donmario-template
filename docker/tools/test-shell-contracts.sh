@@ -28,6 +28,14 @@ case "$1" in
     image)
         if [ "${STUB_FAULT:-}" = image ]; then exit 42; fi ;;
     compose)
+        case " $* " in
+            *' app:authorization:role:define task_tracking.user '*)
+                if [ "${STUB_FAULT:-}" = authorization-task-role ]; then exit 46; fi ;;
+            *' app:authorization:role:define authorizing.administrator '*)
+                if [ "${STUB_FAULT:-}" = authorization-authorizing-role ]; then exit 47; fi ;;
+            *' app:authorization:role:define application.administrator '*)
+                if [ "${STUB_FAULT:-}" = authorization-application-role ]; then exit 48; fi ;;
+        esac
         for arg do
             case "$arg" in
                 version) printf '%s\n' 5.5.0; exit 0 ;;
@@ -73,7 +81,7 @@ php docker/tools/settings.php "$checkout/var/docker/local.env" dm-migration-cont
 result=0
 PATH="$work/bin:$PATH" STUB_FAULT=migrations sh "$checkout/bin/dev" setup > "$work/setup-migration.log" 2>&1 || result=$?
 test "$result" = 44
-! grep -q 'Application ready:' "$work/setup-migration.log"
+! grep -q 'Application ready with semantic authorization defaults:' "$work/setup-migration.log"
 ! grep -q 'up --detach --wait --wait-timeout 60 app' "$STUB_LOG"
 : > "$STUB_LOG"
 result=0
@@ -83,6 +91,54 @@ test "$result" = 44
 ! grep -q 'PASS:' "$work/test-migration.log"
 ! grep -q 'up --detach --wait --wait-timeout 60 app' "$STUB_LOG"
 grep -q 'down --volumes --remove-orphans' "$STUB_LOG"
+
+# Incompatible customized defaults fail visibly through safe create-if-absent
+# commands, before app startup, without issuing a revisioned overwrite.
+for fixture in authorization-task-role authorization-authorizing-role authorization-application-role; do
+    : > "$STUB_LOG"
+    result=0
+    PATH="$work/bin:$PATH" STUB_FAULT=$fixture sh "$checkout/bin/dev" setup > "$work/$fixture.log" 2>&1 || result=$?
+    test "$result" = 1
+    ! grep -q 'up --detach --wait --wait-timeout 60 app' "$STUB_LOG"
+    ! grep -q -- '--expected-revision' "$STUB_LOG"
+    case "$fixture" in
+        authorization-task-role)
+            grep -q 'role:define task_tracking.user Task user task_tracking.task.create task_tracking.task.view task_tracking.task.complete --if-absent' "$STUB_LOG"
+            grep -q '^Failed to seed task user role; an existing default may be incompatible or retired\.$' "$work/$fixture.log"
+            ! grep -q 'role:define authorizing.administrator' "$STUB_LOG" ;;
+        authorization-authorizing-role)
+            grep -q 'role:define authorizing.administrator Authorization administrator authorizing.manage authorizing.catalogue.manage --if-absent' "$STUB_LOG"
+            grep -q '^Failed to seed authorization administrator role; an existing default may be incompatible or retired\.$' "$work/$fixture.log"
+            ! grep -q 'role:define application.administrator' "$STUB_LOG" ;;
+        authorization-application-role)
+            grep -q 'role:define application.administrator Application administrator authorizing.manage authorizing.catalogue.manage task_tracking.task.create task_tracking.task.view task_tracking.task.complete --if-absent' "$STUB_LOG"
+            grep -q '^Failed to seed application administrator role; an existing default may be incompatible or retired\.$' "$work/$fixture.log" ;;
+    esac
+done
+
+# Successful setup seeds only the three clean role snapshots and never rewrites
+# revisions or invokes a removed authorization surface.
+: > "$STUB_LOG"
+PATH="$work/bin:$PATH" sh "$checkout/bin/dev" setup > "$work/setup-defaults.log" 2>&1
+grep -q '^Application ready with semantic authorization defaults: http://' "$work/setup-defaults.log"
+test "$(grep -c ' app:authorization:role:define ' "$STUB_LOG")" = 3
+grep -q 'role:define task_tracking.user Task user task_tracking.task.create task_tracking.task.view task_tracking.task.complete --if-absent' "$STUB_LOG"
+grep -q 'role:define authorizing.administrator Authorization administrator authorizing.manage authorizing.catalogue.manage --if-absent' "$STUB_LOG"
+grep -q 'role:define application.administrator Application administrator authorizing.manage authorizing.catalogue.manage task_tracking.task.create task_tracking.task.view task_tracking.task.complete --if-absent' "$STUB_LOG"
+if grep -q 'task_tracking\.reader\|task_tracking\.editor\|task_tracking\.creator\|initial-role:configure\|--global\|--resource-' "$STUB_LOG"; then exit 1; fi
+
+# Setup and disposable-consumer tooling must not retain removed resource,
+# initial-binding, scoped-role or account-column compatibility contracts.
+for script in bin/dev docker/tools/consumer-authorizing.php docker/tools/consumer-task-tracking.php docker/tools/verify-setup.sh; do
+    if grep -Eq 'authorizing_(role_definition|global_|resource_|initial_resource_role)|account_id|resourceType|resourceId|resource_type|resource_id|--resource-|--global|initial-role:configure|task_tracking\.(creator|reader|editor)|Version202609(17010000|20020000)' "$script"; then
+        printf 'Removed authorization surface remains in %s.\n' "$script" >&2
+        exit 1
+    fi
+done
+if grep -q "['\"]scope['\"]" docker/tools/consumer-authorizing.php; then
+    printf '%s\n' 'Removed assignment scope field remains in consumer authorization tooling.' >&2
+    exit 1
+fi
 
 # Runtime mode survives credential loading and reaches every development adapter.
 settings_checksum=$(cksum < "$checkout/var/docker/local.env")
@@ -198,4 +254,4 @@ PATH="$work/bin:$PATH" POSTGRES_USER=postgres APP_DATABASE_NAME=app_test APP_DAT
     sh docker/postgres/10-application.sh > "$work/initialization.log" 2>&1
 ! grep -q synthetic-sentinel "$work/initialization.log"
 sh docker/tools/jwt-keys-contract.sh
-printf '%s\n' 'Shell contracts passed: endpoint precedence, migration failures, settings refusal, cleanup failures, credential argv isolation, event mode propagation, worker refusal and stopped-only JWT rotation.'
+printf '%s\n' 'Shell contracts passed: endpoint precedence, migration failure, exact authorization defaults and mismatch failures, removed authorization surfaces, settings refusal, cleanup failures, credential argv isolation, event mode propagation, worker refusal and stopped-only JWT rotation.'

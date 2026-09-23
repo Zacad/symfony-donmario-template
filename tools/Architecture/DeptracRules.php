@@ -38,16 +38,20 @@ final class DeptracRules
         $queryBusPattern = '~^App\\\\Platform\\\\Messaging\\\\QueryBus$~Di';
         $queryBus = self::layer('QueryBus', $queryBusPattern);
         $policyExceptions = self::layer('PolicyExceptions', ContractTypes::POLICY_EXCEPTION_PATTERN.'i');
-        $contextPattern = '~^App\\\\Platform\\\\Authorization\\\\(?:Actor|ActorKind|PolicyContext)$~Di';
-        $authorizationAttributePattern = '~^App\\\\Platform\\\\Authorization\\\\AuthorizeWith$~Di';
+        $contextPattern = '~^App\\\\Platform\\\\Authorization\\\\(?:Actor|ActorKind|AuthorizationToken)$~Di';
+        $authorizationAttributePattern = '~^App\\\\Platform\\\\Authorization\\\\Authorize$~Di';
         $deniedPattern = '~^App\\\\Platform\\\\Authorization\\\\AuthorizationDenied$~Di';
         $operatorPattern = '~^App\\\\Platform\\\\Authorization\\\\OperatorExecution$~Di';
         $authenticationPattern = '~^App\\\\Platform\\\\Authorization\\\\AuthenticationExecution$~Di';
-        $context = self::layer('PolicyContext', $contextPattern);
-        $authorizationAttribute = self::layer('AuthorizeWith', $authorizationAttributePattern);
+        $publicVoterPattern = '~^App\\\\Platform\\\\Authorization\\\\PublicAccessVoter$~Di';
+        $voterRuntimePattern = '~^Symfony\\\\Component\\\\Security\\\\Core\\\\(?:Authentication\\\\Token\\\\TokenInterface|Authorization\\\\Voter\\\\(?:Vote|Voter|VoterInterface))$~Di';
+        $context = self::layer('AuthorizationFacts', $contextPattern);
+        $authorizationAttribute = self::layer('Authorize', $authorizationAttributePattern);
         $denied = self::layer('AuthorizationDenied', $deniedPattern);
         $operator = self::layer('OperatorExecution', $operatorPattern);
         $authentication = self::layer('AuthenticationExecution', $authenticationPattern);
+        $publicVoter = self::layer('PublicAccessVoter', $publicVoterPattern);
+        $voterRuntime = self::layer('AuthorizationVoterRuntime', $voterRuntimePattern);
         $messenger = Layer::withName('MessagingRuntime')->collectors(BoolConfig::create([self::collector($messengerPattern)], [self::collector($declarationPattern)]));
         $facades = self::layer('MessagingFacades', $facadePattern);
         $eventBusPattern = '~^App\\\\Platform\\\\Messaging\\\\EventBus$~Di';
@@ -64,9 +68,9 @@ final class DeptracRules
         $declarations = Layer::withName('MessagingDeclarations')->collectors(BoolConfig::create([self::collector($declarationPattern)], [self::collector($handlerPattern)]));
         $vendor = Layer::withName('Vendor')->collectors(BoolConfig::create(
             [self::collector('~^(?!App(?:\\\\|$)).+~i')],
-            [self::collector(ContractTypes::IMMUTABLE_PATTERN), self::collector(ContractTypes::POLICY_EXCEPTION_PATTERN.'i'), self::collector($persistencePattern), self::collector($messengerPattern)],
+            [self::collector(ContractTypes::IMMUTABLE_PATTERN), self::collector(ContractTypes::POLICY_EXCEPTION_PATTERN.'i'), self::collector($persistencePattern), self::collector($messengerPattern), self::collector($voterRuntimePattern)],
         ));
-        $platform = Layer::withName('Platform')->collectors(BoolConfig::create([self::collector('~^App\\\\Platform\\\\~i')], array_map(self::collector(...), [$facadePattern, $queryBusPattern, $eventBusPattern, $primitivePattern, $recordingPattern, $contextPattern, $authorizationAttributePattern, $deniedPattern, $operatorPattern, $authenticationPattern])));
+        $platform = Layer::withName('Platform')->collectors(BoolConfig::create([self::collector('~^App\\\\Platform\\\\~i')], array_map(self::collector(...), [$facadePattern, $queryBusPattern, $eventBusPattern, $primitivePattern, $recordingPattern, $contextPattern, $authorizationAttributePattern, $deniedPattern, $operatorPattern, $authenticationPattern, $publicVoterPattern])));
         $kernel = self::layer('KernelBoot', '~^App\\\\Kernel$~Di');
         $classified = [
             self::collector('~^App\\\\Platform\\\\~i'),
@@ -74,7 +78,7 @@ final class DeptracRules
         ];
         $applicationData = $events = $internals = $domains = $applications = $uis = [];
         $domainEvents = $infrastructureEvents = $listeners = $frameworkListeners = [];
-        $policies = $handlers = $operatorAdapters = $authenticationAdapters = [];
+        $voters = $handlers = $operatorAdapters = $authenticationAdapters = [];
         foreach ((new ModuleMap($projectDir))->modules() as $module) {
             $prefix = '~^'.preg_quote('App\\Module\\'.$module.'\\', '~');
             $data = self::collector(ContractTypes::applicationPattern($module).'i');
@@ -85,7 +89,7 @@ final class DeptracRules
             $frameworkListener = self::collector(ContractTypes::frameworkListenerPattern($module).'i');
             $domain = self::collector($prefix.'Domain\\\\~i');
             $application = self::collector($prefix.'Application\\\\~i');
-            $policy = self::collector(ContractTypes::policyPattern($module).'i');
+            $voter = self::collector(ContractTypes::authorizationVoterPattern($module).'i');
             $handler = self::collector(ContractTypes::handlerPattern($module).'i');
             $operatorAdapter = self::collector(self::executionAdapterPattern($module, 'App\\Platform\\Authorization\\OperatorExecution'));
             $authenticationAdapter = self::collector(self::executionAdapterPattern($module, 'App\\Platform\\Authorization\\AuthenticationExecution'));
@@ -98,13 +102,13 @@ final class DeptracRules
             $listeners[] = Layer::withName($module.'.EventListener')->collectors($listener);
             $frameworkListeners[] = Layer::withName($module.'.FrameworkEventListener')->collectors($frameworkListener);
             $domains[] = Layer::withName($module.'.Domain')->collectors(BoolConfig::create([$domain], [$domainData]));
-            $applications[] = Layer::withName($module.'.Application')->collectors(BoolConfig::create([$application], [$data, $event, $policy, $handler]));
-            $policies[] = Layer::withName($module.'.Policy')->collectors($policy);
+            $applications[] = Layer::withName($module.'.Application')->collectors(BoolConfig::create([$application], [$data, $event, $handler]));
+            $voters[] = Layer::withName($module.'.AuthorizationVoter')->collectors($voter);
             $handlers[] = Layer::withName($module.'.Handler')->collectors($handler);
             $operatorAdapters[] = Layer::withName($module.'.OperatorAdapter')->collectors($operatorAdapter);
             $authenticationAdapters[] = Layer::withName($module.'.AuthenticationAdapter')->collectors($authenticationAdapter);
             $uis[] = Layer::withName($module.'.UI')->collectors(BoolConfig::create([$ui], [$operatorAdapter, $authenticationAdapter]));
-            $internals[] = Layer::withName($module.'.Internal')->collectors(BoolConfig::create([$all], [$data, $event, $domain, $application, $ui, $infrastructureData, $listener, $frameworkListener]));
+            $internals[] = Layer::withName($module.'.Internal')->collectors(BoolConfig::create([$all], [$data, $event, $domain, $application, $ui, $infrastructureData, $listener, $frameworkListener, $voter]));
             $classified[] = $all;
         }
         // No App dependency falls through to the permissive external dependency layer.
@@ -118,7 +122,7 @@ final class DeptracRules
             ->paths($projectDir.'/src')
             ->cacheFile($projectDir.'/var/deptrac.cache')
             ->analyser(AnalyserConfig::create([EmitterType::CLASS_TOKEN, EmitterType::USE_TOKEN]))
-            ->layers($values, $mapping, $persistence, $vendor, $platform, $kernel, $unclassified, $messenger, $declarations, $facades, $queryBus, $eventBus, $baseEvent, $domainEvent, $applicationEvent, $infrastructureEvent, $recording, $handlerAttribute, $policyExceptions, $context, $authorizationAttribute, $denied, $operator, $authentication, ...array_merge($publicData, $domains, $applications, $internals, $uis, $domainEvents, $infrastructureEvents, $listeners, $frameworkListeners, $policies, $handlers, $operatorAdapters, $authenticationAdapters))
+            ->layers($values, $mapping, $persistence, $vendor, $platform, $kernel, $unclassified, $messenger, $declarations, $facades, $queryBus, $eventBus, $baseEvent, $domainEvent, $applicationEvent, $infrastructureEvent, $recording, $handlerAttribute, $policyExceptions, $context, $authorizationAttribute, $denied, $operator, $authentication, $publicVoter, $voterRuntime, ...array_merge($publicData, $domains, $applications, $internals, $uis, $domainEvents, $infrastructureEvents, $listeners, $frameworkListeners, $voters, $handlers, $operatorAdapters, $authenticationAdapters))
             ->rulesets(
                 Ruleset::forLayer($values),
                 Ruleset::forLayer($mapping),
@@ -128,11 +132,13 @@ final class DeptracRules
                 Ruleset::forLayer($declarations),
                 Ruleset::forLayer($handlerAttribute),
                 Ruleset::forLayer($policyExceptions),
-                Ruleset::forLayer($context)->accesses($values),
+                Ruleset::forLayer($context)->accesses($values, $vendor, $policyExceptions, $voterRuntime),
                 Ruleset::forLayer($authorizationAttribute)->accesses($vendor),
                 Ruleset::forLayer($denied)->accesses($policyExceptions),
                 Ruleset::forLayer($operator)->accesses($platform, $context, $policyExceptions),
                 Ruleset::forLayer($authentication)->accesses($platform, $context, $values),
+                Ruleset::forLayer($publicVoter)->accesses($context, $voterRuntime),
+                Ruleset::forLayer($voterRuntime),
                 Ruleset::forLayer($baseEvent),
                 Ruleset::forLayer($domainEvent)->accesses($baseEvent),
                 Ruleset::forLayer($applicationEvent)->accesses($baseEvent),
@@ -142,7 +148,7 @@ final class DeptracRules
                 Ruleset::forLayer($facades)->accesses($platform, $vendor, $policyExceptions, $messenger),
                 Ruleset::forLayer($queryBus)->accesses($platform, $vendor, $policyExceptions, $messenger),
                 Ruleset::forLayer($unclassified),
-                Ruleset::forLayer($platform)->accesses($vendor, $policyExceptions, $values, $mapping, $persistence, $facades, $queryBus, $messenger, $declarations, $eventBus, $baseEvent, $domainEvent, $applicationEvent, $infrastructureEvent, $handlerAttribute, $context, $authorizationAttribute, $denied, $operator, $authentication, ...$publicData),
+                Ruleset::forLayer($platform)->accesses($vendor, $policyExceptions, $values, $mapping, $persistence, $facades, $queryBus, $messenger, $declarations, $eventBus, $baseEvent, $domainEvent, $applicationEvent, $infrastructureEvent, $handlerAttribute, $context, $authorizationAttribute, $denied, $operator, $authentication, $publicVoter, $voterRuntime, ...$publicData),
                 Ruleset::forLayer($kernel)->accesses($platform, $vendor, $policyExceptions, $values),
             );
         foreach ($applicationData as $data) {
@@ -161,8 +167,8 @@ final class DeptracRules
                 Ruleset::forLayer($infrastructureEvents[$index])->accesses($values, $baseEvent, $infrastructureEvent),
                 Ruleset::forLayer($domain)->accesses($vendor, $policyExceptions, $values, $mapping, $domainEvent, $recording, $domainEvents[$index]),
                 Ruleset::forLayer($application)->accesses($domain, $domainEvents[$index], $vendor, $policyExceptions, $values, $facades, $queryBus, $eventBus, $declarations, $handlerAttribute, ...$publicData),
-                Ruleset::forLayer($handlers[$index])->accesses($application, $policies[$index], $authorizationAttribute, $domain, $domainEvents[$index], $vendor, $policyExceptions, $values, $facades, $queryBus, $eventBus, $declarations, $handlerAttribute, ...$publicData),
-                Ruleset::forLayer($policies[$index])->accesses($domain, $values, $policyExceptions, $queryBus, $context, ...$publicData),
+                Ruleset::forLayer($handlers[$index])->accesses($application, $voters[$index], $authorizationAttribute, $domain, $domainEvents[$index], $vendor, $policyExceptions, $values, $facades, $queryBus, $eventBus, $declarations, $handlerAttribute, ...$publicData),
+                Ruleset::forLayer($voters[$index])->accesses($domain, $values, $policyExceptions, $queryBus, $context, $voterRuntime, ...$publicData),
                 Ruleset::forLayer($listeners[$index])->accesses($values, $facades, $queryBus, $handlerAttribute, ...$publicData),
                 Ruleset::forLayer($frameworkListeners[$index])->accesses($domain, $domainEvents[$index], $application, $internal, $infrastructureEvents[$index], $vendor, $policyExceptions, $values, $mapping, $persistence, ...$publicData),
                 Ruleset::forLayer($internal)->accesses($domain, $domainEvents[$index], $application, $infrastructureEvents[$index], $vendor, $policyExceptions, $values, $mapping, $persistence, ...$publicData),

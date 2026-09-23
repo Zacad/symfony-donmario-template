@@ -24,11 +24,31 @@ services:
 
     App\Platform\Messaging\EventPolicyMiddleware:
         # CqrsPass supplies the concrete public Application-event inventory.
-        arguments: [[]]
+        arguments: [[], '@App\Platform\Authorization\ExecutionContext']
 
     App\Platform\Authorization\AuthorizationMiddleware:
         arguments:
-            $policies: !service_locator {}
+            $decisions: '@app.authorization.decision_manager'
+            $routes: []
+
+    App\Platform\Authorization\PublicAccessVoter:
+        autowire: true
+        autoconfigure: false
+        lazy: true
+        arguments:
+            $messages: []
+        tags:
+            - { name: app.authorization.voter }
+
+    app.authorization.unanimous_strategy:
+        class: Symfony\Component\Security\Core\Authorization\Strategy\UnanimousStrategy
+        arguments: [false]
+
+    app.authorization.decision_manager:
+        class: Symfony\Component\Security\Core\Authorization\AccessDecisionManager
+        arguments:
+            $voters: !tagged_iterator app.authorization.voter
+            $strategy: '@app.authorization.unanimous_strategy'
 
     App\Platform\Authorization\ExecutionContext:
         arguments:

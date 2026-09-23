@@ -4,7 +4,7 @@ declare(strict_types=1);
 
 // Only verify-setup's disposable DEVELOPMENT checkout calls this CLI helper.
 use App\Kernel;
-use App\Tests\Fixtures\Authenticating\Browser;
+use Doctrine\DBAL\Connection;
 use Doctrine\Persistence\ManagerRegistry;
 use Symfony\Component\Process\Process;
 use Symfony\Component\Uid\Uuid;
@@ -13,7 +13,7 @@ require dirname(__DIR__, 2).'/vendor/autoload.php';
 umask(0077);
 
 try {
-    if ('dev' !== getenv('APP_ENV') || 2 !== count($argv) || !in_array($argv[1], ['create', 'read'], true)) {
+    if ('dev' !== getenv('APP_ENV') || !isset($argv) || 2 !== count($argv) || !in_array($argv[1], ['create', 'read'], true)) {
         throw new RuntimeException('Invalid disposable consumer authorization operation.');
     }
 
@@ -30,16 +30,24 @@ try {
 
         return $data;
     };
-    $readId = static function (string $file) use ($readJson): string {
-        $id = $readJson($file)['id'] ?? null;
-        if (!is_string($id) || !Uuid::isValid($id) || Uuid::fromString($id)->toRfc4122() !== $id) {
+    $uuid = static function (mixed $id): string {
+        if (!is_string($id) || 36 !== strlen($id) || !Uuid::isValid($id) || Uuid::fromString($id)->toRfc4122() !== $id) {
             throw new RuntimeException('Invalid consumer UUID.');
         }
 
         return $id;
     };
+    $readId = static fn (string $file): string => $uuid($readJson($file)['id'] ?? null);
+    /**
+     * @param list<string>      $arguments
+     * @param array<mixed>|null $input
+     *
+     * @return array<mixed>
+     */
     $console = static function (array $arguments, ?array $input = null): array {
-        $process = new Process(['php', 'bin/console', ...$arguments, '--no-interaction', '--no-ansi'], '/app', timeout: 15);
+        /** @var list<string> $command */
+        $command = ['php', 'bin/console', ...$arguments, '--no-interaction', '--no-ansi'];
+        $process = new Process($command, '/app', timeout: 15);
         $process->setInput(null === $input ? '' : json_encode($input, JSON_THROW_ON_ERROR));
         $stdout = '';
         $bytes = 0;
@@ -79,60 +87,112 @@ try {
             throw new RuntimeException('Consumer Doctrine registry unavailable.');
         }
         $connection = $registry->getConnection();
+        if (!$connection instanceof Connection) {
+            throw new RuntimeException('Consumer Doctrine connection unavailable.');
+        }
         if ('app' !== $connection->fetchOne('SELECT current_database()') || 'app' !== $connection->fetchOne('SELECT current_user')) {
             throw new RuntimeException('Consumer authorization requires its disposable dev app database/role.');
         }
 
         $accountId = $readId('/app/var/consumer-authenticating.json');
-        $taskId = $readId('/app/var/consumer-task.json');
         $file = '/app/var/consumer-authorizing.json';
-        $resource = ['scope' => 'resource', 'resourceType' => 'task_tracking.task', 'resourceId' => $taskId];
-        $changes = [
-            ['operation' => 'add', 'kind' => 'role', 'key' => 'task_tracking.reader', 'scope' => 'global'],
-            ['operation' => 'add', 'kind' => 'role', 'key' => 'task_tracking.editor', ...$resource],
-            ['operation' => 'add', 'kind' => 'permission', 'key' => 'task_tracking.task.create', 'scope' => 'global'],
-            ['operation' => 'add', 'kind' => 'permission', 'key' => 'task_tracking.task.complete', ...$resource],
+        $mode = $argv[1];
+        $roles = [
+            'task_tracking.user' => ['Task user', ['task_tracking.task.complete', 'task_tracking.task.create', 'task_tracking.task.view']],
+            'authorizing.administrator' => ['Authorization administrator', ['authorizing.catalogue.manage', 'authorizing.manage']],
+            'application.administrator' => ['Application administrator', ['authorizing.catalogue.manage', 'authorizing.manage', 'task_tracking.task.complete', 'task_tracking.task.create', 'task_tracking.task.view']],
         ];
-        $list = ['app:authorization:assignments', $accountId, '--limit=4'];
-        if ('create' === $argv[1]) {
-            if (file_exists($file) || is_link($file) || ['assignments' => [], 'next' => null] !== $console($list)) {
+        $accountChanges = [
+            ['operation' => 'add', 'kind' => 'role', 'key' => 'task_tracking.user'],
+            ['operation' => 'add', 'kind' => 'permission', 'key' => 'authorizing.manage'],
+        ];
+        $accountList = ['app:authorization:assignments', $accountId, '--limit=3'];
+
+        if ('create' === $mode) {
+            if (file_exists($file) || is_link($file) || ['assignments' => [], 'next' => null] !== $console($accountList)) {
                 throw new RuntimeException('Consumer authorization marker or assignments already exist.');
             }
-            if (['requested' => 4, 'added' => 4, 'removed' => 0, 'unchanged' => 0] !== $console(['app:authorization:change-batch', $accountId], $changes)) {
+            foreach ($roles as $key => [$label, $permissions]) {
+                $role = $console(['app:authorization:role:define', $key, $label, ...$permissions, '--if-absent']);
+                if (['key', 'label', 'revision', 'retiredAt', 'permissions'] !== array_keys($role)
+                    || ['key' => $key, 'label' => $label, 'revision' => 1, 'retiredAt' => null, 'permissions' => $permissions] !== $role) {
+                    throw new RuntimeException('Consumer authorization role output or default changed.');
+                }
+            }
+            $administratorId = Uuid::v7()->toRfc4122();
+            if (['requested' => 2, 'added' => 2, 'removed' => 0, 'unchanged' => 0] !== $console(['app:authorization:change-batch', $accountId], $accountChanges)
+                || ['requested' => 1, 'added' => 1, 'removed' => 0, 'unchanged' => 0] !== $console(['app:authorization:role:assign', $administratorId, 'application.administrator'])) {
                 throw new RuntimeException('Consumer authorization assignments were not created.');
             }
+        } else {
+            $saved = $readJson($file);
+            $administratorId = $uuid($saved['administratorSubjectId'] ?? null);
         }
 
-        $page = $console($list);
-        if (['assignments', 'next'] !== array_keys($page) || null !== $page['next']
-            || !is_array($page['assignments']) || !array_is_list($page['assignments']) || 4 !== count($page['assignments'])) {
-            throw new RuntimeException('Consumer authorization page changed.');
+        $accountPage = $console($accountList);
+        $administratorPage = $console(['app:authorization:assignments', $administratorId, '--limit=2']);
+        $expectedAccountPage = [
+            'assignments' => [
+                ['kind' => 'role', 'key' => 'task_tracking.user'],
+                ['kind' => 'permission', 'key' => 'authorizing.manage'],
+            ],
+            'next' => null,
+        ];
+        $expectedAdministratorPage = [
+            'assignments' => [['kind' => 'role', 'key' => 'application.administrator']],
+            'next' => null,
+        ];
+        if ($expectedAccountPage !== $accountPage || $expectedAdministratorPage !== $administratorPage) {
+            throw new RuntimeException('Consumer authorization assignment output changed.');
         }
-        $ids = [];
-        foreach ($changes as $source => $change) {
-            $row = $page['assignments'][$source];
-            $id = is_array($row) ? ($row['id'] ?? null) : null;
-            if (!is_string($id) || !Uuid::isValid($id) || Uuid::fromString($id)->toRfc4122() !== $id
-                || $row !== [
-                    'id' => $id,
-                    'source' => $source,
-                    'kind' => $change['kind'],
-                    'key' => $change['key'],
-                    'scope' => $change['scope'],
-                    'resourceType' => $change['resourceType'] ?? null,
-                    'resourceId' => $change['resourceId'] ?? null,
-                ]) {
-                throw new RuntimeException('Consumer authorization assignment changed.');
+        $storedAssignments = [
+            'accountRoles' => $connection->fetchFirstColumn('SELECT role_key FROM public.authorizing_role_assignment WHERE subject_id = CAST(? AS uuid) ORDER BY role_key', [$accountId]),
+            'accountPermissions' => $connection->fetchFirstColumn('SELECT permission_key FROM public.authorizing_permission_grant WHERE subject_id = CAST(? AS uuid) ORDER BY permission_key', [$accountId]),
+            'administratorRoles' => $connection->fetchFirstColumn('SELECT role_key FROM public.authorizing_role_assignment WHERE subject_id = CAST(? AS uuid) ORDER BY role_key', [$administratorId]),
+            'administratorPermissions' => $connection->fetchFirstColumn('SELECT permission_key FROM public.authorizing_permission_grant WHERE subject_id = CAST(? AS uuid) ORDER BY permission_key', [$administratorId]),
+        ];
+        if ([
+            'accountRoles' => ['task_tracking.user'],
+            'accountPermissions' => ['authorizing.manage'],
+            'administratorRoles' => ['application.administrator'],
+            'administratorPermissions' => [],
+        ] !== $storedAssignments) {
+            throw new RuntimeException('Consumer authorization assignment persistence changed.');
+        }
+
+        $checks = [
+            ['subjectId' => $accountId, 'permission' => 'task_tracking.task.create'],
+            ['subjectId' => $accountId, 'permission' => 'task_tracking.task.view'],
+            ['subjectId' => $accountId, 'permission' => 'task_tracking.task.complete'],
+            ['subjectId' => $accountId, 'permission' => 'authorizing.manage'],
+            ['subjectId' => $accountId, 'permission' => 'authorizing.catalogue.manage'],
+            ['subjectId' => $administratorId, 'permission' => 'task_tracking.task.create'],
+            ['subjectId' => $administratorId, 'permission' => 'task_tracking.task.view'],
+            ['subjectId' => $administratorId, 'permission' => 'task_tracking.task.complete'],
+            ['subjectId' => $administratorId, 'permission' => 'authorizing.manage'],
+            ['subjectId' => $administratorId, 'permission' => 'authorizing.catalogue.manage'],
+            ['subjectId' => $administratorId, 'permission' => 'retired.permission'],
+        ];
+        $decisions = $console(['app:authorization:check-batch'], $checks);
+        $expectedDecisions = ['decisions' => array_map(static fn (bool $allowed): array => ['allowed' => $allowed], [true, true, true, true, false, true, true, true, true, true, false])];
+        if ($expectedDecisions !== $decisions) {
+            throw new RuntimeException('Consumer authorization decisions changed.');
+        }
+
+        $marker = [
+            'administratorSubjectId' => $administratorId,
+            'subjectAssignments' => $accountPage,
+            'administratorAssignments' => $administratorPage,
+            'decisions' => $decisions,
+        ];
+        if ('create' === $mode) {
+            if (['requested' => 2, 'added' => 0, 'removed' => 0, 'unchanged' => 2] !== $console(['app:authorization:change-batch', $accountId], $accountChanges)
+                || ['requested' => 1, 'added' => 0, 'removed' => 0, 'unchanged' => 1] !== $console(['app:authorization:role:assign', $administratorId, 'application.administrator'])
+                || $accountPage !== $console($accountList)
+                || $administratorPage !== $console(['app:authorization:assignments', $administratorId, '--limit=2'])) {
+                throw new RuntimeException('Consumer authorization assignment replay was not idempotent.');
             }
-            $ids[] = $id;
-        }
-        if (4 !== count(array_unique($ids))) {
-            throw new RuntimeException('Consumer assignment UUIDs are not distinct.');
-        }
-
-        if ('create' === $argv[1]) {
-            // Exclusive creation plus umask keeps the safe page owner-private.
-            $json = json_encode($page, JSON_THROW_ON_ERROR);
+            $json = json_encode($marker, JSON_THROW_ON_ERROR);
             $stream = @fopen($file, 'x');
             if (false === $stream) {
                 throw new RuntimeException('Consumer authorization marker creation failed.');
@@ -144,56 +204,14 @@ try {
             } finally {
                 fclose($stream);
             }
-            // Reapplying the same grants must reuse all four original identities.
-            if (['requested' => 4, 'added' => 0, 'removed' => 0, 'unchanged' => 4] !== $console(['app:authorization:change-batch', $accountId], $changes)
-                || $page !== $console($list)) {
-                throw new RuntimeException('Consumer authorization grant identities were not reused.');
-            }
         }
-        if (is_link($file) || 0600 !== (fileperms($file) & 0777) || $page !== $readJson($file)) {
-            throw new RuntimeException('Consumer authorization marker permissions or saved rows changed.');
-        }
-
-        $wrongResource = [...$resource, 'resourceId' => Uuid::v4()->toRfc4122()];
-        if ($wrongResource['resourceId'] === $taskId) {
-            throw new RuntimeException('Consumer wrong-resource UUID collided.');
-        }
-        $checks = [
-            ['accountId' => $accountId, 'permission' => 'task_tracking.task.create', 'scope' => 'global'],
-            ['accountId' => $accountId, 'permission' => 'task_tracking.task.view', 'scope' => 'global'],
-            ['accountId' => $accountId, 'permission' => 'task_tracking.task.view', ...$resource],
-            ['accountId' => $accountId, 'permission' => 'task_tracking.task.complete', ...$resource],
-            // Global reader allows other tasks' view, but scoped completion does not.
-            ['accountId' => $accountId, 'permission' => 'task_tracking.task.view', ...$wrongResource],
-            ['accountId' => $accountId, 'permission' => 'task_tracking.task.complete', ...$wrongResource],
-            ['accountId' => $accountId, 'permission' => 'task_tracking.task.complete', 'scope' => 'global'],
-            ['accountId' => $accountId, 'permission' => 'task_tracking.task.unknown', ...$resource],
-        ];
-        $expected = ['decisions' => array_map(static fn (bool $allowed): array => ['allowed' => $allowed], [true, true, true, true, true, false, false, false])];
-        if ($expected !== $console(['app:authorization:check-batch'], $checks)) {
-            throw new RuntimeException('Consumer authorization decisions changed.');
-        }
-        $anonymous = Browser::create(base: 'http://localhost:8080');
-        $anonymous->request('GET', '/_demo/tasks/'.$taskId);
-        if (401 !== $anonymous->getResponse()->getStatusCode()
-            || ['error' => 'Access denied.'] !== json_decode((string) $anonymous->getResponse()->getContent(), true, flags: JSON_THROW_ON_ERROR)) {
-            throw new RuntimeException('Consumer anonymous task access was not denied.');
-        }
-        $session = $readJson('/app/var/consumer-authenticating.json')['session'] ?? null;
-        if (!is_string($session) || '' === $session || strlen($session) > 256) {
-            throw new RuntimeException('Consumer native session unavailable.');
-        }
-        $browser = Browser::create($session, 'http://localhost:8080');
-        $browser->request('GET', '/_demo/tasks/'.$taskId);
-        if (200 !== $browser->getResponse()->getStatusCode()
-            || ['id' => $taskId, 'title' => 'consumer-setup-marker'] !== json_decode((string) $browser->getResponse()->getContent(), true, flags: JSON_THROW_ON_ERROR)
-            || !str_contains(Browser::header($browser, 'Cache-Control'), 'no-store')) {
-            throw new RuntimeException('Consumer native session did not receive its live task permission.');
+        if (is_link($file) || 0600 !== (fileperms($file) & 0777) || $marker !== $readJson($file)) {
+            throw new RuntimeException('Consumer authorization marker permissions or saved state changed.');
         }
     } finally {
         $kernel->shutdown();
     }
-    fwrite(STDOUT, "Verified all four consumer authorization assignment UUIDs/rows, global/scoped decisions and anonymous-denied/session-authorized Task HTTP across setup/test/recreation.\n");
+    fwrite(STDOUT, "Verified exact role snapshots, operation/kind/key batches, kind/key assignment pages, clean role/direct-grant persistence and decisions across setup/test/recreation.\n");
 } catch (Throwable) {
     // Never present process exceptions, raw console output or marker contents.
     fwrite(STDERR, "Disposable consumer authorization verification failed.\n");

@@ -1,6 +1,159 @@
-App\Module\Authorizing\Application\ChangeAccountAssignments\ChangeAccountAssignmentsCommand:
+App\Module\Authorizing\Application\DefineRole\DefineRoleCommand:
     properties:
-        accountId:
+        key:
+            - NotBlank: ~
+            - Length: { max: 64, countUnit: bytes }
+            - Regex: { pattern: '/\A[a-z0-9._-]{1,64}\z/D' }
+        label:
+            - NotBlank: ~
+            - Length: { max: 100 }
+            - Regex: { pattern: '/\A[^\x00\r\n]+\z/Du' }
+        permissions:
+            - Type: list
+            - Count: { min: 1, max: 4096 }
+            - All:
+                constraints:
+                    - NotNull: ~
+                    - Type: string
+                    - NotBlank: ~
+                    - Length: { max: 64, countUnit: bytes }
+                    - Regex: { pattern: '/\A[a-z0-9._-]{1,64}\z/D' }
+        expectedRevision:
+            - Range: { min: 1, max: 2147483646 }
+        createIfAbsent:
+            - Type: bool
+
+App\Module\Authorizing\Application\DefineRole\DefineRoleResult:
+    properties: &role_result_properties
+        key:
+            - NotBlank: ~
+            - Length: { max: 64, countUnit: bytes }
+            - Regex: { pattern: '/\A[a-z0-9._-]{1,64}\z/D' }
+        label:
+            - NotBlank: ~
+            - Length: { max: 100 }
+        revision:
+            - Range: { min: 1 }
+        retiredAt:
+            - Type: DateTimeImmutable
+        permissions:
+            - Type: list
+            - Count: { min: 1, max: 4096 }
+            - All:
+                constraints:
+                    - NotNull: ~
+                    - Type: string
+
+App\Module\Authorizing\Application\RetireRole\RetireRoleCommand:
+    properties:
+        key:
+            - NotBlank: ~
+            - Length: { max: 64, countUnit: bytes }
+            - Regex: { pattern: '/\A[a-z0-9._-]{1,64}\z/D' }
+        expectedRevision:
+            - Range: { min: 1, max: 2147483646 }
+
+App\Module\Authorizing\Application\RetireRole\RetireRoleResult:
+    properties:
+        key:
+            - NotBlank: ~
+            - Length: { max: 64, countUnit: bytes }
+            - Regex: { pattern: '/\A[a-z0-9._-]{1,64}\z/D' }
+        revision:
+            - Range: { min: 2 }
+        retiredAt:
+            - NotNull: ~
+            - Type: DateTimeImmutable
+
+App\Module\Authorizing\Application\GetRole\GetRoleQuery:
+    properties:
+        key:
+            - NotBlank: ~
+            - Length: { max: 64, countUnit: bytes }
+            - Regex: { pattern: '/\A[a-z0-9._-]{1,64}\z/D' }
+
+App\Module\Authorizing\Application\GetRole\GetRoleResult:
+    properties: *role_result_properties
+
+App\Module\Authorizing\Application\ListRoles\ListRolesQuery:
+    properties:
+        limit:
+            - Range: { min: 1, max: 100 }
+        afterRoleKey:
+            - Type: string
+            - Length: { min: 1, max: 64, countUnit: bytes }
+            - Regex: { pattern: '/\A[a-z0-9._-]{1,64}\z/D' }
+
+App\Module\Authorizing\Application\ListRoles\RoleListItemResult:
+    properties: *role_result_properties
+
+App\Module\Authorizing\Application\ListRoles\ListRolesResult:
+    properties:
+        roles:
+            - Type: list
+            - Count: { max: 100 }
+            - All:
+                constraints:
+                    - NotNull: ~
+                    - Type: App\Module\Authorizing\Application\ListRoles\RoleListItemResult
+            - Valid: ~
+        nextAfterRoleKey:
+            - Type: string
+            - Length: { min: 1, max: 64, countUnit: bytes }
+            - Regex: { pattern: '/\A[a-z0-9._-]{1,64}\z/D' }
+
+App\Module\Authorizing\Application\ListAuthorizationCapabilities\ListAuthorizationCapabilitiesQuery:
+    properties:
+        limit:
+            - Range: { min: 1, max: 100 }
+        afterKey:
+            - Type: string
+            - Length: { min: 1, max: 64, countUnit: bytes }
+            - Regex: { pattern: '/\A[a-z0-9._-]{1,64}\z/D' }
+
+App\Module\Authorizing\Application\ListAuthorizationCapabilities\AuthorizationCapabilityResult:
+    properties:
+        module:
+            - NotBlank: ~
+            - Length: { max: 64, countUnit: bytes }
+            - Regex: { pattern: '/\A[a-z0-9_]{1,64}\z/D' }
+        key:
+            - NotBlank: ~
+            - Length: { max: 64, countUnit: bytes }
+            - Regex: { pattern: '/\A[a-z0-9._-]{1,64}\z/D' }
+        label:
+            - NotBlank: ~
+            - Length: { max: 100 }
+        access:
+            - Choice: { choices: [read, write] }
+        operations:
+            - Type: list
+            - Count: { min: 1, max: 64 }
+            - All:
+                constraints:
+                    - NotNull: ~
+                    - Type: string
+                    - NotBlank: ~
+                    - Length: { max: 100, countUnit: bytes }
+
+App\Module\Authorizing\Application\ListAuthorizationCapabilities\ListAuthorizationCapabilitiesResult:
+    properties:
+        capabilities:
+            - Type: list
+            - Count: { max: 100 }
+            - All:
+                constraints:
+                    - NotNull: ~
+                    - Type: App\Module\Authorizing\Application\ListAuthorizationCapabilities\AuthorizationCapabilityResult
+            - Valid: ~
+        nextAfterKey:
+            - Type: string
+            - Length: { min: 1, max: 64, countUnit: bytes }
+            - Regex: { pattern: '/\A[a-z0-9._-]{1,64}\z/D' }
+
+App\Module\Authorizing\Application\ChangeSubjectAssignments\ChangeSubjectAssignmentsCommand:
+    properties:
+        subjectId:
             - NotNull: ~
             - Type: Symfony\Component\Uid\Uuid
         changes:
@@ -9,10 +162,10 @@ App\Module\Authorizing\Application\ChangeAccountAssignments\ChangeAccountAssignm
             - All:
                 constraints:
                     - NotNull: ~
-                    - Type: App\Module\Authorizing\Application\ChangeAccountAssignments\AssignmentChangeInput
+                    - Type: App\Module\Authorizing\Application\ChangeSubjectAssignments\AssignmentChangeInput
             - Valid: ~
 
-App\Module\Authorizing\Application\ChangeAccountAssignments\AssignmentChangeInput:
+App\Module\Authorizing\Application\ChangeSubjectAssignments\AssignmentChangeInput:
     properties:
         operation:
             - Choice: { choices: [add, remove] }
@@ -22,16 +175,8 @@ App\Module\Authorizing\Application\ChangeAccountAssignments\AssignmentChangeInpu
             - NotBlank: ~
             - Length: { max: 64, countUnit: bytes }
             - Regex: { pattern: '/\A[a-z0-9._-]{1,64}\z/D' }
-        scope:
-            - Choice: { choices: [global, resource] }
-        resourceType:
-            - Type: string
-            - Length: { min: 1, max: 64, countUnit: bytes }
-            - Regex: { pattern: '/\A[a-z0-9._-]{1,64}\z/D' }
-        resourceId:
-            - Type: Symfony\Component\Uid\Uuid
 
-App\Module\Authorizing\Application\ChangeAccountAssignments\ChangeAccountAssignmentsResult:
+App\Module\Authorizing\Application\ChangeSubjectAssignments\ChangeSubjectAssignmentsResult:
     properties:
         requested:
             - Range: { min: 1, max: 100 }
@@ -42,7 +187,7 @@ App\Module\Authorizing\Application\ChangeAccountAssignments\ChangeAccountAssignm
         unchanged:
             - Range: { min: 0, max: 100 }
 
-App\Module\Authorizing\Application\EvaluatePermissions\EvaluatePermissionsQuery:
+App\Module\Authorizing\Application\EvaluateSubjectEntitlements\EvaluateSubjectEntitlementsQuery:
     properties:
         checks:
             - Type: list
@@ -50,28 +195,20 @@ App\Module\Authorizing\Application\EvaluatePermissions\EvaluatePermissionsQuery:
             - All:
                 constraints:
                     - NotNull: ~
-                    - Type: App\Module\Authorizing\Application\EvaluatePermissions\PermissionCheckInput
+                    - Type: App\Module\Authorizing\Application\EvaluateSubjectEntitlements\EntitlementCheckInput
             - Valid: ~
 
-App\Module\Authorizing\Application\EvaluatePermissions\PermissionCheckInput:
+App\Module\Authorizing\Application\EvaluateSubjectEntitlements\EntitlementCheckInput:
     properties:
-        accountId:
+        subjectId:
             - NotNull: ~
             - Type: Symfony\Component\Uid\Uuid
         permission:
             - NotBlank: ~
             - Length: { max: 64, countUnit: bytes }
             - Regex: { pattern: '/\A[a-z0-9._-]{1,64}\z/D' }
-        scope:
-            - Choice: { choices: [global, resource] }
-        resourceType:
-            - Type: string
-            - Length: { min: 1, max: 64, countUnit: bytes }
-            - Regex: { pattern: '/\A[a-z0-9._-]{1,64}\z/D' }
-        resourceId:
-            - Type: Symfony\Component\Uid\Uuid
 
-App\Module\Authorizing\Application\EvaluatePermissions\EvaluatePermissionsResult:
+App\Module\Authorizing\Application\EvaluateSubjectEntitlements\EvaluateSubjectEntitlementsResult:
     properties:
         decisions:
             - Type: list
@@ -79,37 +216,38 @@ App\Module\Authorizing\Application\EvaluatePermissions\EvaluatePermissionsResult
             - All:
                 constraints:
                     - NotNull: ~
-                    - Type: App\Module\Authorizing\Application\EvaluatePermissions\PermissionDecisionResult
+                    - Type: App\Module\Authorizing\Application\EvaluateSubjectEntitlements\EntitlementDecisionResult
             - Valid: ~
 
-App\Module\Authorizing\Application\EvaluatePermissions\PermissionDecisionResult:
+App\Module\Authorizing\Application\EvaluateSubjectEntitlements\EntitlementDecisionResult:
     properties:
         allowed:
             - Type: bool
 
-App\Module\Authorizing\Application\ListAccountAssignments\ListAccountAssignmentsQuery:
+App\Module\Authorizing\Application\ListSubjectAssignments\ListSubjectAssignmentsQuery:
     properties:
-        accountId:
+        subjectId:
             - NotNull: ~
             - Type: Symfony\Component\Uid\Uuid
         limit:
             - Range: { min: 1, max: 100 }
         after:
-            - Type: App\Module\Authorizing\Application\ListAccountAssignments\AssignmentCursorInput
+            - Type: App\Module\Authorizing\Application\ListSubjectAssignments\AssignmentCursorInput
             - Valid: ~
 
-App\Module\Authorizing\Application\ListAccountAssignments\AssignmentCursorInput:
+App\Module\Authorizing\Application\ListSubjectAssignments\AssignmentCursorInput:
     properties:
-        accountId:
+        subjectId:
             - NotNull: ~
             - Type: Symfony\Component\Uid\Uuid
-        source:
-            - Range: { min: 0, max: 3 }
-        assignmentId:
-            - NotNull: ~
-            - Type: Symfony\Component\Uid\Uuid
+        kind:
+            - Choice: { choices: [role, permission] }
+        key:
+            - NotBlank: ~
+            - Length: { max: 64, countUnit: bytes }
+            - Regex: { pattern: '/\A[a-z0-9._-]{1,64}\z/D' }
 
-App\Module\Authorizing\Application\ListAccountAssignments\ListAccountAssignmentsResult:
+App\Module\Authorizing\Application\ListSubjectAssignments\ListSubjectAssignmentsResult:
     properties:
         assignments:
             - Type: list
@@ -117,41 +255,29 @@ App\Module\Authorizing\Application\ListAccountAssignments\ListAccountAssignments
             - All:
                 constraints:
                     - NotNull: ~
-                    - Type: App\Module\Authorizing\Application\ListAccountAssignments\AccountAssignmentResult
+                    - Type: App\Module\Authorizing\Application\ListSubjectAssignments\SubjectAssignmentResult
             - Valid: ~
         next:
-            - Type: App\Module\Authorizing\Application\ListAccountAssignments\AssignmentCursorResult
+            - Type: App\Module\Authorizing\Application\ListSubjectAssignments\AssignmentCursorResult
             - Valid: ~
 
-App\Module\Authorizing\Application\ListAccountAssignments\AssignmentCursorResult:
+App\Module\Authorizing\Application\ListSubjectAssignments\AssignmentCursorResult:
     properties:
-        accountId:
+        subjectId:
             - NotNull: ~
             - Type: Symfony\Component\Uid\Uuid
-        source:
-            - Range: { min: 0, max: 3 }
-        assignmentId:
-            - NotNull: ~
-            - Type: Symfony\Component\Uid\Uuid
-
-App\Module\Authorizing\Application\ListAccountAssignments\AccountAssignmentResult:
-    properties:
-        id:
-            - NotNull: ~
-            - Type: Symfony\Component\Uid\Uuid
-        source:
-            - Range: { min: 0, max: 3 }
         kind:
             - Choice: { choices: [role, permission] }
         key:
             - NotBlank: ~
             - Length: { max: 64, countUnit: bytes }
             - Regex: { pattern: '/\A[a-z0-9._-]{1,64}\z/D' }
-        scope:
-            - Choice: { choices: [global, resource] }
-        resourceType:
-            - Type: string
-            - Length: { min: 1, max: 64, countUnit: bytes }
+
+App\Module\Authorizing\Application\ListSubjectAssignments\SubjectAssignmentResult:
+    properties:
+        kind:
+            - Choice: { choices: [role, permission] }
+        key:
+            - NotBlank: ~
+            - Length: { max: 64, countUnit: bytes }
             - Regex: { pattern: '/\A[a-z0-9._-]{1,64}\z/D' }
-        resourceId:
-            - Type: Symfony\Component\Uid\Uuid

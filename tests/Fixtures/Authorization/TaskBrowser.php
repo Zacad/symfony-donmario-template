@@ -9,7 +9,7 @@ use Doctrine\DBAL\Connection;
 use Symfony\Component\BrowserKit\HttpBrowser;
 use Symfony\Component\Uid\Uuid;
 
-/** SQL fixture setup emits no events; admission uses real grants and native HTTP login. */
+/** SQL fixture setup emits no events; admission uses real global grants and native HTTP login. */
 final class TaskBrowser
 {
     public static function login(Connection $connection, Uuid $account, ?Uuid $task = null): HttpBrowser
@@ -18,9 +18,10 @@ final class TaskBrowser
         $email = 'task-browser-'.$account->toRfc4122().'@example.test';
         $connection->executeStatement('INSERT INTO authenticating_account (id, email, password_hash) VALUES (?, ?, ?)', [$account->toRfc4122(), $email, password_hash($password, PASSWORD_BCRYPT, ['cost' => 4])]);
         if (null === $task) {
-            $connection->executeStatement('INSERT INTO authorizing_global_permission_grant (id, account_id, permission_key) VALUES (?, ?, ?)', [Uuid::v7()->toRfc4122(), $account->toRfc4122(), 'task_tracking.task.create']);
+            $connection->executeStatement('INSERT INTO authorizing_permission_grant (subject_id, permission_key) VALUES (?, ?)', [$account->toRfc4122(), 'task_tracking.task.create']);
         } else {
-            $connection->executeStatement('INSERT INTO authorizing_resource_permission_grant (id, account_id, permission_key, resource_type, resource_id) VALUES (?, ?, ?, ?, ?)', [Uuid::v7()->toRfc4122(), $account->toRfc4122(), 'task_tracking.task.view', 'task_tracking.task', $task->toRfc4122()]);
+            $connection->executeStatement('UPDATE task_tracking_task SET owner_account_id = ? WHERE id = ?', [$account->toRfc4122(), $task->toRfc4122()]);
+            $connection->executeStatement('INSERT INTO authorizing_permission_grant (subject_id, permission_key) VALUES (?, ?)', [$account->toRfc4122(), 'task_tracking.task.view']);
         }
         $browser = Browser::create();
         Browser::login($browser, $email, $password);
@@ -37,8 +38,8 @@ final class TaskBrowser
 
     public static function cleanup(Connection $connection, Uuid $account): void
     {
-        foreach (['authorizing_global_permission_grant', 'authorizing_resource_permission_grant'] as $table) {
-            $connection->executeStatement('DELETE FROM '.$table.' WHERE account_id = ?', [$account->toRfc4122()]);
+        foreach (['authorizing_permission_grant', 'authorizing_role_assignment'] as $table) {
+            $connection->executeStatement('DELETE FROM '.$table.' WHERE subject_id = ?', [$account->toRfc4122()]);
         }
         $connection->executeStatement('DELETE FROM authenticating_account WHERE id = ?', [$account->toRfc4122()]);
     }

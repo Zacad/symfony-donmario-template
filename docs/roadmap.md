@@ -1,11 +1,28 @@
 # Approval-gated delivery
 
-**Current checkpoint (2026-09-16): Task 9 is IMPLEMENTED, VERIFIED, REVIEWED and
+**Active correction (2026-09-22): the [clean Authorizing/native-voter/Task-ownership
+model](tasks/10-authorizing-rework.md) is approved, implemented, verified and freshly
+reviewed; user acceptance is pending.** The correction is fresh-template
+only and removes all compatibility schema from the unaccepted intermediate reworks. The
+rewritten `Version20260915010000` owns exactly four global role/assignment tables;
+`Version20260917010000` and `Version20260920020000` are deleted. Earlier passing runs and
+reviews remain historical regression evidence, not clean-model verification. Task 11 is
+deferred; no commit or push is authorized.
+
+**Pre-rework Task 10 (2026-09-16): IMPLEMENTED, VERIFIED, REVIEWED but NOT USER
+ACCEPTED.** The user originally approved the design with “proceed”, including revocable initial
+owner access, all-viewable lists and unowned legacy/operator tasks. Setup/check/E2E/
+consumer passed: check **1467 / 8917**, E2E **252 / 7346**, consumer **252 / 7350**,
+all **53 E2E phases**. Both fresh independent implementation reviewers approved with
+no findings. See [Task 10](tasks/10-task-tracking.md). Its authorization design is now
+superseded by the approved rework; these results are the regression baseline only.
+
+**Latest accepted checkpoint (2026-09-16): Task 9 is IMPLEMENTED, VERIFIED, REVIEWED and
 USER ACCEPTED, including the `ActorKind` correction.** Following the full
 policy-only enforcement design, the user said “accept and proceed”; main recorded
 8b acceptance and Task 9 implementation approval. Following the additional fresh
 design/implementation review, the user accepted Task 9 and deferred Task 10 to a
-fresh session. Task 10 starts with discovery/design; implementation approval is pending.
+fresh session. That Task 10 discovery/approval gate is now complete as recorded above.
 Setup/check/E2E/consumer passed, including the `ActorKind` enum correction and its
 fresh independent approval with no findings. Check **1360 / 7959**, E2E **230 / 6306**,
 consumer **230 / 6310**. See
@@ -59,9 +76,10 @@ Split a subtask further if discovery reveals that its scope is too broad.
 | 6 | [Authenticating: web](tasks/06-web-authentication.md) (including correction: verified, reviewed and user accepted 2026-09-13) | Hidden CLI/stdin provisioning, registration-owned password-policy validation/hashing, native login/refresh and POST/CSRF logout, hash-only CAS upgrade commands, sessions/throttling, outage/recovery and consumer isolation |
 | 7 | [Authenticating: JWT](tasks/07-jwt-authentication.md) (implemented, verified, reviewed and user accepted 2026-09-14) | Native JSON issuance, QueryBus-backed API Platform identity, stateless isolation, exact JWT lifecycle, key setup/rotation/recovery and negative cases |
 | 8a | [Application DTO collections](tasks/08-authorizing.md) (implemented, verified, reviewed and user accepted 2026-09-15) | Typed CQRS/Input lists, native metadata audit, input rejection before transaction work and invalid-result rollback before commit, including caught nested failures |
-| 8b | [Authorizing: model/management](tasks/08-authorizing.md) (implemented, verified, reviewed and user accepted 2026-09-15) | Global/resource-scoped roles and direct grants, atomic batch management, bounded permission decisions and keyset listing through trusted operator CLI; final verification and both fresh reviews passed |
+| 8b | [Authorizing: model/management](tasks/08-authorizing.md) (implemented, verified, reviewed and user accepted 2026-09-15; historical model superseded) | Historical global/resource-scoped roles and grants; retained as accepted provenance, not current schema/API guidance |
 | 9 | [Policy-only authorization enforcement](tasks/09-authorization-enforcement.md) (implemented, verified, reviewed and user accepted 2026-09-16, including enum correction) | Co-located private policies, trusted immutable context, explicit operator/authentication scopes, allowed/denied buses, live revocation and caught-nested rollback |
-| 10 | TaskTracking use cases/CLI (next fresh session: discovery/design; implementation not yet approved) | Create/list/complete, ownership and invariants |
+| 10 | [TaskTracking use cases/CLI](tasks/10-task-tracking.md) (verified baseline, not accepted; rework below takes precedence) | Atomic revocable initial owner access, all-viewable bounded lists, idempotent locked completion, CLI and consumer persistence |
+| 10 correction | [Clean global Authorizing/native voters/Task ownership](tasks/10-authorizing-rework.md) (approved, implemented, verified and reviewed 2026-09-22; user acceptance pending) | Mandatory explicit restricted/public authorization, four-table global coarse permissions and cross-module roles, natural-key assignments, rich role lifecycle, Task-owned ownership enforcement and owner-filtered pagination |
 | 11 | TaskTracking events | Completion activity through CQRS in both delivery modes |
 | 12 | TaskTracking Twig | Real browser workflows with allowed/denied users |
 | 13 | API Platform business adapters | JWT API workflows, validation, isolation and pagination |
@@ -153,12 +171,10 @@ consumer run cover the final code after compiler-only return-guard tightening;
 standalone E2E preceded that change, with runtime unchanged. See the
 [task record](tasks/08-authorizing.md) and
 [handoff evidence](handoff.md#completed-8a-verification-and-review--2026-09-14).
-8a was pushed as `367fdfe` on 2026-09-15. 8b now implements all four mapped assignment/
-grant tables, the Domain catalogue, three batch-capable bus APIs, Authenticating's
-owning account-existence query and eight operator console commands. This supplies
-trusted shell administration. Task 9 adds policy-only actor enforcement to existing
-use cases, with no new HTTP/API management routes. Setup applied
-`Version20260915010000`; dependencies/locks are unchanged.
+8a was pushed as `367fdfe` on 2026-09-15. Historical 8b introduced four resource/global
+assignment/grant tables and account-named APIs; historical Task 9 added policy-only actor
+enforcement. Their records remain accepted provenance, but their authorization operating
+design and schema are superseded by the active clean native-voter/runtime-role model.
 
 **8b final verification and review are complete:** setup/check/E2E/consumer passed,
 including actual N=100 SQL budgets and populated query plans. Final runs cover the
@@ -168,9 +184,11 @@ changed between 8b review and acceptance. See [final handoff evidence](handoff.m
 and the task 8 record. **8b is user accepted.** Task 9's subsequent full design is
 approved, implemented, verified and independently reviewed; user acceptance followed
 on 2026-09-16, including the enum correction and additional fresh design review.
-PolicyContext foundation rules provide no general internal bypass; own-state read
-ports do not form an arbitrary SQL sandbox. Automatic Task grants, list filtering and
-durable service identities remain separate future designs.
+The clean cutover keeps the credential-free native authorization token and business-local
+voters while replacing intermediate compatibility schema with the four natural-key tables.
+Task Create performs no automatic authorization grant; immutable owner context is enforced
+by Task's voter after global entitlement checks. Durable service identities remain a
+separate design. Clean-model verification and fresh review are complete; user acceptance is pending.
 
 **Subtask 6 final post-correction evidence:** `./bin/dev setup` passed with dependencies/migration
 unchanged and app/database healthy. `./bin/dev check` passed **610 tests / 3942 assertions**,

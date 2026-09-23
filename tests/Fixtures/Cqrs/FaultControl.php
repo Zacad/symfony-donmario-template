@@ -13,4 +13,6 @@ final class FaultControl
     public ?\Closure $afterAdd = null;
     /** @var (\Closure(?Task): void)|null */
     public ?\Closure $afterFind = null;
+    /** @var (\Closure(?Task): void)|null */
+    public ?\Closure $afterFindForCompletion = null;
 }

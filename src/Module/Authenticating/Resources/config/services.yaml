@@ -18,6 +18,7 @@ services:
             - '../../Application/*/*Event.php'
             - '../../Domain/'
             - '../../Infrastructure/Event/'
+            - '../../Infrastructure/Framework/Symfony/Security/AuthenticatingVoter.php'
             - '../../Infrastructure/Framework/Symfony/Security/AccountPrincipal.php'
             - '../../UI/Api/AccountIdentityResource.php'
             - '../../Resources/'
@@ -27,6 +28,15 @@ services:
 
     App\Module\Authenticating\Domain\PasswordHasher:
         alias: App\Module\Authenticating\Infrastructure\Framework\Symfony\Security\SymfonyPasswordHasher
+
+    App\Module\Authenticating\Infrastructure\Framework\Symfony\Security\AuthenticatingVoter:
+        autowire: true
+        autoconfigure: false
+        lazy: true
+        arguments:
+            $permissions: []
+        tags:
+            - app.authorization.voter
 
     App\Module\Authenticating\UI\Api\AuthenticationOpenApiFactory:
         decorates: api_platform.openapi.factory

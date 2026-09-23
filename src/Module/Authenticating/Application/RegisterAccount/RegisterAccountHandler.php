@@ -9,12 +9,13 @@ use App\Module\Authenticating\Domain\AccountRepository;
 use App\Module\Authenticating\Domain\EmailAddress;
 use App\Module\Authenticating\Domain\PasswordHasher;
 use App\Module\Authenticating\Domain\PasswordPolicy;
-use App\Platform\Authorization\AuthorizeWith;
+use App\Module\Authenticating\Infrastructure\Framework\Symfony\Security\AuthenticatingVoter;
+use App\Platform\Authorization\Authorize;
 use Symfony\Component\Messenger\Attribute\AsMessageHandler;
 use Symfony\Component\Uid\Uuid;
 
 #[AsMessageHandler(bus: 'command.bus')]
-#[AuthorizeWith(RegisterAccountPolicy::class)]
+#[Authorize(AuthenticatingVoter::class)]
 final readonly class RegisterAccountHandler
 {
     public function __construct(private AccountRepository $accounts, private PasswordHasher $passwordHasher)

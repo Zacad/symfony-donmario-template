@@ -4,14 +4,16 @@ declare(strict_types=1);
 
 namespace App\Module\Authorizing\UI\Console;
 
-use App\Module\Authorizing\Application\ChangeAccountAssignments\AssignmentChangeInput;
-use App\Module\Authorizing\Application\ChangeAccountAssignments\ChangeAccountAssignmentsCommand;
-use App\Module\Authorizing\Application\ChangeAccountAssignments\ChangeAccountAssignmentsResult;
-use App\Module\Authorizing\Application\EvaluatePermissions\EvaluatePermissionsQuery;
-use App\Module\Authorizing\Application\EvaluatePermissions\EvaluatePermissionsResult;
-use App\Module\Authorizing\Application\EvaluatePermissions\PermissionCheckInput;
-use App\Module\Authorizing\Application\ListAccountAssignments\ListAccountAssignmentsQuery;
-use App\Module\Authorizing\Application\ListAccountAssignments\ListAccountAssignmentsResult;
+use App\Module\Authorizing\Application\ChangeSubjectAssignments\AssignmentChangeInput;
+use App\Module\Authorizing\Application\ChangeSubjectAssignments\ChangeSubjectAssignmentsCommand;
+use App\Module\Authorizing\Application\ChangeSubjectAssignments\ChangeSubjectAssignmentsResult;
+use App\Module\Authorizing\Application\DefineRole\DefineRoleCommand;
+use App\Module\Authorizing\Application\DefineRole\DefineRoleResult;
+use App\Module\Authorizing\Application\EvaluateSubjectEntitlements\EntitlementCheckInput;
+use App\Module\Authorizing\Application\EvaluateSubjectEntitlements\EvaluateSubjectEntitlementsQuery;
+use App\Module\Authorizing\Application\EvaluateSubjectEntitlements\EvaluateSubjectEntitlementsResult;
+use App\Module\Authorizing\Application\ListSubjectAssignments\ListSubjectAssignmentsQuery;
+use App\Module\Authorizing\Application\ListSubjectAssignments\ListSubjectAssignmentsResult;
 use App\Platform\Authorization\OperatorExecution;
 use App\Platform\Messaging\CommandBus;
 use App\Platform\Messaging\QueryBus;
@@ -48,38 +50,33 @@ final readonly class AuthorizationConsole
     /** @return array<string, int> */
     public function change(InputInterface $input, string $operation, string $kind, string $argument): array
     {
-        [$scope, $type, $id] = $this->transport->scope($input);
-
-        return $this->dispatchChanges($this->transport->uuid($input->getArgument('account')), [
-            new AssignmentChangeInput($operation, $kind, $this->transport->text($input->getArgument($argument)), $scope, $type, $id),
+        return $this->dispatchChanges($this->transport->uuid($input->getArgument('subject')), [
+            new AssignmentChangeInput($operation, $kind, $this->transport->text($input->getArgument($argument))),
         ]);
     }
 
     /** @return array<string, int> */
     public function changeBatch(InputInterface $input): array
     {
-        $accountId = $this->transport->uuid($input->getArgument('account'));
+        $subjectId = $this->transport->uuid($input->getArgument('subject'));
         $changes = [];
         foreach ($this->transport->batch($input) as $item) {
-            $fields = $this->transport->fields($item, ['operation', 'kind', 'key', 'scope'], ['resourceType', 'resourceId']);
-            [$scope, $type, $id] = $this->transport->batchScope($fields);
+            $fields = $this->transport->fields($item, ['operation', 'kind', 'key']);
             $changes[] = new AssignmentChangeInput(
                 $this->transport->text($fields['operation']),
                 $this->transport->text($fields['kind']),
                 $this->transport->text($fields['key']),
-                $scope, $type, $id,
             );
         }
 
-        return $this->dispatchChanges($accountId, $changes);
+        return $this->dispatchChanges($subjectId, $changes);
     }
 
     /** @return array{allowed: bool} */
     public function check(InputInterface $input): array
     {
-        [$scope, $type, $id] = $this->transport->scope($input);
         $decisions = $this->evaluate([
-            new PermissionCheckInput($this->transport->uuid($input->getArgument('account')), $this->transport->text($input->getArgument('permission')), $scope, $type, $id),
+            new EntitlementCheckInput($this->transport->uuid($input->getArgument('subject')), $this->transport->text($input->getArgument('permission'))),
         ]);
 
         return $decisions[0];
@@ -90,9 +87,8 @@ final readonly class AuthorizationConsole
     {
         $checks = [];
         foreach ($this->transport->batch($input) as $item) {
-            $fields = $this->transport->fields($item, ['accountId', 'permission', 'scope'], ['resourceType', 'resourceId']);
-            [$scope, $type, $id] = $this->transport->batchScope($fields);
-            $checks[] = new PermissionCheckInput($this->transport->uuid($fields['accountId']), $this->transport->text($fields['permission']), $scope, $type, $id);
+            $fields = $this->transport->fields($item, ['subjectId', 'permission']);
+            $checks[] = new EntitlementCheckInput($this->transport->uuid($fields['subjectId']), $this->transport->text($fields['permission']));
         }
 
         return ['decisions' => $this->evaluate($checks)];
@@ -101,33 +97,29 @@ final readonly class AuthorizationConsole
     /** @return array<string, mixed> */
     public function assignments(InputInterface $input): array
     {
-        $message = new ListAccountAssignmentsQuery(
-            $this->transport->uuid($input->getArgument('account')),
+        $message = new ListSubjectAssignmentsQuery(
+            $this->transport->uuid($input->getArgument('subject')),
             $this->transport->limit($input->getOption('limit')),
             $this->transport->cursor($input->getOption('after')),
         );
         $result = $this->operator->run('assignments', fn (): mixed => $this->queries->ask($message));
-        if (!$result instanceof ListAccountAssignmentsResult) {
+        if (!$result instanceof ListSubjectAssignmentsResult) {
             throw new \LogicException('Unexpected authorization result.');
         }
         $assignments = [];
         foreach ($result->assignments as $assignment) {
             $assignments[] = [
-                'id' => $assignment->id->toRfc4122(),
-                'source' => $assignment->source,
                 'kind' => $assignment->kind,
                 'key' => $assignment->key,
-                'scope' => $assignment->scope,
-                'resourceType' => $assignment->resourceType,
-                'resourceId' => $assignment->resourceId?->toRfc4122(),
             ];
         }
         $next = null;
         if (null !== $result->next) {
             $json = json_encode([
-                'accountId' => $result->next->accountId->toRfc4122(),
-                'source' => $result->next->source,
-                'assignmentId' => $result->next->assignmentId->toRfc4122(),
+                'v' => 1,
+                'subjectId' => $result->next->subjectId->toRfc4122(),
+                'kind' => $result->next->kind,
+                'key' => $result->next->key,
             ], JSON_THROW_ON_ERROR);
             $next = rtrim(strtr(base64_encode($json), '+/', '-_'), '=');
         }
@@ -135,16 +127,52 @@ final readonly class AuthorizationConsole
         return ['assignments' => $assignments, 'next' => $next];
     }
 
+    /** @return array<string, mixed> */
+    public function defineRole(InputInterface $input): array
+    {
+        $permissions = $input->getArgument('permissions');
+        if (!is_array($permissions) || !array_is_list($permissions)) {
+            throw new \DomainException('Invalid authorization input.');
+        }
+        $permissionKeys = [];
+        foreach ($permissions as $permission) {
+            $permissionKeys[] = $this->transport->text($permission);
+        }
+        $label = $input->getArgument('label');
+        if (!is_string($label) || strlen($label) > 400) {
+            throw new \DomainException('Invalid authorization input.');
+        }
+        $message = new DefineRoleCommand(
+            $this->transport->text($input->getArgument('key')),
+            $label,
+            $permissionKeys,
+            $this->revision($input->getOption('expected-revision')),
+            true === $input->getOption('if-absent'),
+        );
+        $result = $this->operator->run('catalogue', fn (): mixed => $this->commands->dispatch($message));
+        if (!$result instanceof DefineRoleResult) {
+            throw new \LogicException('Unexpected authorization result.');
+        }
+
+        return [
+            'key' => $result->key,
+            'label' => $result->label,
+            'revision' => $result->revision,
+            'retiredAt' => $result->retiredAt?->format(\DateTimeInterface::ATOM),
+            'permissions' => $result->permissions,
+        ];
+    }
+
     /**
      * @param list<AssignmentChangeInput> $changes
      *
      * @return array<string, int>
      */
-    private function dispatchChanges(Uuid $accountId, array $changes): array
+    private function dispatchChanges(Uuid $subjectId, array $changes): array
     {
-        $message = new ChangeAccountAssignmentsCommand($accountId, $changes);
+        $message = new ChangeSubjectAssignmentsCommand($subjectId, $changes);
         $result = $this->operator->run('assignments', fn (): mixed => $this->commands->dispatch($message));
-        if (!$result instanceof ChangeAccountAssignmentsResult) {
+        if (!$result instanceof ChangeSubjectAssignmentsResult) {
             throw new \LogicException('Unexpected authorization result.');
         }
 
@@ -152,15 +180,15 @@ final readonly class AuthorizationConsole
     }
 
     /**
-     * @param list<PermissionCheckInput> $checks
+     * @param list<EntitlementCheckInput> $checks
      *
      * @return non-empty-list<array{allowed: bool}>
      */
     private function evaluate(array $checks): array
     {
-        $message = new EvaluatePermissionsQuery($checks);
+        $message = new EvaluateSubjectEntitlementsQuery($checks);
         $result = $this->operator->run('assignments', fn (): mixed => $this->queries->ask($message));
-        if (!$result instanceof EvaluatePermissionsResult || count($result->decisions) !== count($checks) || [] === $result->decisions) {
+        if (!$result instanceof EvaluateSubjectEntitlementsResult || count($result->decisions) !== count($checks) || [] === $result->decisions) {
             throw new \LogicException('Unexpected authorization result.');
         }
         $decisions = [];
@@ -169,5 +197,17 @@ final readonly class AuthorizationConsole
         }
 
         return $decisions;
+    }
+
+    private function revision(mixed $value): ?int
+    {
+        if (null === $value) {
+            return null;
+        }
+        if (!is_string($value) || 1 !== preg_match('/\A[1-9][0-9]{0,9}\z/', $value)) {
+            throw new \DomainException('Invalid authorization input.');
+        }
+
+        return (int) $value;
     }
 }

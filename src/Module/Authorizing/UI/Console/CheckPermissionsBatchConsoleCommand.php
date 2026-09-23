@@ -19,7 +19,7 @@ final class CheckPermissionsBatchConsoleCommand extends Command
 
     protected function configure(): void
     {
-        $this->setHelp('Each item requires accountId, permission and scope; resource scope also requires resourceType and resourceId. Decisions retain input order.');
+        $this->setHelp('Each item requires subjectId and permission. Decisions retain input order.');
     }
 
     protected function execute(InputInterface $input, OutputInterface $output): int

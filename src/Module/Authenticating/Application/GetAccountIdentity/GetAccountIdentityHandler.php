@@ -5,11 +5,12 @@ declare(strict_types=1);
 namespace App\Module\Authenticating\Application\GetAccountIdentity;
 
 use App\Module\Authenticating\Domain\AccountRepository;
-use App\Platform\Authorization\AuthorizeWith;
+use App\Module\Authenticating\Infrastructure\Framework\Symfony\Security\AuthenticatingVoter;
+use App\Platform\Authorization\Authorize;
 use Symfony\Component\Messenger\Attribute\AsMessageHandler;
 
 #[AsMessageHandler(bus: 'query.bus')]
-#[AuthorizeWith(GetAccountIdentityPolicy::class)]
+#[Authorize(AuthenticatingVoter::class)]
 final readonly class GetAccountIdentityHandler
 {
     public function __construct(private AccountRepository $accounts)

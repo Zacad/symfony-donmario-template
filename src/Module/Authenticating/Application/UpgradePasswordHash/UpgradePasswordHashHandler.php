@@ -6,11 +6,12 @@ namespace App\Module\Authenticating\Application\UpgradePasswordHash;
 
 use App\Module\Authenticating\Domain\AccountRepository;
 use App\Module\Authenticating\Domain\PasswordHash;
-use App\Platform\Authorization\AuthorizeWith;
+use App\Module\Authenticating\Infrastructure\Framework\Symfony\Security\AuthenticatingVoter;
+use App\Platform\Authorization\Authorize;
 use Symfony\Component\Messenger\Attribute\AsMessageHandler;
 
 #[AsMessageHandler(bus: 'command.bus')]
-#[AuthorizeWith(UpgradePasswordHashPolicy::class)]
+#[Authorize(AuthenticatingVoter::class)]
 final readonly class UpgradePasswordHashHandler
 {
     public function __construct(private AccountRepository $accounts)

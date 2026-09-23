@@ -17,12 +17,13 @@ use Symfony\Component\HttpKernel\Attribute\AsController;
 use Symfony\Component\Messenger\Exception\ValidationFailedException;
 use Symfony\Component\Routing\Attribute\Route;
 use Symfony\Component\Routing\Generator\UrlGeneratorInterface;
+use Symfony\Component\Security\Core\Authentication\Token\Storage\TokenStorageInterface;
 use Symfony\Component\Uid\Uuid;
 
 #[AsController]
 final readonly class TaskController
 {
-    public function __construct(private CommandBus $commands, private QueryBus $queries, private UrlGeneratorInterface $urls, private LoggerInterface $logger)
+    public function __construct(private CommandBus $commands, private QueryBus $queries, private UrlGeneratorInterface $urls, private LoggerInterface $logger, private TokenStorageInterface $tokens)
     {
     }
 
@@ -52,7 +53,9 @@ final readonly class TaskController
             return $this->response(['error' => 'invalid_payload'], 400);
         }
         try {
-            $id = $this->commands->dispatch(new CreateTaskCommand($payload->title));
+            $identifier = $this->tokens->getToken()?->getUserIdentifier();
+            $owner = null !== $identifier && Uuid::isValid($identifier) ? Uuid::fromString($identifier) : null;
+            $id = $this->commands->dispatch(new CreateTaskCommand($payload->title, $owner));
             if (!$id instanceof Uuid) {
                 throw new \LogicException('Unexpected create result.');
             }
@@ -79,7 +82,12 @@ final readonly class TaskController
                 throw new \LogicException('Unexpected lookup result.');
             }
 
-            return $this->response(['id' => $result->id->toRfc4122(), 'title' => $result->title]);
+            return $this->response([
+                'id' => $result->id->toRfc4122(),
+                'title' => $result->title,
+                'ownerAccountId' => $result->ownerAccountId?->toRfc4122(),
+                'completedAt' => $result->completedAt?->setTimezone(new \DateTimeZone('UTC'))->format('Y-m-d\TH:i:s\Z'),
+            ]);
         } catch (AuthorizationDenied $failure) {
             return $this->response(['error' => 'Access denied.'], $failure->authenticated ? 403 : 401);
         } catch (ValidationFailedException $failure) {

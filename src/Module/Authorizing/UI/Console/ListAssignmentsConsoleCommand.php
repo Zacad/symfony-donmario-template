@@ -11,7 +11,7 @@ use Symfony\Component\Console\Input\InputInterface;
 use Symfony\Component\Console\Input\InputOption;
 use Symfony\Component\Console\Output\OutputInterface;
 
-#[AsCommand(name: 'app:authorization:assignments', description: 'List a current page of account assignments as JSON.')]
+#[AsCommand(name: 'app:authorization:assignments', description: 'List a current page of subject assignments as JSON.')]
 final class ListAssignmentsConsoleCommand extends Command
 {
     public function __construct(private readonly AuthorizationConsole $console)
@@ -21,7 +21,7 @@ final class ListAssignmentsConsoleCommand extends Command
 
     protected function configure(): void
     {
-        $this->addArgument('account', InputArgument::REQUIRED, 'Account UUID')
+        $this->addArgument('subject', InputArgument::REQUIRED, 'Subject UUID')
             ->addOption('limit', null, InputOption::VALUE_REQUIRED, 'Page size (1–100).', '50')
             ->addOption('after', null, InputOption::VALUE_REQUIRED, 'The next cursor from the previous page.');
     }

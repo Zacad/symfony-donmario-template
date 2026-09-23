@@ -13,16 +13,6 @@ final class ContractTypes
 
     public const string POLICY_EXCEPTION_PATTERN = '~^(?:LogicException|RuntimeException|InvalidArgumentException|Exception|Throwable)$~D';
 
-    public static function isPolicy(string $class): bool
-    {
-        return 1 === preg_match(self::policyPattern(), $class);
-    }
-
-    public static function policyPattern(?string $module = null): string
-    {
-        return '~^'.self::modulePattern($module).'Application\\\\'.self::NAME.'\\\\'.self::NAME.'Policy$~D';
-    }
-
     /** Includes legacy/synthetic handler names; placement/signatures have separate checks. */
     public static function handlerPattern(?string $module = null): string
     {
@@ -43,7 +33,18 @@ final class ContractTypes
     /** @return list<string> */
     public static function authorizationData(): array
     {
-        return array_map(static fn (string $name): string => 'App\\Platform\\Authorization\\'.$name, ['Actor', 'ActorKind', 'PolicyContext', 'AuthorizeWith', 'AuthorizationDenied']);
+        return array_map(static fn (string $name): string => 'App\\Platform\\Authorization\\'.$name, ['Actor', 'ActorKind', 'AuthorizationToken', 'Authorize', 'AuthorizationDenied']);
+    }
+
+    public static function isAuthorizationVoter(string $class): bool
+    {
+        return 'App\\Platform\\Authorization\\PublicAccessVoter' === $class
+            || 1 === preg_match(self::authorizationVoterPattern(), $class);
+    }
+
+    public static function authorizationVoterPattern(?string $module = null): string
+    {
+        return '~^'.self::modulePattern($module).'Infrastructure\\\\Framework\\\\Symfony\\\\Security\\\\'.self::NAME.'Voter$~D';
     }
 
     /** @return array<string, list<string>> */
@@ -54,6 +55,8 @@ final class ContractTypes
                 'App\\Module\\Authenticating\\UI\\Console\\ProvisionAccountConsoleCommand',
                 'App\\Module\\Authorizing\\UI\\Console\\AuthorizationConsole',
                 'App\\Module\\TaskTracking\\UI\\Console\\CreateTaskConsoleCommand',
+                'App\\Module\\TaskTracking\\UI\\Console\\ListTasksConsoleCommand',
+                'App\\Module\\TaskTracking\\UI\\Console\\CompleteTaskConsoleCommand',
                 'App\\Module\\TaskTracking\\UI\\Console\\ShowTaskConsoleCommand',
             ],
             'App\\Platform\\Authorization\\AuthenticationExecution' => [

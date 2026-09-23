@@ -1,10 +1,19 @@
 # Approved architecture
 
-**Current checkpoint (2026-09-16): Task 9 is IMPLEMENTED, VERIFIED, REVIEWED and
+**Active correction (2026-09-22): the [clean Authorizing/native voters/Task ownership
+model](tasks/10-authorizing-rework.md) is approved, implemented and verified.** It is
+fresh-template only: compatibility with intermediate authorization schemas/data is not
+required. Fresh independent review is complete; user acceptance is pending. Earlier verified reworks
+remain historical regression provenance. Task 11 has not started, and no Git delivery is
+authorized.
+
+**Latest accepted checkpoint (2026-09-16): Task 9 is IMPLEMENTED, VERIFIED, REVIEWED and
 USER ACCEPTED, including the `ActorKind` correction.** Following the full
 policy-only enforcement design, “accept and proceed” accepted 8b and approved Task 9
 implementation, as recorded by main. Task 9 acceptance followed its additional fresh
-design/implementation review; Task 10 discovery/design is deferred to the fresh session.
+design/implementation review. [Task 10](tasks/10-task-tracking.md) is **IMPLEMENTED,
+VERIFIED, REVIEWED — SUPERSEDED BASELINE, NOT USER ACCEPTED**.
+Setup/check/E2E/consumer passed; both fresh implementation reviewers approved without findings.
 Earlier awaiting-8b-acceptance records are superseded. Main owns final evidence in the
 [Task 9 record](tasks/09-authorization-enforcement.md); the subsequent explicit Git
 request authorizes this accepted 8b/9 delivery. Future commits/pushes need fresh authorization.
@@ -72,7 +81,6 @@ src/Module/<Module>/
   Application/<UseCase>/
     <Name>Command.php or <Name>Query.php
     <Name>Handler.php
-    <Name>Policy.php                  # private command/query admission service
     <Name>Result.php                  # when a result DTO is useful
     <Name>Input.php                   # nested CQRS data, not dispatchable
     <Name>Event.php                   # public Application integration fact
@@ -117,11 +125,21 @@ TaskTracking/Application/GetTask/
   GetTaskQuery.php
   GetTaskHandler.php
   GetTaskResult.php
+TaskTracking/Application/ListTasks/
+  ListTasksQuery.php
+  ListTasksHandler.php
+  ListTasksResult.php
+  TaskListItemResult.php
+TaskTracking/Application/CompleteTask/
+  CompleteTaskCommand.php
+  CompleteTaskHandler.php
+  CompleteTaskResult.php
 ```
 
-Subtask 3a establishes the boundary rules; Subtask 3b implements these business
+Subtask 3a establishes the boundary rules; Subtask 3b implemented the initial Create/Get
 handlers, Messenger integration and shared HTTP/CLI adapters. See
-[Subtask 3](tasks/03-cqrs-transactions.md) for approval and evidence.
+[Subtask 3](tasks/03-cqrs-transactions.md) for its historical approval and evidence.
+Task 10 expands Task data and adds List/Complete under the same boundaries.
 
 - The supported public Application data path is exactly
   `Application/<UseCase>/<Name>{Command,Query,Result,Input,Event}.php`. UseCase and Name are
@@ -141,7 +159,10 @@ handlers, Messenger integration and shared HTTP/CLI adapters. See
   Public event payloads may reference approved immutable values and concrete public
   event data, never command/query/result/input DTOs or module-internal types.
 - A dedicated result DTO is optional. The create use case returns `Uuid`;
-  lookup returns `GetTaskResult|null` with UUID/title. Result data is transport-neutral:
+  lookup returns `GetTaskResult|null` with UUID/title, nullable owner account UUID and
+  nullable completion timestamp. List returns a named envelope of task items and a
+  cursor; Complete returns ID, changed flag and first completion timestamp, or null
+  for an authorized missing Task. Result data is transport-neutral:
   HTTP and CLI adapters decide status codes, serialization and presentation.
 
 ### Repository ports and inward dependencies
@@ -149,7 +170,7 @@ handlers, Messenger integration and shared HTTP/CLI adapters. See
 Each module defines repository interfaces in its Domain and Doctrine-specific
 implementations in `Infrastructure/Persistence`. Symfony aliases bind these ports
 to adapters; application handlers inject the Domain interface. The first port is
-`TaskTracking\Domain\TaskRepository` (`add(Task): void`, `find(Uuid): ?Task`),
+`TaskTracking\Domain\TaskRepository` (`add`, `find`, `findForCompletion`, `findPage`),
 implemented by `Infrastructure\Persistence\DoctrineTaskRepository` through
 EntityManager composition. `add()` does not flush/commit. Repository ports are
 internal to the module, separate from public Application message/result/event data.
@@ -219,7 +240,7 @@ runtime-persistence dependencies.
   context and standard parameter-bag service have narrow allowances.
   Direct Platform-to-module edges and arbitrary module-to-Platform facades are
    forbidden, including named aliases, apart from the exact helper permissions and
-   authorization middleware's private policy locator described below.
+   authorization middleware's exact private native decision manager described below.
   EventBus is Application-only. Our listeners cannot inject repositories, handlers,
   ORM or raw buses, even from their own module. Native Messenger owns handler lookup;
   framework listeners do not inherit our listener permissions. Inline substitute
@@ -301,7 +322,8 @@ Separate synchronous `command.bus` and `query.bus` use Messenger and Validator 8
   queries retain the parent's unit of work; independent queries discard managed state.
   Query purity against arbitrary SQL is not a PostgreSQL read-only sandbox. Connectivity
   loss during COMMIT can leave an unknown outcome; commands are not automatically retried.
-- Dev/test JSON routes and CLI adapters share create/read handlers. HTTP input is
+- Dev/test JSON routes and CLI adapters share Create/Get handlers; CLI additionally
+  exposes List/Complete (Task 10). HTTP input is
   bounded to 4 KiB and fixed fields; titles allow at most 200 codepoints. Validation
   exposes field/message diagnostics, unexpected failures use generic responses and
   safe operation metadata. Production route absence is tested.
@@ -388,7 +410,8 @@ The Application-only `Platform/Messaging/EventBus` exposes
 One `events` transport uses **`EVENT_TRANSPORT_DSN=sync://`** by default, or
 **`doctrine://default`** for async delivery. Producers and listeners use identical
 code in both modes. See [README examples](../README.md#publish-and-handle-application-events)
-for complete producer/listener classes and [switch commands](../README.md#switch-event-delivery-and-run-the-worker).
+for the installed producer reference and illustrative listener class, and
+[switch commands](../README.md#switch-event-delivery-and-run-the-worker).
 
 #### Data and listener contract
 
@@ -401,10 +424,11 @@ Domain objects may opt into pure, non-service `RecordsDomainEvents` and
 `RecordsDomainEventsTrait` under `Platform/Event/Recording`. Protected
 `recordDomainEvent()` collects internal Domain facts; public `releaseEvents()` returns
 and clears them. Application explicitly selects facts to translate. `CreateTaskHandler`
-schedules the Task through its Domain repository, releases its facts, maps only
+schedules the Task through its Domain repository, then releases its facts and maps only
 Domain TaskCreatedEvent to public `Application/CreateTask/TaskCreatedEvent(Uuid $taskId)`
-and dispatches it. Collection is explicit and transient; identity remains module-local,
-with no universal entity base or optimistic version supplied by this capability.
+and dispatches it. Creation performs no authorization grant. Collection is explicit and
+transient; identity remains module-local, with no universal entity base or optimistic
+version supplied by this capability.
 
 Private `Infrastructure/EventListener/*Listener` services declare one class-level
 `#[AsMessageHandler(bus: 'application.event.bus')]`, optionally with integer priority,
@@ -749,163 +773,314 @@ gave median issuance **527.04 ms** and identity **21.27 ms**; consumer observati
 were **525.65 ms / 21.56 ms**. These are local measurements, not an SLA. Task 7
 records the evidence; token/key/password canaries establish exercised secrecy paths only.
 
-### Authorizing model/management (8b: user accepted 2026-09-15)
+### Authorization and runtime roles (current rework)
 
-The [approved 8b design](tasks/08-authorizing.md) is **IMPLEMENTED, VERIFIED, REVIEWED and
-USER ACCEPTED on 2026-09-15**. Final 8b setup/check/E2E/consumer verification
-passed, covering the earlier cursor Domain-exception and EXPLAIN numeric fixes.
-Setup applied `Version20260915010000`, retaining existing keys and dependencies;
-lock files are unchanged. Both fresh independent reviewers approved with no findings
-and did not rerun suites; only documentation changed between 8b review and acceptance.
-Actual N=100 SQL budgets and populated plans passed: two business reads, grouped
-mutation DML and one page query, with observed indexed access paths. These are local
-observations, not universal plan or latency guarantees. See the compact
-[final handoff evidence](handoff.md#completed-8b-verification-and-review--2026-09-15);
-main owns the detailed task record.
+The user approved the clean model on 2026-09-22. Implementation and full verification are
+complete and freshly independently reviewed; user acceptance is pending. Historical 8b, Task 9, pre-redesign Task 10 and
+the later verified intermediate reworks remain provenance but do not describe or verify
+this architecture. The clean model is fresh-template only and has no persisted-data
+compatibility requirement for those intermediate designs.
 
-#### Ownership and permission semantics
+For an implementation-oriented introduction to this section, including request-flow
+diagrams and extension examples, see the [authorization engineer guide](authorization.md).
 
-`Authorizing/Domain/AuthorizationCatalog` defines flat permission/role bundles.
-The four mapped Domain entities and their `public` tables are:
+#### Handler capabilities and compiler validation
 
-| Entity | Table |
+Every command/query handler declares exactly one `#[Authorize]`. Restricted forms name a
+concrete final same-module voter. Permission-bearing forms additionally reference a
+module-owned string-backed `*Permission` or `*PermissionEnum` case and explicit stable label; contextual
+forms omit permission and label. Actor-unrestricted handlers instead declare exactly
+`#[Authorize(public: true)]`. Bare metadata and combinations of public with voter,
+permission or label metadata fail compilation. `GetTask` and `ListTasks` share
+`task_tracking.task.view` and `View tasks`.
+
+`CqrsPass` aggregates each installed global capability as module, key, label, read/write
+access and operations. It injects the compiled descriptors into
+`AuthorizationCatalogService`, which owns installed-key validation and bounded capability
+listing, and rejects foreign enum ownership, unstable labels, inconsistent capability
+metadata or wrong voter mappings. Public actions are code-owned admission decisions and
+contribute no permission, capability or assignable role member. There is no authorization
+YAML, resource enum/partition or separate catalogue compiler pass.
+
+#### Assignment ownership and permission semantics
+
+Authorizing has no Authenticating or TaskTracking imports, account lookup, business
+caller names or business-owner SQL. Subject UUIDs are opaque. Generic raw evaluation can
+therefore allow an orphan subject; business voters compose account/Task eligibility
+where required. Unknown syntactically valid permissions deny.
+
+The rewritten `Version20260915010000` owns the complete Authorizing schema:
+
+| Domain entity | Table | Natural identity |
+| --- | --- | --- |
+| `RoleEntity` | `authorizing_role` | `role_key` |
+| `RolePermissionMembershipEntity` | `authorizing_role_permission` | `(role_key, permission_key)` |
+| `RoleAssignmentEntity` | `authorizing_role_assignment` | `(subject_id, role_key)` |
+| `PermissionGrantEntity` | `authorizing_permission_grant` | `(subject_id, permission_key)` |
+
+These are the only Authorizing tables. `Version20260917010000` and
+`Version20260920020000` are deleted. There are no resource assignments/grants,
+initial-binding table, scope/resource columns, `account_id` columns or synthetic assignment
+IDs. Existing intermediate databases must be recreated; no compatibility migration or
+fallback read is supported. Opaque `subject_id` references introduce no cross-module FK,
+ORM association, join or direct SQL access.
+
+Effective coarse permissions are the additive union of active globally assigned roles
+and global direct grants, with deny by default. No wildcard, hierarchy, authorization
+cache or JWT/session permission authority exists. Removing the last source denies later
+checks after commit; already-authorized work may finish. Business voters apply context
+after this coarse check, so an all-permissions role is not a bypass.
+
+#### Generic public APIs and bounds
+
+- `ChangeSubjectAssignmentsCommand` accepts 1-100 distinct natural-key changes for one
+  opaque subject. It is atomic/idempotent and reports requested/added/removed/unchanged.
+  Each public input has exactly `operation`, `kind`, `key`. The subject-scoped transaction
+  advisory lock remains. There is no account lookup.
+- `EvaluateSubjectEntitlementsQuery` accepts 1-100 checks across subjects and returns
+  ordered decisions from one Authorizing business read. Unknown permission keys deny;
+  operational failures never become partial allow.
+- `ListSubjectAssignmentsQuery` returns 1-100/default-50 rows from one keyset query:
+  roles then permissions, ordered by key. Rows expose only `kind`/`key`; cursor DTOs add
+  only their subject binding. There are no
+  totals, offsets or cross-page snapshots.
+- Resource-access, resource-grant, initial-binding and compatibility-cleanup APIs do not
+  exist.
+
+Assignment APIs admit an `assignments` operator or raw global `authorizing.manage` as
+specified by their declaration. Catalogue APIs admit a `catalogue` operator or raw
+global `authorizing.catalogue.manage`. Raw evaluation admits support reads or
+`assignments`. Direct grants remain supported. There are no HTTP/API management routes.
+Batch JSON uses `subjectId` and no scope field; CLI command names and positional order
+remain stable.
+
+#### Domain organization and runtime roles
+
+Authorizing Domain is grouped by Assignment, Capability and Role business concepts. Only
+this module uses explicit technical suffixes such as `Entity`, `ValueObject`, `Enum` and
+`Service`; this is not a general module naming rule. A future module must make its own
+naming decision rather than copying Authorizing by default.
+
+Folders follow business concepts and reasons to change, not technical classifications or
+database tables. Entities, value objects, enums, services and repository ports stay in the
+owning concept folder. Cross-concept rules may stay at the Domain root. Do not create
+technical buckets or placeholders such as `Domain/Mapping`, `Domain/Entity` or
+`Domain/ValueObject`; a suffix never implies a matching namespace.
+
+Within Authorizing, the suffix communicates the type's role:
+
+- `Entity` is a persisted domain object with identity, whether it owns substantial
+  lifecycle behavior or narrowly represents a natural-key relationship;
+- `ValueObject` is immutable, validated, identity-free Domain data;
+- `Enum` is a closed backed vocabulary used in Domain contracts;
+- `Service` is a stateless Domain collaborator whose operation does not belong to one
+  entity or value object;
+- `Repository` remains the suffix for a Domain persistence port;
+- purpose-specific names such as `Validator` and `Exception` remain explicit and may be
+  shared from the Domain root when genuinely cross-concept.
+
+These Domain suffixes are separate from the repository-wide reserved Application data
+suffixes (`Command`, `Query`, `Result`, `Input`, `Event`) described above. Suffixes classify
+responsibility; they do not decide richness. `RoleEntity` is rich and owns creation, exact
+create-if-absent matching, definition changes, revision increments and irreversible
+retirement. The three relationship entities remain deliberately narrow. Repositories
+persist and reconstitute these models without moving lifecycle decisions into SQL adapters.
+
+Assignment uses `AssignmentReferenceValueObject(kind, key)` for repository rows and the
+Domain continuation reference, `AssignmentChangeValueObject(operation, reference)` for a
+mutation and `AssignmentChangeCountsValueObject(added, removed)` for repository effects.
+There is no `ChangeSet`, `StoredAssignment` or Domain cursor. Public DTOs map explicitly
+to/from these values.
+
+Role keys are immutable; label/permission updates require expected revision, and
+retirement is an irreversible tombstone. Every entitlement query joins active role
+definitions and memberships. Assignments to retired roles remain listable/removable but
+grant nothing.
+
+A role may explicitly combine any installed permissions across modules. There is no
+separate per-role permission maximum; the total remains bounded to 4096 active
+role-permission edges. Create-if-absent accepts only an exact active match and never
+overwrites. Setup defaults are explicit global snapshots:
+
+| Role | Permissions |
 | --- | --- |
-| `GlobalRoleAssignment` | `authorizing_global_role_assignment` |
-| `ResourceRoleAssignment` | `authorizing_resource_role_assignment` |
-| `GlobalPermissionGrant` | `authorizing_global_permission_grant` |
-| `ResourcePermissionGrant` | `authorizing_resource_permission_grant` |
+| `task_tracking.user` | The three Task permissions |
+| `authorizing.administrator` | The two Authorizing permissions |
+| `application.administrator` | All five currently installed permissions |
 
-Each has an immutable UUID primary key, natural assignment uniqueness, and an
-`(account_id, id)` cursor index. Resource natural keys include exact `(type, UUID)`.
-Opaque account/resource references introduce no cross-module FK, ORM association,
-join or direct SQL access. The owning `AssignmentRepository` port is implemented by
-`Infrastructure/Persistence/DoctrineAssignmentRepository` on the default connection.
+Future capabilities are not automatically appended, including to
+`application.administrator`.
+See [README customization and commands](../README.md#capabilities-runtime-roles-and-setup-defaults).
 
-Effective permissions are the additive union of applicable roles and direct grants,
-with deny by default. A global check for a resource-capable permission asks for that
-capability across **all resources of its declared type**, considering only global
-sources. An exact resource check also considers sources for its `(type, UUID)`.
-Known permissions with incompatible scopes/types invalidate the batch; syntactically
-valid unknown permission keys and missing accounts deny. No wildcard, role hierarchy,
-automatic grants or authorization cache exists. JWT claims/session roles are not a
-second permission authority. Removing the last source denies later checks after
-commit; already-authorized work may finish.
+### Native command/query admission
 
-Additions validate every permission in the entire role bundle against the requested
-scope; global-only permissions prohibit a resource assignment. Catalogue edits are
-reviewed code changes. Retired keys/types remain removable and listable, and key reuse
-needs deliberate cleanup. [README](../README.md#catalogue-and-scope) lists the installed
-keys and customization rules.
+- One cohesive private lazy Symfony voter per module lives under
+  `Infrastructure/Framework/Symfony/Security`. Voters own all predicates for supported
+  routes; unsupported routes abstain and supported routes deny wrong tokens or authority.
+- Exact `#[Authorize(public: true)]` metadata is compiler-routed to the private lazy
+  Platform `PublicAccessVoter`, which recognizes only the compiled public message set and
+  grants only the internal `AuthorizationToken`. Handlers cannot reference it directly.
+  It has no dependencies or SQL, and its decision-manager tag is removed when unused.
+  Public means every actor at the bus boundary, including anonymous; it does not expose a
+  transport route or bypass transport/firewall, validation, transaction or result rules.
+- Authorization middleware invokes one dedicated private native
+  `AccessDecisionManager` with `UnanimousStrategy(false)`. Its lazy iterable contains
+  exactly services tagged `app.authorization.voter`. It neither aliases/replaces the
+  firewall manager nor consumes ordinary firewall voters. The manager/voters remain
+  untraced in every environment so command/query subjects are not retained.
+- `AuthorizationToken` implements the native token contract without credentials,
+  original principal, business-role cache or parent payload. It carries immutable
+  `Actor` and support-read provenance and is never installed in global token storage.
+  Invocation/transaction ownership and event frames stay in infrastructure context.
+  `ActorKind` remains `Anonymous`,
+  `Account`, `Operator` or `Authentication`.
+- Voter `supportsAttribute()`/`supportsType()` methods are pure and database-free.
+  `CqrsPass` verifies restricted declarations' exact concrete same-module voter and the
+  compiler-selected public voter against the private tagged iterator.
+- Voters may inject QueryBus and owning Domain read ports/state under narrow source/DI/
+  Deptrac rules. They cannot inject handlers, raw buses, ORM/SQL or outward adapters.
+  These checks are guardrails, not a sandbox for arbitrary code hidden behind a port.
+- `ExecutionContext` derives account actors only from native fully authenticated HTTP.
+  Exact adapters establish `accounts`, `assignments`, `catalogue` or `tasks` operator
+  scope; the account provider alone establishes account-bound authentication scope.
+  CLI/worker execution grants nothing by itself. Actor/scope changes during execution
+  fail and invalidate the root.
+- Input validation precedes admission. Command admission runs inside the owned root
+  transaction; queries gain no transaction. Result validation remains before final
+  flush/commit. Caught nested admission/read failures invalidate the root. Same-
+  transaction checks do not serialize concurrent revocation.
+- Event frames retain the pinned actor/transaction during synchronous delivery; async
+  delivery starts anonymous. The token exposes no caller fact or caller-derived authority.
+  Frames unwind in `finally` and root reset cannot erase an active event frame. Vote
+  diagnostics remain fixed and payload-free.
 
-#### Public bus APIs and transaction boundaries
+## TaskTracking use cases and CLI (Task 10)
 
-- **`ChangeAccountAssignmentsCommand`** accepts 1–100 distinct natural-key changes
-  for one account, rejecting duplicate/conflicting keys. Changes are atomic and
-  idempotent, with requested/added/removed/unchanged counts based on affected rows.
-  Additions observe existence through Authenticating's `CheckAccountExistenceQuery`
-  **before** acquiring the per-account transaction-scoped advisory lock. This is an
-  existence snapshot, not referential integrity or protection from account deletion.
-  Removal-only operations support orphan cleanup. The lock lasts until the root
-  transaction ends. Parameterized grouped inserts use the exact natural conflict
-  target; exact deletes remove only that source. At most eight DML statements cover
-  four sources and two operations; the lock query is separate. Handlers/repositories
-  never retry, flush or commit; the existing CommandBus root owns flush/commit.
-- **`EvaluatePermissionsQuery`** accepts 1–100 checks across accounts and returns a
-  named Result with one boolean decision per input in order. The budget is at most
-  two business SQL reads: the owning account-existence query and one Authorizing
-  statement covering all four sources. Invalid scope fails the batch; operational
-  failures do not become allow or partial success.
-- **`ListAccountAssignmentsQuery`** returns one account's assignments in a named
-  Result with a next cursor, using one bounded keyset SQL query. Pages are 1–100,
-  default 50, ordered by account/source/immutable assignment UUID. Source order is
-  global roles, resource roles, global grants, resource grants (0–3). Branch and
-  outer limits use one extra row to determine continuation. There are no offsets,
-  totals or cross-page snapshots; concurrent changes can affect later pages and
-  UUIDv7 is not commit ordering. Listing permits orphan and retired-key inspection.
+The Task use cases are part of the approved
+[authorization correction](tasks/10-authorizing-rework.md). Clean Authorizing
+implementation, verification and fresh review are complete; user acceptance is pending. The original
+[Task 10](tasks/10-task-tracking.md) and later intermediate rework evidence remain
+historical regression records.
 
-Authenticating owns `Application/CheckAccountExistence/CheckAccountExistenceQuery`
-and its co-located handler/results. It accepts 1–100 UUIDs, deduplicates the owning
-`AccountRepository::existingIds` read and returns only UUID/existence data in input
-order through QueryBus. No credentials or account internals cross the boundary.
-Authorizing performs no resource-existence SQL: the owning module establishes that
-invariant. This permits a nested initial-access command for an unflushed owned Task
-inside the existing root transaction. Unflushed account registration plus assignment
-is unsupported because the account-existence query does not flush pending registration.
+### Owned state, admission and atomic creation
 
-#### Operator authority and external bounds
+TaskTracking owns `public.task_tracking_task`: UUIDv7 ID, title, nullable immutable
+`ownerAccountId`, and nullable `completedAt` (null means open). Migration
+`Version20260916010000` adds `owner_account_id UUID` and
+`completed_at TIMESTAMP(0) WITHOUT TIME ZONE`, both nullable with null defaults.
+Existing rows remain unowned/open. Owner UUIDs are opaque: no cross-module FK, ORM
+association, SQL read/write or join. `Version20260920010000` adds
+`task_tracking_task_owner_id_idx (owner_account_id, id)`. No ownership transfer or
+reopen use case is supplied.
 
-Trusted deployment shell/container access supplies authority for **eight console
-commands**, now expressed through explicit operator `assignments` scope. There are
-no HTTP/API management routes. Single-item adapters call the same batch use
-cases. `--global` is exclusive with the paired `--resource-type`/`--resource-id` options.
-Batch stdin accepts exact-field JSON arrays bounded to 64 KiB, depth 16 and 1–100
-items before DTO construction. Global items omit resource fields; explicit null is
-rejected. Cursors are opaque pagination data, at most 512 characters, strictly
-decoded and bound to account/source/assignment UUID, never authorization grants.
-Exit 2 is invalid input, 1 operational failure, 0 success including deny; errors
-use fixed messages. See [README commands and JSON examples](../README.md#single-item-commands-and-listing).
+| Public use case | Account-actor admission | `tasks` operator behavior |
+| --- | --- | --- |
+| `CreateTaskCommand(title, ownerAccountId = null): Uuid` | Persisted self owner plus global `task_tracking.task.create` | May create unowned or choose any persisted account |
+| `GetTaskQuery(id): GetTaskResult\|null` | Persisted actor, global view and exact owner; missing/foreign/unowned deny | May read any Task |
+| `ListTasksQuery(ownerAccountId = null, limit = 50, after = null): ListTasksResult` | Persisted self owner target plus global view | Null means all tasks; may filter by any owner UUID |
+| `CompleteTaskCommand(id): CompleteTaskResult\|null` | Persisted actor, global complete and exact owner; missing/foreign/unowned deny | May complete any Task |
 
-### Policy-only authorization (Task 9)
+Complete and view are independent coarse permissions. List returns owner-filtered open
+and completed tasks. Get/List items contain `id`, `title`, `ownerAccountId`,
+`completedAt`; completion returns `id`, `changed`, `completedAt`. TaskTracking's private
+native voter owns account existence, global entitlement and ownership composition.
 
-The [approved design](tasks/09-authorization-enforcement.md) is implemented, verified
-and independently reviewed, with user acceptance on 2026-09-16. Including the `ActorKind`
-correction, final evidence: check **1360 tests / 7959 assertions**, E2E **230 / 6306**,
-consumer **230 / 6310**; the correction also has a fresh independent approval.
+`CreateTaskHandler` constructs/schedules the Task and translates the Domain creation
+fact into the existing UUID-only public `TaskCreatedEvent`. It performs no authorization
+grant. Task ownership supplies the contextual predicate for subsequent account access;
+global permission alone is insufficient.
 
-- Every command/query handler declares exactly one co-located private final readonly
-  policy with `#[AuthorizeWith(UseCasePolicy::class)]`. Its callable signature is
-  `__invoke(ExactCommandOrQuery $message, PolicyContext $context): bool`. Actor-dependent
-  admission, including state-sensitive decisions, belongs here. Handlers retain
-  operation logic, permission calculation/catalogue validation, password/hash checks
-  and Domain invariants; handlers neither inject nor call policies.
-- `CqrsPass` validates declarations, dependencies and exact middleware wiring and
-  builds the message-to-policy map. The authorization middleware needs a private
-  framework-generated locator to resolve cross-module private policies; this exact
-  infrastructure edge does not allow module policy injection. Source, compiled DI
-  and Deptrac classification agree on private policies and non-service `Actor`,
-  `ActorKind` and `PolicyContext` data. `Actor::$kind` uses the exact unbacked enum
-  (`Anonymous`, `Account`, `Operator`, `Authentication`), not string literals. Module
-  code cannot inject mutable execution context.
-- `ExecutionContext` derives an account UUID only from native fully authenticated
-  HTTP identity. The actor is separate from message targets and fixed for the bus
-  invocation tree; constructing context data grants no authority. Scope changes
-  during execution fail and invalidate the root. Independent execution clears scope;
-  console/worker execution alone cannot inherit authority from token storage.
-- Exact adapters alone may inject `OperatorExecution`: provisioning uses `accounts`,
-  eight authorization console commands use `assignments`, and existing Task create/
-  show CLI commands use `tasks`, with no new actor argument. Only the native account
-  provider receives `AuthenticationExecution` for the account-bound hash-upgrade scope.
-- Registration admits `accounts` operators; hash upgrade admits only matching
-  authentication-scope account UUID. `GetAccountIdentityQuery` is account-self-only,
-  including `/api/me`. Task Create requires global `task_tracking.task.create` and
-  Get requires `task_tracking.task.view` on the exact `(task_tracking.task, UUID)`;
-  both also admit `tasks` operators. Assignment change/list requires global
-  `authorizing.manage` for account actors, or `assignments` operator scope.
-- Foundation reads terminate with exact policies: `EvaluatePermissionsQuery` admits
-  `PolicyContext::supportRead` or `assignments` operators; `CheckAccountExistenceQuery`
-  admits support reads or exact direct callers `EvaluatePermissionsQuery` and
-  `ChangeAccountAssignmentsCommand`. `supportRead` reflects policy scope, not a
-  general internal bypass. All other nested operations evaluate their own policies.
-- Policies may inject QueryBus, approved immutable values and owning Domain read
-  ports/state. They cannot inject handlers, raw buses, ORM/SQL or outward adapters,
-  or dispatch commands/events, including through nested bus calls. Policy constructors
-  are side-effect-free; locator resolution also occurs inside policy scope. These
-  source/DI/runtime boundaries do not sandbox arbitrary PHP or SQL hidden behind a
-  Domain port. Reads need review for ownership, side effects and cost.
-- Input validation precedes authorization. Command policies run inside the owned
-  transaction before the handler; queries gain no automatic transaction. Caught
-  nested policy/query failures invalidate the root, and a health check prevents
-  handler admission even if a policy subsequently returns true. Existing rollback-
-  only handling prevents commit. Same-transaction admission does not serialize
-  against concurrent revocation; already-authorized work may finish. Policy and
-  handler reads can overlap; 8b budgets measure its APIs, not total protected journeys.
-  The verified direct Get journey uses exactly three business reads (owning account
-  existence, permission evaluation, Task lookup), excluding native HTTP authentication.
-- Dev/test `/_demo/tasks` uses web-session identity and fixed denial JSON
-  `{"error":"Access denied."}`: 401 anonymous, 403 authenticated. API bearer identity
-  belongs to `/api`, not these routes. Authorized missing Task reads return 404.
-  No automatic Task grant, permission-filtered resource list or durable service
-  identity is introduced; each retains a separate design gate.
+`EventPolicyMiddleware` establishes an event frame around native delivery. It retains the
+pinned actor during synchronous delivery, but the token exposes no caller fact or
+caller-derived authority. Sync retains actor/transaction; workers start anonymous with
+independent roots/resets. The frame unwinds in `finally` and supplies neither durable
+service identity nor queued publisher authority.
+
+### Bounded listing, indexes and snapshot limits
+
+Pages are 1–100/default 50, ordered by ascending Task UUID. Canonical opaque cursors are
+at most 512 characters and bind a version, owner target (or null operator-wide target)
+and last UUID. A cursor is pagination data, never authority; admission runs on each page
+and a cursor cannot be reused with a different owner. There are no totals, offsets,
+refill loops or cross-page snapshots. UUIDv7 order is not commit order.
+
+TaskTracking uses `findPage(limit, after, ownerAccountId)` with one lookahead row. The
+owner-bound path uses `(owner_account_id, id)`; operator-wide pages use primary-key
+order. There is no per-task permission-query loop or authorization cache.
+
+Expected business SQL read budgets excluding authentication are:
+
+| Journey | Maximum reads |
+| --- | --- |
+| Raw entitlement batch | **1** |
+| Account Task Create | **2**: account existence and global entitlement |
+| Account Task Get | **3**: account existence, entitlement and Task ownership lookup |
+| Account Task List | **3**: account existence, entitlement and owner page |
+| Account Task Complete | **4**: account existence, entitlement, ownership lookup and locking lookup |
+| Operator Task List | **1**: Task page |
+
+These preserved budgets and N=100 owner-index paths pass clean-model PostgreSQL
+verification. Query/row bounds do not guarantee latency or universal plans.
+
+Queries gain no automatic transaction or consistent multi-read snapshot. Permission
+revocation, account deletion and Task changes can race with a page. Even a command's
+same-transaction admission does not serialize against revocation: already-authorized
+work can finish. Completion's row lock protects the Task transition, not permissions.
+
+### Completion locking and persistence precision
+
+`Task::complete(DateTimeImmutable): bool` records the first timestamp only. Repeating
+completion returns `changed = false` with the original timestamp. The handler samples
+time after `findForCompletion` returns, under the owning row lock for persisted tasks;
+pending insertions need no persisted-row lock. Domain normalizes to UTC whole seconds
+to match native Doctrine persistence precision. No completion event or
+activity integration is introduced here; that remains Task 11.
+
+`DoctrineTaskRepository::findForCompletion` requires the caller's active transaction:
+
+1. A matching scheduled deletion conflicts. A matching pending insertion is returned
+   directly, preserving nested create/complete/repeat before the root flush.
+2. Existing state is read with a pessimistic write lock using field-only array hydration,
+   avoiding replacement of managed fields. A missing unmanaged row returns null; a
+   missing row with a managed object conflicts. A previously unmanaged/uninitialized
+   object is loaded/initialized under the acquired lock.
+3. Compare locked database state with Doctrine's original state across ID, title, owner
+   and completion (UUID/date values compared by value). If they match, return the same
+   managed object, preserving local dirty changes and earlier nested completion.
+4. If database state changed, compare current managed state to the original. A clean
+   stale object is refreshed under the lock; a locally dirty stale object raises
+   `Task completion conflict.` instead of overwriting pending work.
+
+The lock lasts until the root transaction ends; rollback covers completion and nested
+changes. Repositories/handlers never flush, commit or automatically retry. This handles
+the specified unit-of-work state paths, not arbitrary concurrent in-memory mutation.
+
+### Adapter outputs and errors
+
+The four CLI adapters use exact operator `tasks` scope. `create [--owner]` prints only
+the new UUID; `show` returns expanded task JSON; `list [--owner] [--limit] [--after]`
+returns `tasks` and `next`; `complete` returns ID, changed flag and first timestamp.
+Owner options are business targets, not actor impersonation. Serialized
+timestamps use UTC `Y-m-d\TH:i:s\Z`; nullable owner/completion remain JSON null.
+See [README CLI examples](../README.md#task-10--tasktracking-use-cases-and-cli).
+
+- Exit **0**: successful UUID/JSON, including an empty list or repeated completion.
+- Exit **2**, `Invalid task input.`: malformed owner option and invalid List/Complete
+  inputs/cursors. Create/Show message validation retains `field: message` violations.
+- Exit **1**, `Task not found.`: authorized missing Show/Complete target.
+- Exit **1**, `Task operation failed.`: operational failures/conflicts, including a
+  well-formed but nonexistent selected owner. That creation rolls back; absence of
+  `--owner` is instead valid unowned creation. Native syntax errors use Console diagnostics.
+
+Dev/test HTTP still exposes only Create/Get. POST accepts only `title`, derives the
+  owner target from native identity, and relies on Task voter self-ownership enforcement.
+GET includes owner/completion. Missing, foreign and unowned Tasks deny account requests
+before handling; a deletion after admission may still reach the 404 mapping. Existing
+fixed errors remain: `invalid_payload` (400),
+`body_too_large` (413 above 4 KiB), `unsupported_content_type` (415), `validation_failed`
+with violations (422), `Access denied.` (401 anonymous / 403 authenticated),
+`task_not_found` (404 after admission), `operation_failed` (500); responses use no-store.
+Twig and business API adapters retain their later gates.
 
 ## Adapters, cache and demo
 
@@ -917,10 +1092,11 @@ switches declared application pools. Cache keys, invalidation and post-commit
 behavior must preserve authorization and avoid publishing rolled-back data.
 Session/throttling storage is configured deliberately rather than silently switched.
 
-TaskTracking demonstrates create/list/complete use cases and a real invariant,
-permissions, and completion activity through an event-triggered command. Required
-initial owner access uses explicit transactional command orchestration. Activity
-uses Application events with the global native transport choice described above.
+TaskTracking implements Create/Get/List/Complete with global coarse permissions and
+voter-owned immutable-owner context. The clean Authorizing correction preserves these
+semantics and has passed full verification and fresh review; user acceptance is pending.
+Completion activity
+belongs to Task 11 and will use the global native transport choice described above.
 Later demo use cases retain their own approval gates.
 
 ## Reuse and verification

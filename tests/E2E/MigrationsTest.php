@@ -4,27 +4,115 @@ declare(strict_types=1);
 
 namespace App\Tests\E2E;
 
+use App\Module\Authorizing\Resources\migrations\Version20260915010000;
 use App\Module\TaskTracking\Domain\Task;
+use App\Module\TaskTracking\Resources\migrations\Version20260916010000;
+use App\Module\TaskTracking\Resources\migrations\Version20260920010000;
 use App\Platform\Persistence\MigrationCommandListener;
 use App\Platform\Persistence\MigrationPreflight;
 use App\Platform\Persistence\TimestampComparator;
 use App\Tests\Fixtures\Migrations\MigrationFixture;
 use Doctrine\DBAL\Connection;
 use Doctrine\DBAL\DriverManager;
+use Doctrine\DBAL\Schema\Schema;
 use Doctrine\Migrations\DependencyFactory;
 use Doctrine\Migrations\Metadata\MigrationPlan;
 use Doctrine\Migrations\Tools\Console\Command\MigrateCommand;
 use Doctrine\ORM\EntityManagerInterface;
 use PHPUnit\Framework\Attributes\DataProvider;
+use Psr\Log\NullLogger;
 use Symfony\Bundle\FrameworkBundle\Console\Application as FrameworkApplication;
 use Symfony\Component\Console\Application;
 use Symfony\Component\Console\Command\Command;
 use Symfony\Component\Console\ConsoleEvents;
 use Symfony\Component\Console\Tester\ApplicationTester;
 use Symfony\Component\EventDispatcher\EventDispatcher;
+use Symfony\Component\Uid\Uuid;
 
 final class MigrationsTest extends RepositoryTestCase
 {
+    public function testAuthorizingBaselineCreatesOnlyTheCleanSubjectSchema(): void
+    {
+        $connection = $this->database();
+        MigrationPreflight::assertTestDatabase($connection);
+        $history = $this->history($connection);
+
+        $connection->beginTransaction();
+        try {
+            foreach (['authorizing_permission_grant', 'authorizing_role_assignment', 'authorizing_role_permission', 'authorizing_role'] as $table) {
+                $connection->executeStatement('DROP TABLE public.'.$table);
+            }
+
+            $migration = new Version20260915010000($connection, new NullLogger());
+            $migration->up(new Schema());
+            $statements = $migration->getSql();
+            foreach ($statements as $sql) {
+                self::assertSame([], $sql->getParameters());
+                self::assertSame([], $sql->getTypes());
+                $connection->executeStatement($sql->getStatement());
+            }
+
+            self::assertSame([
+                ['table_name' => 'authorizing_permission_grant', 'columns' => 'subject_id,permission_key'],
+                ['table_name' => 'authorizing_role', 'columns' => 'role_key,label,revision,retired_at'],
+                ['table_name' => 'authorizing_role_assignment', 'columns' => 'subject_id,role_key'],
+                ['table_name' => 'authorizing_role_permission', 'columns' => 'role_key,permission_key'],
+            ], $connection->fetchAllAssociative("SELECT table_name, string_agg(column_name, ',' ORDER BY ordinal_position) AS columns FROM information_schema.columns WHERE table_schema = 'public' AND table_name LIKE 'authorizing_%' GROUP BY table_name ORDER BY table_name"));
+            self::assertSame([
+                ['table_name' => 'authorizing_permission_grant', 'definition' => 'PRIMARY KEY (subject_id, permission_key)'],
+                ['table_name' => 'authorizing_role', 'definition' => 'PRIMARY KEY (role_key)'],
+                ['table_name' => 'authorizing_role_assignment', 'definition' => 'PRIMARY KEY (subject_id, role_key)'],
+                ['table_name' => 'authorizing_role_permission', 'definition' => 'PRIMARY KEY (role_key, permission_key)'],
+            ], $connection->fetchAllAssociative("SELECT c.conrelid::regclass::text AS table_name, pg_get_constraintdef(c.oid) AS definition FROM pg_catalog.pg_constraint c WHERE c.contype = 'p' AND c.conrelid IN ('public.authorizing_role'::regclass, 'public.authorizing_role_permission'::regclass, 'public.authorizing_role_assignment'::regclass, 'public.authorizing_permission_grant'::regclass) ORDER BY table_name"));
+            self::assertSame([
+                ['table_name' => 'authorizing_role_assignment', 'definition' => 'FOREIGN KEY (role_key) REFERENCES authorizing_role(role_key)'],
+                ['table_name' => 'authorizing_role_permission', 'definition' => 'FOREIGN KEY (role_key) REFERENCES authorizing_role(role_key) ON DELETE CASCADE'],
+            ], $connection->fetchAllAssociative("SELECT c.conrelid::regclass::text AS table_name, pg_get_constraintdef(c.oid) AS definition FROM pg_catalog.pg_constraint c WHERE c.contype = 'f' AND c.conrelid IN ('public.authorizing_role_permission'::regclass, 'public.authorizing_role_assignment'::regclass) ORDER BY table_name"));
+            self::assertSame($history, $this->history($connection));
+        } finally {
+            $connection->rollBack();
+        }
+        self::assertSame($history, $this->history($connection));
+    }
+
+    public function testTaskOwnershipMigrationsPreserveLegacyRowsAndAddTheOwnerListIndex(): void
+    {
+        $connection = $this->database();
+        MigrationPreflight::assertTestDatabase($connection);
+        $history = $this->history($connection);
+        $tasks = $this->tasks($connection);
+        $saved = 'task10_saved_'.bin2hex(random_bytes(6));
+        // PostgreSQL transactional DDL restores the real table, indexes and rows
+        // even on assertion failure. No migration history or development data changes.
+        $connection->beginTransaction();
+        try {
+            $connection->executeStatement('ALTER TABLE public.task_tracking_task RENAME TO '.$saved);
+            $connection->executeStatement('ALTER INDEX public.task_tracking_task_owner_id_idx RENAME TO '.$saved.'_owner_id_idx');
+            $connection->executeStatement('CREATE TABLE public.task_tracking_task (id UUID NOT NULL, title VARCHAR(200) NOT NULL, CONSTRAINT '.$saved.'_legacy_pkey PRIMARY KEY (id))');
+            $id = Uuid::v7()->toRfc4122();
+            $connection->executeStatement('INSERT INTO public.task_tracking_task (id, title) VALUES (?, ?)', [$id, 'legacy populated task 雪']);
+            foreach ([new Version20260916010000($connection, new NullLogger()), new Version20260920010000($connection, new NullLogger())] as $migration) {
+                $migration->up(new Schema());
+                foreach ($migration->getSql() as $sql) {
+                    self::assertSame([], $sql->getParameters());
+                    self::assertSame([], $sql->getTypes());
+                    $connection->executeStatement($sql->getStatement());
+                }
+            }
+            self::assertSame([['id' => $id, 'title' => 'legacy populated task 雪', 'owner_account_id' => null, 'completed_at' => null]], $connection->fetchAllAssociative('SELECT id, title, owner_account_id, completed_at FROM public.task_tracking_task'));
+            self::assertSame('timestamp(0) without time zone', $connection->fetchOne("SELECT format_type(atttypid, atttypmod) FROM pg_catalog.pg_attribute WHERE attrelid = 'public.task_tracking_task'::regclass AND attname = 'completed_at'"));
+            self::assertSame(0, $connection->fetchOne("SELECT count(*) FROM pg_catalog.pg_constraint WHERE conrelid = 'public.task_tracking_task'::regclass AND contype = 'f'"));
+            $index = $connection->fetchOne("SELECT indexdef FROM pg_catalog.pg_indexes WHERE schemaname = 'public' AND indexname = 'task_tracking_task_owner_id_idx'");
+            self::assertIsString($index);
+            self::assertStringContainsString('(owner_account_id, id)', $index);
+            self::assertSame($history, $this->history($connection));
+        } finally {
+            $connection->rollBack();
+        }
+        self::assertSame($history, $this->history($connection));
+        self::assertSame($tasks, $this->tasks($connection));
+    }
+
     /** @return iterable<string, array{string, string}> */
     public static function configurationOverrides(): iterable
     {
@@ -67,7 +155,9 @@ final class MigrationsTest extends RepositoryTestCase
         $tasks = $this->tasks($connection);
         $entityManager = self::getContainer()->get('doctrine.orm.default_entity_manager');
         self::assertInstanceOf(EntityManagerInterface::class, $entityManager);
-        $task = new Task('migration-no-op-marker');
+        $owner = Uuid::v7();
+        $task = new Task('migration-no-op-marker', $owner);
+        $task->complete(new \DateTimeImmutable('2026-09-16T12:34:56Z'));
         $id = $task->id();
 
         try {
@@ -95,6 +185,8 @@ final class MigrationsTest extends RepositoryTestCase
             self::assertNotSame($task, $reloaded);
             self::assertSame($id->toRfc4122(), $reloaded->id()->toRfc4122());
             self::assertSame('migration-no-op-marker', $reloaded->title());
+            self::assertTrue($owner->equals($reloaded->ownerAccountId()));
+            self::assertSame('2026-09-16 12:34:56', $reloaded->completedAt()?->format('Y-m-d H:i:s'));
         } finally {
             $entityManager->clear();
             $connection->close();
@@ -293,6 +385,6 @@ final class MigrationsTest extends RepositoryTestCase
     /** @return list<array<string, mixed>> */
     private function tasks(Connection $connection): array
     {
-        return $connection->fetchAllAssociative('SELECT id, title FROM public.task_tracking_task ORDER BY id');
+        return $connection->fetchAllAssociative('SELECT id, title, owner_account_id, completed_at FROM public.task_tracking_task ORDER BY id');
     }
 }

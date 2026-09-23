@@ -74,6 +74,20 @@ compose() {
         --project-name "$PROJECT_ID" --file "$ROOT/compose.yaml" "$@"
 }
 
+seed_authorization_default() {
+    description=$1
+    shift
+    if ! compose run --rm --no-deps app php bin/console --no-interaction --quiet "$@"; then
+        fail "Failed to seed $description; an existing default may be incompatible or retired."
+    fi
+}
+
+seed_authorization_defaults() {
+    seed_authorization_default 'task user role' app:authorization:role:define task_tracking.user 'Task user' task_tracking.task.create task_tracking.task.view task_tracking.task.complete --if-absent
+    seed_authorization_default 'authorization administrator role' app:authorization:role:define authorizing.administrator 'Authorization administrator' authorizing.manage authorizing.catalogue.manage --if-absent
+    seed_authorization_default 'application administrator role' app:authorization:role:define application.administrator 'Application administrator' authorizing.manage authorizing.catalogue.manage task_tracking.task.create task_tracking.task.view task_tracking.task.complete --if-absent
+}
+
 jwt_keys() {
     key_operation=$1
     key_access=ro
@@ -115,9 +129,10 @@ setup() {
     compose run --rm --no-deps app composer install --no-interaction --prefer-dist
     compose up --detach --wait --wait-timeout 60 database
     compose run --rm --no-deps app php bin/console doctrine:migrations:migrate --no-interaction
+    seed_authorization_defaults
     compose up --detach --wait --wait-timeout 60 app
     address=$(compose port app 8080)
-    printf 'Application ready: http://%s\n' "$address"
+    printf 'Application ready with semantic authorization defaults: http://%s\n' "$address"
 }
 
 command=${1:-help}

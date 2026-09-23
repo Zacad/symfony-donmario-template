@@ -38,8 +38,9 @@ final readonly class ModuleInventoryPass implements CompilerPassInterface
                 $registered[$class] = true;
                 // Includes explicitly registered Domain services, without making
                 // Domain value objects/entities part of automatic service discovery.
-                if ($definition->isPublic() || !$definition->isAutowired() || !$definition->isAutoconfigured()) {
-                    throw new \LogicException('module.inventory.defaults: '.$class.' requires private, autowired, autoconfigured registration.');
+                $voter = ContractTypes::isAuthorizationVoter($class);
+                if ($definition->isPublic() || !$definition->isAutowired() || ($voter ? $definition->isAutoconfigured() : !$definition->isAutoconfigured())) {
+                    throw new \LogicException('module.inventory.defaults: '.$class.' requires private, autowired, '.($voter ? 'explicit' : 'autoconfigured').' registration.');
                 }
             }
         }

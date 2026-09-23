@@ -116,10 +116,53 @@ docker exec "$app" php -r 'if (getenv("POSTGRES_PASSWORD") !== false || file_exi
 docker exec "$app" php -r 'if (getenv("EVENT_TRANSPORT_DSN") !== "sync://") { exit(1); }'
 original=$(cksum < "$CHECKOUT/var/docker/local.env")
 
+# Setup, rather than consumer provisioning, must establish the exact runtime defaults.
+docker exec -i "$app" php > "$WORK/authorization-defaults.log" <<'PHP'
+<?php
+
+declare(strict_types=1);
+
+use App\Kernel;
+use Doctrine\Persistence\ManagerRegistry;
+
+require '/app/vendor/autoload.php';
+
+$kernel = new Kernel('dev', true);
+try {
+    $kernel->boot();
+    $registry = $kernel->getContainer()->get('doctrine');
+    if (!$registry instanceof ManagerRegistry) {
+        throw new RuntimeException('Doctrine registry unavailable.');
+    }
+    $connection = $registry->getConnection();
+    $roles = $connection->fetchAllAssociative(<<<'SQL'
+        SELECT d.role_key, d.label, d.revision, d.retired_at,
+               json_agg(m.permission_key ORDER BY m.permission_key)::text AS permissions
+        FROM public.authorizing_role d
+        JOIN public.authorizing_role_permission m ON m.role_key = d.role_key
+        GROUP BY d.role_key
+        ORDER BY d.role_key
+        SQL);
+    $expected = [
+        ['role_key' => 'application.administrator', 'label' => 'Application administrator', 'revision' => 1, 'retired_at' => null, 'permissions' => '["authorizing.catalogue.manage", "authorizing.manage", "task_tracking.task.complete", "task_tracking.task.create", "task_tracking.task.view"]'],
+        ['role_key' => 'authorizing.administrator', 'label' => 'Authorization administrator', 'revision' => 1, 'retired_at' => null, 'permissions' => '["authorizing.catalogue.manage", "authorizing.manage"]'],
+        ['role_key' => 'task_tracking.user', 'label' => 'Task user', 'revision' => 1, 'retired_at' => null, 'permissions' => '["task_tracking.task.complete", "task_tracking.task.create", "task_tracking.task.view"]'],
+    ];
+    if ($expected !== $roles) {
+        throw new RuntimeException('Setup authorization defaults are missing or incompatible.');
+    }
+    echo "Three exact authorization role snapshots verified.\n";
+} finally {
+    $kernel->shutdown();
+}
+PHP
+docker exec "$app" php bin/console app:architecture:check --database > "$WORK/architecture.log"
+
 # The ORM marker is in this disposable DEVELOPMENT checkout only, never the caller's DB.
 docker exec "$app" php docker/tools/consumer-task.php create > "$WORK/marker.log"
 docker exec "$app" php docker/tools/consumer-authenticating.php create > "$WORK/authenticating.log"
 docker exec "$app" php docker/tools/consumer-authorizing.php create > "$WORK/authorizing.log"
+docker exec "$app" php docker/tools/consumer-task-tracking.php create > "$WORK/task-tracking.log"
 docker exec "$app" php docker/tools/consumer-jwt.php create > "$WORK/jwt.log"
 test -f "$CHECKOUT/var/docker/jwt-initialized"
 key_marker=$(cksum < "$CHECKOUT/var/docker/jwt-initialized")
@@ -131,6 +174,7 @@ test -n "$app"
 test "$original" = "$(cksum < "$CHECKOUT/var/docker/local.env")"
 test "$key_marker" = "$(cksum < "$CHECKOUT/var/docker/jwt-initialized")"
 docker exec "$app" php docker/tools/consumer-authorizing.php read >> "$WORK/authorizing.log"
+docker exec "$app" php docker/tools/consumer-task-tracking.php read >> "$WORK/task-tracking.log"
 docker exec "$app" php docker/tools/consumer-jwt.php read >> "$WORK/jwt.log"
 consumer_logs "$CHECKOUT" "$project" "$image" before-recreation
 sh "$CHECKOUT/bin/dev" down > "$WORK/down-up.log" 2>&1
@@ -139,6 +183,7 @@ app=$(docker ps --quiet --filter "label=com.docker.compose.project=$project" --f
 docker exec "$app" php docker/tools/consumer-task.php read >> "$WORK/marker.log"
 docker exec "$app" php docker/tools/consumer-authenticating.php read >> "$WORK/authenticating.log"
 docker exec "$app" php docker/tools/consumer-authorizing.php read >> "$WORK/authorizing.log"
+docker exec "$app" php docker/tools/consumer-task-tracking.php read >> "$WORK/task-tracking.log"
 docker exec "$app" php docker/tools/consumer-jwt.php read >> "$WORK/jwt.log"
 docker exec "$app" php bin/console app:architecture:check --database >> "$WORK/marker.log"
 
@@ -174,6 +219,7 @@ DATABASE_URL=postgresql://wrong:wrong@invalid.invalid/app COMPOSE_PROJECT_NAME=w
 docker exec "$app" php docker/tools/consumer-task.php read >> "$WORK/marker.log"
 docker exec "$app" php docker/tools/consumer-authenticating.php read >> "$WORK/authenticating.log"
 docker exec "$app" php docker/tools/consumer-authorizing.php read >> "$WORK/authorizing.log"
+docker exec "$app" php docker/tools/consumer-task-tracking.php read >> "$WORK/task-tracking.log"
 docker exec "$app" php docker/tools/consumer-jwt.php read >> "$WORK/jwt.log"
 test "$key_marker" = "$(cksum < "$CHECKOUT/var/docker/jwt-initialized")"
 docker exec "$app" php bin/console app:architecture:check --database >> "$WORK/marker.log"
@@ -198,4 +244,5 @@ peer_address=$(docker compose --project-directory "$PEER" --env-file "$PEER/var/
 python3 "$CHECKOUT/docker/tools/authenticating-consumers.py" "$CHECKOUT" "$PEER" "$address" "$peer_address" >> "$WORK/authenticating.log" 2>&1
 docker exec "$app" php docker/tools/consumer-authenticating.php read >> "$WORK/authenticating.log"
 docker exec "$app" php docker/tools/consumer-authorizing.php read >> "$WORK/authorizing.log"
-printf '%s\n' 'Verified clean checkout, HTTP, repeat setup, persistence, authorization assignment UUID/row and decision persistence, terminal/pipe provisioning, native authentication, JWT key retention and cross-consumer rejection, two-consumer cookie isolation, missing/incomplete-settings refusal, dev/test and build-context isolation; cleaning up.'
+docker exec "$app" php docker/tools/consumer-task-tracking.php read >> "$WORK/task-tracking.log"
+printf '%s\n' 'Verified clean checkout, HTTP, repeat setup, three exact authorization role snapshots, clean role/permission assignment persistence, deprecated-schema absence through database architecture checks, owner-bound TaskTracking with no automatic assignment, terminal/pipe provisioning, native authentication, JWT key retention and cross-consumer rejection, two-consumer cookie isolation, missing/incomplete-settings refusal, dev/test and build-context isolation; cleaning up.'

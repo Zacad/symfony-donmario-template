@@ -14,6 +14,21 @@ use Symfony\Component\Filesystem\Filesystem;
 
 final class MigrationInventoryTest extends TestCase
 {
+    public function testAuthorizingUsesOnlyTheCleanBaselineMigration(): void
+    {
+        $directory = \dirname(__DIR__, 2).'/src/Module/Authorizing/Resources/migrations';
+        $files = [];
+        foreach (new \DirectoryIterator($directory) as $file) {
+            if ($file->isFile() && 'php' === $file->getExtension()) {
+                $files[] = $file->getFilename();
+            }
+        }
+        sort($files);
+
+        self::assertSame(['Version20260915010000.php'], $files);
+        self::assertTrue(class_exists('App\\Module\\Authorizing\\Resources\\migrations\\Version20260915010000'));
+    }
+
     public function testRealDirectoryDiscoveryAndChronologicalOrderingNeedNoConnection(): void
     {
         $fixture = new MigrationFixture();

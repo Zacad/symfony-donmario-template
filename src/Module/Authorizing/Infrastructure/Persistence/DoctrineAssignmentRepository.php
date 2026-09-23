@@ -4,54 +4,57 @@ declare(strict_types=1);
 
 namespace App\Module\Authorizing\Infrastructure\Persistence;
 
-use App\Module\Authorizing\Domain\Assignment;
-use App\Module\Authorizing\Domain\AssignmentChange;
-use App\Module\Authorizing\Domain\AssignmentChanges;
-use App\Module\Authorizing\Domain\AssignmentRepository;
-use App\Module\Authorizing\Domain\AuthorizationCatalog;
-use App\Module\Authorizing\Domain\InvalidAuthorizationInput;
+use App\Module\Authorizing\Domain\Assignment\AssignmentChangeCountsValueObject;
+use App\Module\Authorizing\Domain\Assignment\AssignmentChangeValueObject;
+use App\Module\Authorizing\Domain\Assignment\AssignmentKindEnum;
+use App\Module\Authorizing\Domain\Assignment\AssignmentOperationEnum;
+use App\Module\Authorizing\Domain\Assignment\AssignmentReferenceValueObject;
+use App\Module\Authorizing\Domain\Assignment\AssignmentRepository;
+use App\Module\Authorizing\Domain\Assignment\EntitlementCheckValueObject;
+use App\Module\Authorizing\Domain\Assignment\PermissionGrantEntity;
+use App\Module\Authorizing\Domain\Assignment\RoleAssignmentEntity;
+use App\Module\Authorizing\Domain\Capability\AuthorizationCatalogService;
+use App\Module\Authorizing\Domain\InvalidAuthorizationInputException;
+use App\Module\Authorizing\Domain\Role\RoleEntity;
 use Doctrine\ORM\EntityManagerInterface;
 use Symfony\Component\Uid\Uuid;
 
 final readonly class DoctrineAssignmentRepository implements AssignmentRepository
 {
-    private const array SOURCES = [
-        ['table' => 'authorizing_global_role_assignment', 'key' => 'role_key', 'kind' => 'role', 'scope' => 'global'],
-        ['table' => 'authorizing_resource_role_assignment', 'key' => 'role_key', 'kind' => 'role', 'scope' => 'resource'],
-        ['table' => 'authorizing_global_permission_grant', 'key' => 'permission_key', 'kind' => 'permission', 'scope' => 'global'],
-        ['table' => 'authorizing_resource_permission_grant', 'key' => 'permission_key', 'kind' => 'permission', 'scope' => 'resource'],
-    ];
-
-    public function __construct(private EntityManagerInterface $entityManager, private AuthorizationCatalog $catalog)
+    public function __construct(private EntityManagerInterface $entityManager, private AuthorizationCatalogService $catalog)
     {
     }
 
-    public function lockAccount(Uuid $accountId): void
+    public function change(Uuid $subjectId, AssignmentChangeValueObject ...$changes): AssignmentChangeCountsValueObject
     {
         $this->requireTransaction();
-        // One namespaced 64-bit key; PostgreSQL retains this lock until the root ends.
-        $this->entityManager->getConnection()->executeQuery(
-            'SELECT pg_advisory_xact_lock(hashtextextended(CAST(? AS text), 0))',
-            ['authorizing.account_assignments:'.$accountId->toRfc4122()],
-        )->free();
-    }
+        $this->lockSubject($subjectId);
+        $roles = $this->activeRolesForAdditions(...$changes);
 
-    public function change(Uuid $accountId, array $changes): AssignmentChanges
-    {
-        $this->requireTransaction();
+        /** @var array<string, array<string, list<RoleAssignmentEntity|PermissionGrantEntity|AssignmentReferenceValueObject>>> $groups */
         $groups = [];
         foreach ($changes as $change) {
-            $source = ('permission' === $change->kind ? 2 : 0) + ('resource' === $change->scope ? 1 : 0);
-            $groups[$source][$change->operation][] = $change;
+            $reference = $change->reference;
+            $item = $reference;
+            if (AssignmentOperationEnum::Add === $change->operation) {
+                $item = match ($reference->kind) {
+                    AssignmentKindEnum::Role => RoleAssignmentEntity::assign($subjectId, $roles[$reference->key]),
+                    AssignmentKindEnum::Permission => new PermissionGrantEntity($subjectId, $reference->key),
+                };
+            }
+            $groups[$reference->kind->value][$change->operation->value][] = $item;
         }
-        ksort($groups);
 
         $added = 0;
         $removed = 0;
-        foreach ($groups as $source => $operations) {
-            foreach ($operations as $operation => $items) {
-                $affected = $this->writeChanges($accountId, $source, $operation, $items);
-                if ('add' === $operation) {
+        foreach ([AssignmentKindEnum::Role, AssignmentKindEnum::Permission] as $kind) {
+            foreach ([AssignmentOperationEnum::Remove, AssignmentOperationEnum::Add] as $operation) {
+                $items = $groups[$kind->value][$operation->value] ?? [];
+                if ([] === $items) {
+                    continue;
+                }
+                $affected = $this->writeChanges($subjectId, $kind, $operation, $items);
+                if (AssignmentOperationEnum::Add === $operation) {
                     $added += $affected;
                 } else {
                     $removed += $affected;
@@ -59,182 +62,198 @@ final readonly class DoctrineAssignmentRepository implements AssignmentRepositor
             }
         }
 
-        return new AssignmentChanges($added, $removed, count($changes) - $added - $removed);
+        return new AssignmentChangeCountsValueObject($added, $removed);
     }
 
-    public function evaluate(array $checks, array $existingAccountIds): array
+    public function findPage(Uuid $subjectId, int $limit, ?AssignmentReferenceValueObject $after = null): array
+    {
+        if ($limit < 1 || $limit > 100) {
+            throw new InvalidAuthorizationInputException();
+        }
+
+        $parameters = [$subjectId->toRfc4122(), $subjectId->toRfc4122()];
+        $cursor = '';
+        if (null !== $after) {
+            $cursor = 'WHERE (kind_order, assignment_key) > (CAST(? AS integer), CAST(? AS text))';
+            array_push($parameters, self::kindOrder($after->kind), $after->key);
+        }
+        $parameters[] = $limit + 1;
+        $rows = $this->entityManager->getConnection()->fetchAllAssociative(
+            <<<SQL
+                WITH assignments (kind_order, assignment_kind, assignment_key) AS (
+                    SELECT 0, 'role', role_key
+                    FROM public.authorizing_role_assignment
+                    WHERE subject_id = CAST(? AS uuid)
+                    UNION ALL
+                    SELECT 1, 'permission', permission_key
+                    FROM public.authorizing_permission_grant
+                    WHERE subject_id = CAST(? AS uuid)
+                )
+                SELECT assignment_kind, assignment_key
+                FROM assignments
+                $cursor
+                ORDER BY kind_order, assignment_key
+                LIMIT CAST(? AS integer)
+                SQL,
+            $parameters,
+        );
+
+        return array_map(static function (array $row): AssignmentReferenceValueObject {
+            if (!is_string($row['assignment_kind'] ?? null) || !is_string($row['assignment_key'] ?? null)) {
+                throw new \UnexpectedValueException('Invalid stored authorization assignment.');
+            }
+
+            try {
+                return new AssignmentReferenceValueObject(AssignmentKindEnum::from($row['assignment_kind']), $row['assignment_key']);
+            } catch (\ValueError|InvalidAuthorizationInputException) {
+                throw new \UnexpectedValueException('Invalid stored authorization assignment.');
+            }
+        }, $rows);
+    }
+
+    public function evaluate(EntitlementCheckValueObject ...$checks): array
     {
         if ([] === $checks) {
             return [];
         }
 
-        $existing = [];
-        foreach ($existingAccountIds as $accountId) {
-            $existing[$accountId->toRfc4122()] = true;
-        }
-
         $values = [];
         $parameters = [];
-        $edges = [];
-        $edgeParameters = [];
         foreach ($checks as $ordinal => $check) {
-            $this->catalog->validateCheck($check);
-            $values[] = '(CAST(? AS integer), CAST(? AS uuid), CAST(? AS text), CAST(? AS text), CAST(? AS text), CAST(? AS uuid), CAST(? AS integer))';
+            $values[] = '(CAST(? AS integer), CAST(? AS uuid), CAST(? AS text), CAST(? AS integer))';
             array_push(
                 $parameters,
                 $ordinal,
-                $check->accountId->toRfc4122(),
+                $check->subjectId->toRfc4122(),
                 $check->permission,
-                $check->scope,
-                $check->resourceType,
-                $check->resourceId?->toRfc4122(),
-                isset($existing[$check->accountId->toRfc4122()]) && $this->catalog->isKnownPermission($check->permission) ? 1 : 0,
+                $this->catalog->isKnownPermission($check->permission) ? 1 : 0,
             );
-            foreach ($this->catalog->rolesForPermission($check->permission) as $role) {
-                $edges[] = '(CAST(? AS integer), CAST(? AS text))';
-                array_push($edgeParameters, $ordinal, $role);
-            }
         }
 
         $checkValues = implode(', ', $values);
-        $roleValues = [] === $edges ? '(NULL::integer, NULL::text)' : implode(', ', $edges);
-        $sql = <<<SQL
-            WITH permission_checks (ordinal, account_id, permission_key, scope, resource_type, resource_id, eligible) AS (
-                VALUES $checkValues
-            ), role_edges (ordinal, role_key) AS (
-                VALUES $roleValues
-            )
-            SELECT CASE WHEN c.eligible = 1 AND (
-                EXISTS (
-                    SELECT 1 FROM public.authorizing_global_role_assignment a
-                    JOIN role_edges e ON e.role_key = a.role_key AND e.ordinal = c.ordinal
-                    WHERE a.account_id = c.account_id
-                ) OR (
-                    c.scope = 'resource' AND EXISTS (
-                        SELECT 1 FROM public.authorizing_resource_role_assignment a
-                        JOIN role_edges e ON e.role_key = a.role_key AND e.ordinal = c.ordinal
-                        WHERE a.account_id = c.account_id
-                          AND a.resource_type = c.resource_type AND a.resource_id = c.resource_id
-                    )
-                ) OR EXISTS (
-                    SELECT 1 FROM public.authorizing_global_permission_grant a
-                    WHERE a.account_id = c.account_id AND a.permission_key = c.permission_key
-                ) OR (
-                    c.scope = 'resource' AND EXISTS (
-                        SELECT 1 FROM public.authorizing_resource_permission_grant a
-                        WHERE a.account_id = c.account_id AND a.permission_key = c.permission_key
-                          AND a.resource_type = c.resource_type AND a.resource_id = c.resource_id
-                    )
+        $rows = $this->entityManager->getConnection()->fetchFirstColumn(
+            <<<SQL
+                WITH permission_checks (ordinal, subject_id, permission_key, eligible) AS (
+                    VALUES $checkValues
                 )
-            ) THEN 1 ELSE 0 END AS allowed
-            FROM permission_checks c ORDER BY c.ordinal
-            SQL;
-
-        $rows = $this->entityManager->getConnection()->fetchFirstColumn($sql, [...$parameters, ...$edgeParameters]);
+                SELECT CASE WHEN c.eligible = 1 AND (
+                    EXISTS (
+                        SELECT 1
+                        FROM public.authorizing_role_assignment a
+                        JOIN public.authorizing_role r ON r.role_key = a.role_key AND r.retired_at IS NULL
+                        JOIN public.authorizing_role_permission m ON m.role_key = r.role_key AND m.permission_key = c.permission_key
+                        WHERE a.subject_id = c.subject_id
+                    ) OR EXISTS (
+                        SELECT 1
+                        FROM public.authorizing_permission_grant g
+                        WHERE g.subject_id = c.subject_id AND g.permission_key = c.permission_key
+                    )
+                ) THEN 1 ELSE 0 END AS allowed
+                FROM permission_checks c
+                ORDER BY c.ordinal
+                SQL,
+            $parameters,
+        );
         if (count($rows) !== count($checks)) {
             throw new \UnexpectedValueException('Invalid stored authorization decision.');
         }
-        $decisions = [];
-        foreach ($rows as $row) {
-            $decisions[] = match ($row) {
-                1, '1' => true,
-                0, '0' => false,
-                default => throw new \UnexpectedValueException('Invalid stored authorization decision.'),
-            };
-        }
 
-        return $decisions;
+        return array_map(static fn (mixed $row): bool => match ($row) {
+            1, '1' => true,
+            0, '0' => false,
+            default => throw new \UnexpectedValueException('Invalid stored authorization decision.'),
+        }, $rows);
     }
 
-    public function assignments(Uuid $accountId, int $limit, ?int $afterSource = null, ?Uuid $afterId = null): array
+    private function lockSubject(Uuid $subjectId): void
     {
-        if ($limit < 1 || $limit > 100 || (null === $afterSource) !== (null === $afterId)
-            || (null !== $afterSource && ($afterSource < 0 || $afterSource > 3))) {
-            throw new InvalidAuthorizationInput();
-        }
+        $this->entityManager->getConnection()->executeQuery(
+            'SELECT pg_advisory_xact_lock(hashtextextended(CAST(? AS text), 0))',
+            ['authorizing.subject_assignments:'.$subjectId->toRfc4122()],
+        )->free();
+    }
 
-        $branches = [];
-        $parameters = [];
-        foreach (self::SOURCES as $source => $definition) {
-            $table = $definition['table'];
-            $key = $definition['key'];
-            $kind = $definition['kind'];
-            $scope = $definition['scope'];
-            $coordinates = 'resource' === $scope ? 'resource_type, resource_id' : 'NULL::varchar AS resource_type, NULL::uuid AS resource_id';
-            $cursor = '';
-            $parameters[] = $accountId->toRfc4122();
-            if (null !== $afterSource && $source < $afterSource) {
-                $cursor = ' AND FALSE';
-            } elseif ($source === $afterSource && null !== $afterId) {
-                $cursor = ' AND id > CAST(? AS uuid)';
-                $parameters[] = $afterId->toRfc4122();
+    /** @return array<string, RoleEntity> */
+    private function activeRolesForAdditions(AssignmentChangeValueObject ...$changes): array
+    {
+        $keys = [];
+        foreach ($changes as $change) {
+            if (AssignmentOperationEnum::Add === $change->operation && AssignmentKindEnum::Role === $change->reference->kind) {
+                $keys[$change->reference->key] = true;
             }
-            $parameters[] = $limit + 1;
-            $branches[] = <<<SQL
-                (SELECT $source AS source, id, '$kind' AS kind, $key AS assignment_key, '$scope' AS scope, $coordinates
-                 FROM public.$table WHERE account_id = CAST(? AS uuid)$cursor
-                 ORDER BY id LIMIT CAST(? AS integer))
-                SQL;
+        }
+        if ([] === $keys) {
+            return [];
         }
 
-        $parameters[] = $limit + 1;
-        $sql = 'SELECT * FROM ('.implode(' UNION ALL ', $branches).') assignments ORDER BY source, id LIMIT CAST(? AS integer)';
-        $rows = $this->entityManager->getConnection()->fetchAllAssociative($sql, $parameters);
+        $this->entityManager->getConnection()->executeQuery(
+            'SELECT pg_advisory_xact_lock_shared(hashtextextended(CAST(? AS text), 0))',
+            ['authorizing.role_catalog'],
+        )->free();
 
-        return array_map($this->assignment(...), $rows);
-    }
-
-    /** @param list<AssignmentChange> $changes */
-    private function writeChanges(Uuid $accountId, int $source, string $operation, array $changes): int
-    {
-        $definition = self::SOURCES[$source];
-        $resource = 'resource' === $definition['scope'];
-        $table = $definition['table'];
-        $columns = 'account_id, '.$definition['key'].($resource ? ', resource_type, resource_id' : '');
         $values = [];
         $parameters = [];
-        foreach ($changes as $change) {
-            $placeholders = [];
-            if ('add' === $operation) {
-                $placeholders[] = 'CAST(? AS uuid)';
-                $parameters[] = Uuid::v7()->toRfc4122();
-            }
-            array_push($placeholders, 'CAST(? AS uuid)', 'CAST(? AS text)');
-            array_push($parameters, $accountId->toRfc4122(), $change->key);
-            if ($resource) {
-                array_push($placeholders, 'CAST(? AS text)', 'CAST(? AS uuid)');
-                array_push($parameters, $change->resourceType, $change->resourceId?->toRfc4122());
-            }
-            $values[] = '('.implode(', ', $placeholders).')';
+        foreach (array_keys($keys) as $key) {
+            $values[] = '(CAST(? AS text))';
+            $parameters[] = $key;
+        }
+        $requested = implode(', ', $values);
+        $rows = $this->entityManager->getConnection()->fetchAllAssociative(
+            <<<SQL
+                WITH requested (role_key) AS (VALUES $requested)
+                SELECT r.role_key, r.label, r.revision, r.retired_at,
+                       COALESCE(json_agg(m.permission_key ORDER BY m.permission_key) FILTER (WHERE m.permission_key IS NOT NULL), '[]')::text AS permissions
+                FROM requested q
+                JOIN public.authorizing_role r ON r.role_key = q.role_key AND r.retired_at IS NULL
+                LEFT JOIN public.authorizing_role_permission m ON m.role_key = r.role_key
+                GROUP BY r.role_key, r.label, r.revision, r.retired_at
+                ORDER BY r.role_key
+                SQL,
+            $parameters,
+        );
+
+        $roles = [];
+        foreach ($rows as $row) {
+            $role = DoctrineRoleRepository::reconstitute($row);
+            $roles[$role->key()] = $role;
+        }
+        if (count($roles) !== count($keys)) {
+            throw new InvalidAuthorizationInputException();
         }
 
+        return $roles;
+    }
+
+    /**
+     * @param list<RoleAssignmentEntity|PermissionGrantEntity|AssignmentReferenceValueObject> $items
+     */
+    private function writeChanges(Uuid $subjectId, AssignmentKindEnum $kind, AssignmentOperationEnum $operation, array $items): int
+    {
+        $table = AssignmentKindEnum::Role === $kind ? 'authorizing_role_assignment' : 'authorizing_permission_grant';
+        $keyColumn = AssignmentKindEnum::Role === $kind ? 'role_key' : 'permission_key';
+        $values = [];
+        $parameters = [];
+        foreach ($items as $item) {
+            $values[] = '(CAST(? AS uuid), CAST(? AS text))';
+            if ($item instanceof RoleAssignmentEntity) {
+                array_push($parameters, $item->subjectId()->toRfc4122(), $item->role()->key());
+            } elseif ($item instanceof PermissionGrantEntity) {
+                array_push($parameters, $item->subjectId()->toRfc4122(), $item->permissionKey());
+            } else {
+                array_push($parameters, $subjectId->toRfc4122(), $item->key);
+            }
+        }
         $tuples = implode(', ', $values);
-        $sql = 'add' === $operation
-            ? "INSERT INTO public.$table (id, $columns) VALUES $tuples ON CONFLICT ($columns) DO NOTHING"
-            : "DELETE FROM public.$table WHERE ($columns) IN ($tuples)";
+        $sql = AssignmentOperationEnum::Add === $operation
+            ? "INSERT INTO public.$table (subject_id, $keyColumn) VALUES $tuples ON CONFLICT (subject_id, $keyColumn) DO NOTHING"
+            : "DELETE FROM public.$table WHERE (subject_id, $keyColumn) IN ($tuples)";
 
         return (int) $this->entityManager->getConnection()->executeStatement($sql, $parameters);
     }
 
-    /** @param array<string, mixed> $row */
-    private function assignment(array $row): Assignment
+    private static function kindOrder(AssignmentKindEnum $kind): int
     {
-        if (!is_string($row['id']) || !in_array($row['source'], [0, 1, 2, 3, '0', '1', '2', '3'], true)
-            || !is_string($row['kind']) || !is_string($row['assignment_key']) || !is_string($row['scope'])
-            || (null !== $row['resource_type'] && !is_string($row['resource_type']))
-            || (null !== $row['resource_id'] && !is_string($row['resource_id']))) {
-            throw new \UnexpectedValueException('Invalid stored authorization assignment.');
-        }
-
-        return new Assignment(
-            Uuid::fromString($row['id']),
-            (int) $row['source'],
-            $row['kind'],
-            $row['assignment_key'],
-            $row['scope'],
-            $row['resource_type'],
-            null === $row['resource_id'] ? null : Uuid::fromString($row['resource_id']),
-        );
+        return AssignmentKindEnum::Role === $kind ? 0 : 1;
     }
 
     private function requireTransaction(): void

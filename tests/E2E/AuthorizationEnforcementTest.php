@@ -8,16 +8,20 @@ use App\Module\Authenticating\Application\CheckAccountExistence\CheckAccountExis
 use App\Module\Authenticating\Application\GetAccountIdentity\GetAccountIdentityQuery;
 use App\Module\Authenticating\Application\GetAccountIdentity\GetAccountIdentityResult;
 use App\Module\Authenticating\Infrastructure\Framework\Symfony\Security\AccountPrincipal;
-use App\Module\Authorizing\Application\ChangeAccountAssignments\AssignmentChangeInput;
-use App\Module\Authorizing\Application\ChangeAccountAssignments\ChangeAccountAssignmentsCommand;
-use App\Module\Authorizing\Application\ChangeAccountAssignments\ChangeAccountAssignmentsResult;
-use App\Module\Authorizing\Application\EvaluatePermissions\EvaluatePermissionsQuery;
-use App\Module\Authorizing\Application\EvaluatePermissions\PermissionCheckInput;
-use App\Module\Authorizing\Application\ListAccountAssignments\ListAccountAssignmentsQuery;
-use App\Module\Authorizing\Application\ListAccountAssignments\ListAccountAssignmentsResult;
+use App\Module\Authorizing\Application\ChangeSubjectAssignments\AssignmentChangeInput;
+use App\Module\Authorizing\Application\ChangeSubjectAssignments\ChangeSubjectAssignmentsCommand;
+use App\Module\Authorizing\Application\ChangeSubjectAssignments\ChangeSubjectAssignmentsResult;
+use App\Module\Authorizing\Application\EvaluateSubjectEntitlements\EntitlementCheckInput;
+use App\Module\Authorizing\Application\EvaluateSubjectEntitlements\EvaluateSubjectEntitlementsQuery;
+use App\Module\Authorizing\Application\ListSubjectAssignments\ListSubjectAssignmentsQuery;
+use App\Module\Authorizing\Application\ListSubjectAssignments\ListSubjectAssignmentsResult;
+use App\Module\TaskTracking\Application\CompleteTask\CompleteTaskCommand;
+use App\Module\TaskTracking\Application\CompleteTask\CompleteTaskResult;
 use App\Module\TaskTracking\Application\CreateTask\CreateTaskCommand;
 use App\Module\TaskTracking\Application\GetTask\GetTaskQuery;
 use App\Module\TaskTracking\Application\GetTask\GetTaskResult;
+use App\Module\TaskTracking\Application\ListTasks\ListTasksQuery;
+use App\Module\TaskTracking\Application\ListTasks\ListTasksResult;
 use App\Module\TaskTracking\Domain\Task;
 use App\Platform\Authorization\AuthorizationDenied;
 use App\Platform\Messaging\CommandBus;
@@ -44,14 +48,8 @@ final class AuthorizationEnforcementTest extends DatabaseTestCase
 {
     private const string VIEW = 'task_tracking.task.view';
     private const string CREATE = 'task_tracking.task.create';
-    private const string TYPE = 'task_tracking.task';
     private const string STATE = '/app/var/authorization-enforcement-state.json';
-    private const array TABLES = [
-        'authorizing_global_role_assignment',
-        'authorizing_resource_role_assignment',
-        'authorizing_global_permission_grant',
-        'authorizing_resource_permission_grant',
-    ];
+    private const array TABLES = ['authorizing_role_assignment', 'authorizing_permission_grant'];
 
     private Connection $connection;
     private Connection $observer;
@@ -75,7 +73,7 @@ final class AuthorizationEnforcementTest extends DatabaseTestCase
     {
         parent::setUp();
         // Deliberately no connection in setUp: the outage phase must boot and
-        // reach actual policy reads with PostgreSQL unavailable.
+        // reach actual voter support reads with PostgreSQL unavailable.
         self::bootKernel(['environment' => 'test', 'debug' => false]);
         $container = self::getContainer();
         $connection = $container->get('doctrine.dbal.default_connection');
@@ -108,13 +106,14 @@ final class AuthorizationEnforcementTest extends DatabaseTestCase
             $this->sql->stop();
             $this->fault->afterAdd = null;
             $this->fault->afterFind = null;
+            $this->fault->afterFindForCompletion = null;
             $this->tokens->setToken(null);
         }
         if (isset($this->observer)) {
             if (!$this->retain) {
                 foreach ($this->accounts as $account) {
                     foreach (self::TABLES as $table) {
-                        $this->observer->executeStatement('DELETE FROM public.'.$table.' WHERE account_id = ?', [$account->toRfc4122()]);
+                        $this->observer->executeStatement('DELETE FROM public.'.$table.' WHERE subject_id = ?', [$account->toRfc4122()]);
                     }
                     $this->observer->executeStatement('DELETE FROM public.authenticating_account WHERE id = ?', [$account->toRfc4122()]);
                 }
@@ -125,15 +124,15 @@ final class AuthorizationEnforcementTest extends DatabaseTestCase
         parent::tearDown();
     }
 
-    public function testAnonymousAndUngrantedActorsNeverReachTaskHandlers(): void
+    public function testAnonymousAndUngrantedActorsFailAdmissionBeforeTaskHandlers(): void
     {
         $account = $this->seedAccount();
-        $task = $this->seedTask();
+        $task = $this->seedTask($account);
         $this->forbidTaskHandlers();
         foreach ([null, $account] as $actor) {
             $this->sql->start();
             $this->asAccount($actor, function () use ($actor, $task): void {
-                $this->denied(fn () => $this->commands->dispatch(new CreateTaskCommand($this->prefix.'-denied')), null !== $actor);
+                $this->denied(fn () => $this->commands->dispatch(new CreateTaskCommand($this->prefix.'-denied', $actor)), null !== $actor);
                 $this->denied(fn () => $this->queries->ask(new GetTaskQuery($task->toRfc4122())), null !== $actor);
             });
             self::assertSame([], $this->sql->writes());
@@ -152,27 +151,25 @@ final class AuthorizationEnforcementTest extends DatabaseTestCase
         self::assertSame(1, $this->taskCount());
     }
 
-    public function testNativeSessionUsesLiveScopedAndGlobalGrantsAndImmediateRevocation(): void
+    public function testNativeSessionUsesLiveGrantsExactOwnershipAndImmediateRevocation(): void
     {
         $account = $this->seedAccount();
         $other = $this->seedAccount();
-        $task = $this->seedTask();
-        $different = $this->seedTask();
+        $task = $this->seedTask($account);
+        $different = $this->seedTask($account);
+        $foreign = $this->seedTask($other);
         $browser = $this->login($account);
         $session = Browser::session($browser);
         $otherBrowser = $this->login($other);
         $this->httpDenied($browser, 'GET', '/_demo/tasks/'.$task, 403);
 
-        $this->operatorPermission($account, self::VIEW, $task);
+        $this->operatorPermission($account, self::VIEW);
         $this->httpTask($browser, $task);
-        $this->httpDenied($browser, 'GET', '/_demo/tasks/'.$different, 403);
+        $this->httpTask($browser, $different);
+        $this->httpDenied($browser, 'GET', '/_demo/tasks/'.$foreign, 403);
         $this->httpDenied($otherBrowser, 'GET', '/_demo/tasks/'.$task, 403);
         $this->httpDenied($browser, 'POST', '/_demo/tasks', 403, ['title' => $this->prefix.'-not-creator']);
 
-        $this->operatorPermission($account, self::VIEW);
-        $this->operatorPermission($account, self::VIEW, $task, 'revoke');
-        $this->httpTask($browser, $task);
-        $this->httpTask($browser, $different);
         $this->operatorPermission($account, self::CREATE);
         $browser->jsonRequest('POST', '/_demo/tasks', ['title' => $this->prefix.'-created']);
         self::assertSame(201, $browser->getResponse()->getStatusCode());
@@ -180,7 +177,6 @@ final class AuthorizationEnforcementTest extends DatabaseTestCase
         self::assertIsArray($payload);
         self::assertIsString($payload['id']);
         $this->httpTask($browser, Uuid::fromString($payload['id']));
-
         $this->operatorPermission($account, self::VIEW, operation: 'revoke');
         $this->operatorPermission($account, self::CREATE, operation: 'revoke');
         $this->httpDenied($browser, 'GET', '/_demo/tasks/'.$task, 403);
@@ -188,42 +184,45 @@ final class AuthorizationEnforcementTest extends DatabaseTestCase
         $browser->request('GET', '/account');
         self::assertSame(200, $browser->getResponse()->getStatusCode(), 'Revocation affects business access, while the native session remains authenticated.');
         self::assertTrue(hash_equals($session, Browser::session($browser)), 'The existing session is reused without reauthentication.');
-        self::assertSame(3, $this->taskCount());
+        self::assertSame(4, $this->taskCount());
     }
 
     public function testAssignmentAuthorityComesFromAdministratorActorNotRecipient(): void
     {
         $admin = $this->seedAccount();
         $recipient = $this->seedAccount();
-        $task = $this->seedTask();
+        $task = $this->seedTask($recipient);
         $this->seedPermission($admin, 'authorizing.manage');
-        $change = new ChangeAccountAssignmentsCommand($recipient, [new AssignmentChangeInput('add', 'permission', self::VIEW, 'resource', self::TYPE, $task)]);
+        $change = new ChangeSubjectAssignmentsCommand($recipient, [
+            new AssignmentChangeInput('add', 'permission', self::VIEW),
+        ]);
         $this->asAccount($admin, function () use ($change, $recipient): void {
             $result = $this->commands->dispatch($change);
-            self::assertInstanceOf(ChangeAccountAssignmentsResult::class, $result);
+            self::assertInstanceOf(ChangeSubjectAssignmentsResult::class, $result);
             self::assertSame(1, $result->added);
-            $page = $this->queries->ask(new ListAccountAssignmentsQuery($recipient));
-            self::assertInstanceOf(ListAccountAssignmentsResult::class, $page);
-            self::assertCount(1, $page->assignments);
+            self::assertSame(0, $result->removed);
+            $page = $this->queries->ask(new ListSubjectAssignmentsQuery($recipient));
+            self::assertInstanceOf(ListSubjectAssignmentsResult::class, $page);
+            self::assertSame([['kind' => 'permission', 'key' => self::VIEW]], array_map(static fn ($assignment): array => ['kind' => $assignment->kind, 'key' => $assignment->key], $page->assignments));
         });
         $this->asAccount($recipient, function () use ($recipient, $admin, $task): void {
             self::assertInstanceOf(GetTaskResult::class, $this->queries->ask(new GetTaskQuery($task->toRfc4122())));
             foreach ([$recipient, $admin] as $target) {
-                $this->denied(fn () => $this->commands->dispatch(new ChangeAccountAssignmentsCommand($target, [new AssignmentChangeInput('add', 'permission', 'authorizing.manage', 'global')])), true);
-                $this->denied(fn () => $this->queries->ask(new ListAccountAssignmentsQuery($target)), true);
+                $this->denied(fn () => $this->commands->dispatch(new ChangeSubjectAssignmentsCommand($target, [new AssignmentChangeInput('add', 'permission', 'authorizing.manage')])), true);
+                $this->denied(fn () => $this->queries->ask(new ListSubjectAssignmentsQuery($target)), true);
             }
         });
-        self::assertSame(0, $this->observer->fetchOne('SELECT count(*) FROM authorizing_global_permission_grant WHERE account_id = ?', [$recipient->toRfc4122()]));
+        self::assertSame(1, $this->observer->fetchOne('SELECT count(*) FROM authorizing_permission_grant WHERE subject_id = ?', [$recipient->toRfc4122()]));
         $this->asAccount($admin, function () use ($recipient, $task): void {
-            $result = $this->commands->dispatch(new ChangeAccountAssignmentsCommand($recipient, [new AssignmentChangeInput('remove', 'permission', self::VIEW, 'resource', self::TYPE, $task)]));
-            self::assertInstanceOf(ChangeAccountAssignmentsResult::class, $result);
+            $result = $this->commands->dispatch(new ChangeSubjectAssignmentsCommand($recipient, [new AssignmentChangeInput('remove', 'permission', self::VIEW)]));
+            self::assertInstanceOf(ChangeSubjectAssignmentsResult::class, $result);
             self::assertSame(1, $result->removed);
             $this->denied(fn () => $this->queries->ask(new GetTaskQuery($task->toRfc4122())), true, 'Management authority does not implicitly grant task access.');
         });
         $this->asAccount($recipient, fn () => $this->denied(fn () => $this->queries->ask(new GetTaskQuery($task->toRfc4122())), true));
     }
 
-    public function testSelfIdentityAndFoundationQueriesCannotBeUsedAsArbitraryReadApis(): void
+    public function testSelfIdentityAndSupportReadsCannotBeInvokedAsArbitraryApis(): void
     {
         $account = $this->seedAccount();
         $other = $this->seedAccount();
@@ -236,26 +235,26 @@ final class AuthorizationEnforcementTest extends DatabaseTestCase
             $this->sql->start();
             $this->denied(fn () => $this->queries->ask(new GetAccountIdentityQuery($other)), true);
             $this->denied(fn () => $this->queries->ask(new CheckAccountExistenceQuery([$other])), true);
-            $this->denied(fn () => $this->queries->ask(new EvaluatePermissionsQuery([new PermissionCheckInput($other, self::VIEW, 'global')])), true);
-            self::assertSame([], $this->sql->statements, 'Direct foundation and cross-account identity denials must not read protected data.');
+            $this->denied(fn () => $this->queries->ask(new EvaluateSubjectEntitlementsQuery([new EntitlementCheckInput($other, self::VIEW)])), true);
+            self::assertSame([], $this->sql->statements, 'Direct support-read and cross-account identity denials must not read protected data.');
             $this->sql->stop();
         });
         $this->asAccount(null, fn () => $this->denied(fn () => $this->queries->ask(new GetAccountIdentityQuery($account)), false));
     }
 
-    public function testBareCliBusAndStaleNativeTokenDenyWhileSupportedOperatorAdaptersWork(): void
+    public function testDirectBusWithoutActorScopeDeniesWhileOperatorAdaptersWork(): void
     {
         $account = $this->seedAccount();
-        $task = $this->seedTask();
+        $task = $this->seedTask($account);
         $this->seedPermission($account, self::CREATE);
         $this->seedPermission($account, self::VIEW);
         self::assertNull($this->requests->getMainRequest());
         foreach ([null, $this->token($account)] as $token) {
             $this->tokens->setToken($token);
             try {
-                $this->denied(fn () => $this->commands->dispatch(new CreateTaskCommand($this->prefix.'-bare')), false);
+                $this->denied(fn () => $this->commands->dispatch(new CreateTaskCommand($this->prefix.'-bare', $account)), false);
                 $this->denied(fn () => $this->queries->ask(new GetTaskQuery($task->toRfc4122())), false);
-                $this->denied(fn () => $this->commands->dispatch(new ChangeAccountAssignmentsCommand($account, [new AssignmentChangeInput('add', 'permission', 'authorizing.manage', 'global')])), false);
+                $this->denied(fn () => $this->commands->dispatch(new ChangeSubjectAssignmentsCommand($account, [new AssignmentChangeInput('add', 'permission', 'authorizing.manage')])), false);
             } finally {
                 $this->tokens->setToken(null);
             }
@@ -268,17 +267,17 @@ final class AuthorizationEnforcementTest extends DatabaseTestCase
         self::assertTrue(Uuid::isValid($id));
         $show = $this->cli(['app:task:show', $id]);
         self::assertSame(0, $show->getExitCode());
-        self::assertSame(['id' => $id, 'title' => $this->prefix.'-operator'], json_decode($show->getOutput(), true, flags: JSON_THROW_ON_ERROR));
+        self::assertSame(['id' => $id, 'title' => $this->prefix.'-operator', 'ownerAccountId' => null, 'completedAt' => null], json_decode($show->getOutput(), true, flags: JSON_THROW_ON_ERROR));
         $this->operatorPermission($account, 'authorizing.manage');
         self::assertSame(2, $this->taskCount());
         $this->denied(fn () => $this->queries->ask(new GetTaskQuery($id)), false, 'A previous scoped execution must not leak operator authority.');
     }
 
-    public function testSuccessfulGetUsesTwoReadOnlyPermissionFactsAndOneTaskRead(): void
+    public function testSuccessfulGetUsesBoundedVoterSupportReadsBeforeTaskRead(): void
     {
         $account = $this->seedAccount();
-        $task = $this->seedTask();
-        $this->seedPermission($account, self::VIEW, $task);
+        $task = $this->seedTask($account);
+        $this->seedPermission($account, self::VIEW);
         // Native token setup is outside capture: unlike HTTP this path does not
         // include the independent credential-provider read.
         $this->asAccount($account, function () use ($task): void {
@@ -288,21 +287,20 @@ final class AuthorizationEnforcementTest extends DatabaseTestCase
                 self::assertInstanceOf(GetTaskResult::class, $result);
                 self::assertTrue($task->equals($result->id));
                 $reads = $this->sql->reads();
-                self::assertCount(3, $reads, 'Each independent call rechecks live permission facts; no recursive policy reads or cached decisions.');
+                self::assertCount(3, $reads, 'Each independent call rechecks account, global entitlement and ownership; handling reuses the owned Task snapshot.');
                 self::assertStringContainsString('authenticating_account', $reads[0]['sql']);
                 self::assertStringNotContainsString('password', $reads[0]['sql']);
                 self::assertStringNotContainsString('email', $reads[0]['sql']);
-                foreach (self::TABLES as $table) {
-                    self::assertStringContainsString($table, $reads[1]['sql']);
-                }
+                self::assertStringContainsString('authorizing_role_assignment', $reads[1]['sql']);
+                self::assertStringContainsString('authorizing_permission_grant', $reads[1]['sql']);
                 self::assertStringContainsString('task_tracking_task', $reads[2]['sql']);
-                self::assertSame([], $this->sql->writes(), 'Policy QueryBus facts and the protected Get are read-only.');
+                self::assertSame([], $this->sql->writes(), 'Voter support reads and the protected Get are read-only.');
                 self::assertCount(3, $this->sql->statements);
                 self::assertFalse($this->connection->isTransactionActive());
                 $this->sql->stop();
             }
         });
-        $this->observer->executeStatement('DELETE FROM authorizing_resource_permission_grant WHERE account_id = ?', [$account->toRfc4122()]);
+        $this->observer->executeStatement('DELETE FROM authorizing_permission_grant WHERE subject_id = ? AND permission_key = ?', [$account->toRfc4122(), self::VIEW]);
         $this->forbidTaskHandlers();
         $this->asAccount($account, fn () => $this->denied(fn () => $this->queries->ask(new GetTaskQuery($task->toRfc4122())), true));
     }
@@ -327,44 +325,44 @@ final class AuthorizationEnforcementTest extends DatabaseTestCase
             $scheduled = $task->id();
             $this->fault->afterAdd = static function (): never { self::fail('No handler may run after the caught denial.'); };
             self::assertSame(0, $this->connection->fetchOne('SELECT count(*) FROM task_tracking_task WHERE id = ?', [$scheduled->toRfc4122()]));
-            $result = $this->commands->dispatch(new ChangeAccountAssignmentsCommand($recipient, [new AssignmentChangeInput('add', 'permission', self::VIEW, 'resource', self::TYPE, $scheduled)]));
-            self::assertInstanceOf(ChangeAccountAssignmentsResult::class, $result);
+            $result = $this->commands->dispatch(new ChangeSubjectAssignmentsCommand($recipient, [new AssignmentChangeInput('add', 'permission', self::VIEW)]));
+            self::assertInstanceOf(ChangeSubjectAssignmentsResult::class, $result);
             self::assertSame(1, $result->added);
-            self::assertSame(1, $this->connection->fetchOne('SELECT count(*) FROM authorizing_resource_permission_grant WHERE account_id = ?', [$recipient->toRfc4122()]));
-            self::assertSame(0, $this->observer->fetchOne('SELECT count(*) FROM authorizing_resource_permission_grant WHERE account_id = ?', [$recipient->toRfc4122()]), 'The successful nested write is immediate but not independently committed.');
+            self::assertSame(1, $this->connection->fetchOne('SELECT count(*) FROM authorizing_permission_grant WHERE subject_id = ?', [$recipient->toRfc4122()]));
+            self::assertSame(0, $this->observer->fetchOne('SELECT count(*) FROM authorizing_permission_grant WHERE subject_id = ?', [$recipient->toRfc4122()]), 'The successful nested write is immediate but not independently committed.');
             if ($command) {
-                $removed = $this->commands->dispatch(new ChangeAccountAssignmentsCommand($actor, [new AssignmentChangeInput('remove', 'permission', self::CREATE, 'global')]));
-                self::assertInstanceOf(ChangeAccountAssignmentsResult::class, $removed);
+                $removed = $this->commands->dispatch(new ChangeSubjectAssignmentsCommand($actor, [new AssignmentChangeInput('remove', 'permission', self::CREATE)]));
+                self::assertInstanceOf(ChangeSubjectAssignmentsResult::class, $removed);
                 self::assertSame(1, $removed->removed);
             }
             try {
                 if ($command) {
-                    $this->commands->dispatch(new CreateTaskCommand($this->prefix.'-nested-denied'));
+                    $this->commands->dispatch(new CreateTaskCommand($this->prefix.'-nested-denied', $actor));
                 } else {
                     $this->queries->ask(new GetTaskQuery($scheduled->toRfc4122()));
                 }
             } catch (AuthorizationDenied) {
                 $caught = true;
             }
-            self::assertTrue($caught, 'The policy denial must happen inside the root, before handler execution.');
+            self::assertTrue($caught, 'The voter denial must happen inside the root, before handler execution.');
             // Even the otherwise-authorized admin command cannot run after the
-            // nested failure has been caught. Its policy cannot heal the root.
-            $this->denied(fn () => $this->commands->dispatch(new ChangeAccountAssignmentsCommand($recipient, [new AssignmentChangeInput('add', 'permission', self::VIEW, 'global')])), true);
+            // nested failure has been caught. A new admission cannot heal the root.
+            $this->denied(fn () => $this->commands->dispatch(new ChangeSubjectAssignmentsCommand($recipient, [new AssignmentChangeInput('add', 'permission', self::VIEW)])), true);
         };
-        $this->asAccount($actor, fn () => $this->denied(fn () => $this->commands->dispatch(new CreateTaskCommand($this->prefix.'-outer')), true));
+        $this->asAccount($actor, fn () => $this->denied(fn () => $this->commands->dispatch(new CreateTaskCommand($this->prefix.'-outer', $actor)), true));
         self::assertInstanceOf(Uuid::class, $scheduled);
         self::assertTrue($caught);
         self::assertSame(0, $this->taskCount());
         foreach (self::TABLES as $table) {
-            self::assertSame(0, $this->observer->fetchOne('SELECT count(*) FROM '.$table.' WHERE account_id = ?', [$recipient->toRfc4122()]));
+            self::assertSame(0, $this->observer->fetchOne('SELECT count(*) FROM '.$table.' WHERE subject_id = ?', [$recipient->toRfc4122()]));
         }
-        self::assertSame(1, $this->observer->fetchOne('SELECT count(*) FROM authorizing_global_permission_grant WHERE account_id = ? AND permission_key = ?', [$actor->toRfc4122(), self::CREATE]));
+        self::assertSame(1, $this->observer->fetchOne('SELECT count(*) FROM authorizing_permission_grant WHERE subject_id = ? AND permission_key = ?', [$actor->toRfc4122(), self::CREATE]));
         self::assertFalse($this->connection->isTransactionActive());
         $this->fault->afterAdd = null;
-        $id = $this->asAccount($actor, fn () => $this->commands->dispatch(new CreateTaskCommand($this->prefix.'-recovered')));
+        $id = $this->asAccount($actor, fn () => $this->commands->dispatch(new CreateTaskCommand($this->prefix.'-recovered', $actor)));
         self::assertInstanceOf(Uuid::class, $id);
         self::assertSame(1, $this->taskCount(), 'The same bus and connection recover after rollback.');
-        $this->asAccount($recipient, fn () => $this->denied(fn () => $this->commands->dispatch(new CreateTaskCommand($this->prefix.'-wrong-actor')), true));
+        $this->asAccount($recipient, fn () => $this->denied(fn () => $this->commands->dispatch(new CreateTaskCommand($this->prefix.'-wrong-actor', $recipient)), true));
         self::assertSame(1, $this->taskCount());
     }
 
@@ -373,10 +371,12 @@ final class AuthorizationEnforcementTest extends DatabaseTestCase
     {
         self::assertFileDoesNotExist(self::STATE, 'Use a fresh isolated runner var volume for this journey.');
         $account = $this->seedAccount();
-        $task = $this->seedTask();
+        $task = $this->seedTask($account);
         $this->seedPermission($account, self::VIEW);
         $this->seedPermission($account, self::CREATE);
         $this->asAccount($account, fn () => self::assertInstanceOf(GetTaskResult::class, $this->queries->ask(new GetTaskQuery($task->toRfc4122()))));
+        $this->seedPermission($account, 'task_tracking.task.complete');
+        $this->asAccount($account, fn () => self::assertInstanceOf(ListTasksResult::class, $this->queries->ask(new ListTasksQuery($account))));
         $mask = umask(0077);
         try {
             self::assertNotFalse(file_put_contents(self::STATE, json_encode(['account' => $account->toRfc4122(), 'task' => $task->toRfc4122(), 'prefix' => $this->prefix], JSON_THROW_ON_ERROR), LOCK_EX));
@@ -393,17 +393,20 @@ final class AuthorizationEnforcementTest extends DatabaseTestCase
         $account = Uuid::fromString($state['account']);
         $this->prefix = $state['prefix'];
         $this->forbidTaskHandlers();
-        foreach ([false, true] as $command) {
+        foreach (['create', 'get', 'list', 'complete'] as $operation) {
             $failed = false;
             $started = microtime(true);
             try {
-                $this->asAccount($account, fn () => $command
-                    ? $this->commands->dispatch(new CreateTaskCommand($this->prefix.'-outage-write'))
-                    : $this->queries->ask(new GetTaskQuery($state['task'])));
+                $this->asAccount($account, fn () => match ($operation) {
+                    'create' => $this->commands->dispatch(new CreateTaskCommand($this->prefix.'-outage-write', $account)),
+                    'get' => $this->queries->ask(new GetTaskQuery($state['task'])),
+                    'list' => $this->queries->ask(new ListTasksQuery($account)),
+                    'complete' => $this->commands->dispatch(new CompleteTaskCommand($state['task'])),
+                });
             } catch (DatabaseException) {
                 $failed = true;
             }
-            self::assertTrue($failed, 'Unavailable permission facts cannot fall back to a prior allow decision.');
+            self::assertTrue($failed, 'Unavailable voter support reads cannot fall back to a prior allow decision.');
             self::assertLessThan(15, microtime(true) - $started);
             self::assertFalse($this->connection->isTransactionActive());
             self::assertNull($this->requests->getMainRequest());
@@ -422,13 +425,25 @@ final class AuthorizationEnforcementTest extends DatabaseTestCase
         $this->accounts[] = $account;
         $this->connectObserver();
         self::assertSame(1, $this->taskCount(), 'The prepared task survived and the outage command created nothing.');
-        $this->asAccount($account, function () use ($state): void {
+        $this->asAccount($account, function () use ($state, $account): void {
             self::assertInstanceOf(GetTaskResult::class, $this->queries->ask(new GetTaskQuery($state['task'])));
-            self::assertInstanceOf(Uuid::class, $this->commands->dispatch(new CreateTaskCommand($this->prefix.'-after-outage')));
+            self::assertInstanceOf(Uuid::class, $this->commands->dispatch(new CreateTaskCommand($this->prefix.'-after-outage', $account)));
         });
         self::assertSame(2, $this->taskCount());
         $browser = $this->login($account);
         $this->httpTask($browser, Uuid::fromString($state['task']));
+        $this->asAccount($account, function () use ($state, $account): void {
+            $page = $this->queries->ask(new ListTasksQuery($account));
+            self::assertInstanceOf(ListTasksResult::class, $page);
+            self::assertTrue((bool) array_filter($page->tasks, static fn ($task): bool => $task->id->toRfc4122() === $state['task']));
+            $complete = $this->commands->dispatch(new CompleteTaskCommand($state['task']));
+            self::assertInstanceOf(CompleteTaskResult::class, $complete);
+            self::assertTrue($complete->changed, 'Outage completion never wrote or retained a pending completion.');
+            $again = $this->commands->dispatch(new CompleteTaskCommand($state['task']));
+            self::assertInstanceOf(CompleteTaskResult::class, $again);
+            self::assertFalse($again->changed);
+            self::assertEquals($complete->completedAt, $again->completedAt);
+        });
         $this->operatorPermission($account, self::VIEW, operation: 'revoke');
         $this->httpDenied($browser, 'GET', '/_demo/tasks/'.$state['task'], 403);
         self::assertTrue(unlink(self::STATE));
@@ -458,21 +473,18 @@ final class AuthorizationEnforcementTest extends DatabaseTestCase
         return $this->prefix.'-'.str_replace('-', '', $id->toRfc4122()).'@example.test';
     }
 
-    private function seedTask(): Uuid
+    private function seedTask(?Uuid $owner = null): Uuid
     {
         $this->connectObserver();
         $id = Uuid::v7();
-        $this->observer->executeStatement('INSERT INTO task_tracking_task (id, title) VALUES (?, ?)', [$id->toRfc4122(), $this->prefix.'-'.$id->toRfc4122()]);
+        $this->observer->executeStatement('INSERT INTO task_tracking_task (id, title, owner_account_id) VALUES (?, ?, ?)', [$id->toRfc4122(), $this->prefix.'-'.$id->toRfc4122(), $owner?->toRfc4122()]);
 
         return $id;
     }
 
-    private function seedPermission(Uuid $account, string $permission, ?Uuid $task = null): void
+    private function seedPermission(Uuid $account, string $permission): void
     {
-        $this->observer->executeStatement(null === $task
-            ? 'INSERT INTO authorizing_global_permission_grant (id, account_id, permission_key) VALUES (?, ?, ?)'
-            : 'INSERT INTO authorizing_resource_permission_grant (id, account_id, permission_key, resource_type, resource_id) VALUES (?, ?, ?, ?, ?)',
-            [Uuid::v7()->toRfc4122(), $account->toRfc4122(), $permission, ...(null === $task ? [] : [self::TYPE, $task->toRfc4122()])]);
+        $this->observer->executeStatement('INSERT INTO authorizing_permission_grant (subject_id, permission_key) VALUES (?, ?)', [$account->toRfc4122(), $permission]);
     }
 
     private function token(Uuid $id): UsernamePasswordToken
@@ -518,6 +530,7 @@ final class AuthorizationEnforcementTest extends DatabaseTestCase
     {
         $this->fault->afterAdd = static function (): never { self::fail('Denied create reached persistence.'); };
         $this->fault->afterFind = static function (): never { self::fail('Denied get reached persistence.'); };
+        $this->fault->afterFindForCompletion = static function (): never { self::fail('Denied completion reached persistence.'); };
     }
 
     private function login(Uuid $account): HttpBrowser
@@ -550,13 +563,15 @@ final class AuthorizationEnforcementTest extends DatabaseTestCase
     {
         $browser->request('GET', '/_demo/tasks/'.$task->toRfc4122());
         self::assertSame(200, $browser->getResponse()->getStatusCode());
-        self::assertSame(['id' => $task->toRfc4122(), 'title' => $this->observer->fetchOne('SELECT title FROM task_tracking_task WHERE id = ?', [$task->toRfc4122()])], json_decode((string) $browser->getResponse()->getContent(), true, flags: JSON_THROW_ON_ERROR));
+        $row = $this->observer->fetchAssociative('SELECT title, owner_account_id FROM task_tracking_task WHERE id = ?', [$task->toRfc4122()]);
+        self::assertIsArray($row);
+        self::assertSame(['id' => $task->toRfc4122(), 'title' => $row['title'], 'ownerAccountId' => $row['owner_account_id'], 'completedAt' => null], json_decode((string) $browser->getResponse()->getContent(), true, flags: JSON_THROW_ON_ERROR));
         self::assertStringContainsString('no-store', Browser::header($browser, 'Cache-Control'));
     }
 
-    private function operatorPermission(Uuid $account, string $permission, ?Uuid $task = null, string $operation = 'grant'): void
+    private function operatorPermission(Uuid $account, string $permission, string $operation = 'grant'): void
     {
-        $process = $this->cli(['app:authorization:permission:'.$operation, $account->toRfc4122(), $permission, ...(null === $task ? ['--global'] : ['--resource-type='.self::TYPE, '--resource-id='.$task->toRfc4122()])]);
+        $process = $this->cli(['app:authorization:permission:'.$operation, $account->toRfc4122(), $permission]);
         self::assertSame(0, $process->getExitCode(), 'Supported operator adapter must succeed.');
         self::assertSame('', $process->getErrorOutput());
         self::assertSame(['requested' => 1, 'added' => 'grant' === $operation ? 1 : 0, 'removed' => 'revoke' === $operation ? 1 : 0, 'unchanged' => 0], json_decode($process->getOutput(), true, flags: JSON_THROW_ON_ERROR));

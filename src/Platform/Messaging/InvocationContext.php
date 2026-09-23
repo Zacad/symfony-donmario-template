@@ -13,7 +13,7 @@ final class InvocationContext
     private bool $transaction = false;
     private bool $handlerTime = false;
     private bool $unusable = false;
-    private int $policyDepth = 0;
+    private int $authorizationDecisionDepth = 0;
     private ?\Closure $invalidateTransaction = null;
 
     public function isRoot(): bool
@@ -25,8 +25,8 @@ final class InvocationContext
     {
         $this->assertUsable();
         $this->assertNotLifecycle();
-        if ('command' === $kind && $this->inPolicy()) {
-            throw new \LogicException('authorization.policy_write: Policies cannot dispatch commands.');
+        if ('command' === $kind && $this->inAuthorizationDecision()) {
+            throw new \LogicException('authorization.decision_write: Authorization decisions cannot dispatch commands.');
         }
         if ($this->transaction && !$this->handlerTime) {
             throw new \LogicException('cqrs.phase: messaging requires handler execution.');
@@ -44,7 +44,7 @@ final class InvocationContext
 
     public function fail(\Throwable $failure): void
     {
-        if ($this->inPolicy() || in_array('command', $this->stack, true)) {
+        if ($this->inAuthorizationDecision() || in_array('command', $this->stack, true)) {
             $this->failure ??= $failure;
             if (null !== $this->invalidateTransaction) {
                 ($this->invalidateTransaction)();
@@ -85,8 +85,8 @@ final class InvocationContext
     {
         $this->assertUsable();
         $this->assertNotLifecycle();
-        if ($this->inPolicy()) {
-            throw new \LogicException('authorization.policy_write: Policies cannot dispatch events.');
+        if ($this->inAuthorizationDecision()) {
+            throw new \LogicException('authorization.decision_write: Authorization decisions cannot dispatch events.');
         }
         if (!$this->transaction || !$this->handlerTime || in_array('query', $this->stack, true) || 'command' !== end($this->stack)) {
             throw new \LogicException('event.scope: dispatch requires an owned command handler.');
@@ -99,19 +99,19 @@ final class InvocationContext
         $this->unusable = true;
     }
 
-    public function enterPolicy(): void
+    public function enterAuthorizationDecision(): void
     {
-        ++$this->policyDepth;
+        ++$this->authorizationDecisionDepth;
     }
 
-    public function leavePolicy(): void
+    public function leaveAuthorizationDecision(): void
     {
-        --$this->policyDepth;
+        --$this->authorizationDecisionDepth;
     }
 
-    public function inPolicy(): bool
+    public function inAuthorizationDecision(): bool
     {
-        return $this->policyDepth > 0;
+        return $this->authorizationDecisionDepth > 0;
     }
 
     public function assertUsable(): void
@@ -144,7 +144,7 @@ final class InvocationContext
         $this->failure = null;
         $this->transaction = false;
         $this->handlerTime = false;
-        $this->policyDepth = 0;
+        $this->authorizationDecisionDepth = 0;
         $this->invalidateTransaction = null;
     }
 }

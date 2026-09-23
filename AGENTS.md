@@ -2,14 +2,78 @@
 
 ## Start here
 
+**Active [clean Authorizing model](docs/tasks/10-authorizing-rework.md) was approved
+on 2026-09-22. Implementation, fresh setup/check/E2E/consumer verification and fresh
+independent review are complete; user acceptance is pending.** This is a fresh-template-only redesign. Compatibility with any authorization
+schema or rows produced by the unaccepted intermediate Task 10 reworks is explicitly not
+required. Do not report the clean model accepted, begin Task 11, commit or push. Main owns
+the active record; read it and `docs/handoff.md` first.
+
+The clean baseline rewrites `Version20260915010000` and deletes authorization migrations
+`Version20260917010000` and `Version20260920020000`. Authorizing owns exactly four tables:
+`authorizing_role`, `authorizing_role_permission`, `authorizing_role_assignment` and
+`authorizing_permission_grant`. Assignments use `subject_id` plus role/permission keys as
+their natural identities. There are no resource grants, resource assignments, initial
+bindings, scope/resource columns, `account_id` columns or synthetic assignment IDs.
+Existing databases from the intermediate designs require disposal/recreation; do not add
+compatibility migrations or fallback reads.
+
+The approved model otherwise preserves native authorization: every handler has exactly
+one `#[Authorize]`; restricted forms name a concrete same-module voter and actor-
+unrestricted forms use only `#[Authorize(public: true)]`. Module-owned backed permission
+enums feed `CqrsPass`; module voters and the compiler-selected Platform public voter use
+the isolated private `AccessDecisionManager` with `UnanimousStrategy(false)`.
+Permissions, roles and direct grants remain global. Authorizing remains generic and
+subject-based, with no account lookup, Task imports, resource API or authorization YAML.
+TaskTracking's voter combines global permission with immutable Task ownership; `tasks`
+operators bypass account ownership. Preserve DBAL repositories, advisory-lock namespaces,
+query budgets, role/capability APIs, credential-free tokens and actor/transaction/event
+guarantees.
+
+Authorizing Domain types are organized by Assignment, Capability and Role business
+concepts. Only this module uses explicit technical suffixes such as `Entity`,
+`ValueObject`, `Enum` and `Service`; do not carry that convention into another module
+without a separate decision. Group by reason to change, never by technical type: there is
+no `Domain/Mapping`, `Domain/Entity`, `Domain/ValueObject` or placeholder directory.
+Persisted domain objects use `Entity`, immutable validated identity-free data use
+`ValueObject`, closed backed vocabularies use `Enum`, stateless domain collaborators use
+`Service`, and Domain persistence ports retain `Repository`. The suffix does not decide
+whether an entity is rich or narrow, and technical suffixes do not create namespaces.
+Cross-concept validators/exceptions may remain at the Domain root. `RoleEntity` owns creation, definition/revision and
+retirement lifecycle. Assignment uses `AssignmentReferenceValueObject(kind, key)` for
+stored rows and cursors, `AssignmentChangeValueObject(operation, reference)` and
+`AssignmentChangeCountsValueObject(added, removed)`; there is no `ChangeSet`,
+`StoredAssignment` or Domain cursor. Public mutation inputs expose only
+`operation`/`kind`/`key`; assignment rows and cursors expose only `kind`/`key` (plus the
+cursor's subject binding). Historical account/resource API and schema descriptions remain
+provenance only, not current instructions.
+
+**Pre-rework [Task 10 — TaskTracking use cases/CLI](docs/tasks/10-task-tracking.md) is
+IMPLEMENTED, VERIFIED, REVIEWED, but NOT USER ACCEPTED; its authorization design is
+superseded by the correction above.** The user
+selected revocable owner access, all viewable tasks and unowned legacy/operator tasks,
+then approved the complete design with **“proceed”**. Final setup passed; check
+`run-Jzd2z00j`: **1467 tests / 8917 assertions**, Deptrac **2200 / 0 / 0**; E2E
+`run-kLIovsdQ`: **252 / 7346**, all **53 phases**. Consumer
+`/tmp/opencode/donmario-setup-zfkkNeft/` passed with embedded **252 / 7350**, all
+53 phases at `application/var/test-runs/run-4SWsQ0go/`, plus five TaskTracking
+persistence/isolation checkpoints. Fresh reviewers `ses_f55a7cd3effeWy1iCZ773BwaKm`
+and `ses_f55a7cd2effeL2gpYyxGtTaSdL` approved without findings/coverage gaps and
+did not rerun suites. Only docs changed afterward. This is regression evidence,
+not verification of the active redesign. **Use the clean-model implementation and
+verification gate above.** Do not rerun historical suites merely to resume. Task 10
+changes are intended uncommitted work;
+**no Task 10 commit/push is authorized**. The prior authorization delivered 8b/9 as
+`270ba43`. Main owns the Task 10 record; see `docs/handoff.md`.
+
 **Latest accepted checkpoint: [Task 9 — Policy-only authorization enforcement](docs/tasks/09-authorization-enforcement.md),
 including the `ActorKind` correction, is IMPLEMENTED, VERIFIED, REVIEWED and USER
 ACCEPTED on 2026-09-16.** Following additional fresh design/implementation reviewer
 `ses_f5691c623ffeKmeUgmFSPqCWQ7` approval with no findings or material coverage gaps,
 the user said exactly **“ok, i accept task, nest task will be continued in fresh session”**.
-Only acceptance/handoff docs changed afterward. **Next session starts Task 10 —
-TaskTracking use cases/CLI — discovery/design only; implementation needs separate
-design approval.** On 2026-09-16 the user explicitly requested **“commit and push changes”**.
+Only acceptance/handoff docs changed before delivery. The former next gate of Task 10
+discovery/design is now superseded by the active checkpoint above. On 2026-09-16 the
+user explicitly requested **“commit and push changes”** for the accepted 8b/9 delivery.
 This delivery commit records the accepted 8b/9 work, enum correction and handoff.
 Earlier uncommitted/no-Git-authorization notes below predate that request; future
 commits/pushes require fresh authorization. Use Git history for the delivery hash.
@@ -45,7 +109,7 @@ findings, including completed consumer evidence. No suites were rerun by reviewe
 Full check preceded four E2E fixture-only changes with passing targeted PHPStan/style;
 final standalone and consumer E2E cover them. Only docs changed after final reviews.
 Earlier failed-check and awaiting-verification/8b-acceptance records are superseded.
-Do not rerun passing suites merely to resume; Task 10 discovery/design is next.
+Do not rerun passing suites merely to resume; use the active checkpoint above.
 
 8a remains accepted, verified/reviewed on 2026-09-14 and accepted on 2026-09-15;
 see [8a evidence](docs/handoff.md#completed-8a-verification-and-review--2026-09-14).
@@ -55,7 +119,9 @@ Main owns Git. Final 8b setup/check/E2E/consumer verification included N=100 SQL
 budgets and populated plans; both fresh reviewers approved with no findings and did
 not rerun suites. Only docs changed between 8b review and acceptance. See
 [8b evidence](docs/handoff.md#completed-8b-verification-and-review--2026-09-15).
-Task 9 was accepted on 2026-09-16; continue with Task 10 discovery/design in a fresh session.
+Task 9 was accepted on 2026-09-16. Its operating model and the later verified intermediate
+reworks are historical provenance; the clean model is implemented, verified and reviewed,
+with user acceptance still required.
 
 **Earlier accepted checkpoint:** [Subtask 6](docs/tasks/06-web-authentication.md), including
 the user's 2026-09-13 correction making registration responsible for password-policy
@@ -217,75 +283,60 @@ tool output, test artifacts, source control or image contexts.
   merely to resume. 8a was user accepted and pushed as `367fdfe` on 2026-09-15;
   8b is user accepted; Task 9 is verified/reviewed and user accepted on 2026-09-16.
 
-## Policy-only enforcement (Task 9: user accepted 2026-09-16)
+## Current Authorization And Task Boundaries
 
-- Each command/query handler declares a co-located private final readonly policy
-  with `#[AuthorizeWith(...)]`; its exact message plus immutable `PolicyContext`
-  returns bool. Actor-dependent admission belongs only in policies. Permission
-  calculation/catalogue validation, password/hash validation and Domain invariants
-  remain use-case logic. No policy injections into handlers.
-- Source/DI/Deptrac classifications align. Authorization middleware needs its exact
-  private framework locator to resolve policies; no general module access to policy
-  services or mutable execution context. Policies may use QueryBus and owning Domain
-  read ports/state, not handlers, commands/events, ORM/SQL or outward adapters. These
-  guardrails are not an arbitrary PHP/SQL sandbox; constructors remain side-effect-free.
-- `PolicyContext(actor, supportRead, caller)` comes from infrastructure. Native fully
-  authenticated HTTP identity supplies the account UUID, separate from DTO targets.
-  `/api/me` is self-only. Exact adapters alone receive scoped helpers: provisioning
-  uses operator `accounts`, authorization CLI `assignments`, existing Task create/show
-  CLI `tasks` (no actor argument); native account provider alone uses account-bound
-  `AuthenticationExecution` for hash upgrades. CLI/worker execution alone grants nothing.
-- Foundation policies are exact: permission evaluation admits policy support reads
-  or `assignments` operators; account existence admits support reads or direct callers
-  `EvaluatePermissionsQuery`/`ChangeAccountAssignmentsCommand`. No general internal
-  bypass; ordinary nested operations reauthorize. Policy resolution/execution cannot
-  dispatch commands/events, including through nested bus calls.
-- Input validation precedes admission; command policy runs inside the owned transaction,
-  before result-validation/handling; queries gain no automatic transaction. Caught
-  nested failures invalidate the root and prevent admission/commit even if the policy
-  returns true. No actor changes within bus execution. Same-transaction checks do not
-  serialize against revocation; policy and handler reads may overlap.
-- Account actors need global create for Task Create, exact-resource view for Task Get,
-  and global `authorizing.manage` for assignment change/list. Explicit corresponding
-  operator scopes also admit. Dev/test Task HTTP uses web sessions and fixed denial
-  JSON `{"error":"Access denied."}` (401 anonymous / 403 authenticated). No automatic
-  Task grant, list filtering or durable service identity yet.
-
-## Authorizing boundaries (8b: user accepted 2026-09-15)
-
-- Trusted deployment shell/container access supplies operator authority for eight
-  console commands, now using explicit operator `assignments` scope. There are no new
-  HTTP/API management routes. Task 9's verified/reviewed policy-only implementation is user accepted.
-- Authorizing owns the four mapped global/resource role-assignment and direct-grant
-  tables and `Domain/AuthorizationCatalog`. Migration `Version20260915010000` was
-  applied by passing setup; dependencies and locks are unchanged. See architecture
-  for exact table names and README for catalogue customization and console contracts.
-- Public bus APIs are `ChangeAccountAssignmentsCommand`, `EvaluatePermissionsQuery`
-  and `ListAccountAssignmentsQuery`. Authenticating owns `CheckAccountExistenceQuery`,
-  returning only UUID/existence data through QueryBus. No cross-module SQL/FK/association.
-- Sources are additive. A global permission check asks for all resources of its
-  declared type and uses only global sources; resource checks also include exact
-  `(type, UUID)` sources. Known permissions with incompatible scope are invalid;
-  missing accounts/unknown permission keys deny. No cache or JWT/session permission authority.
-- Changes are 1–100 distinct natural keys for one account, atomic and idempotent,
-  with rows-actually-changed counts. Validate additions against the whole role bundle's
-  scope. Removal/listing allow retired keys and orphan cleanup. Existence is observed
-  **before** the account advisory lock and is only a snapshot. The transaction-scoped
-  lock lasts until the root ends; at most eight DML statements, no handler/repository
-  flush, commit or retry. Resource existence belongs to its owning module; omitting
-  resource-existence SQL permits nested initial access for an unflushed owned Task. Unflushed account
-  registration plus assignment is unsupported.
-- Evaluation uses at most two business SQL reads, including owning account existence;
-  listing uses one bounded keyset query. Pages are 1–100/default 50, ordered by
-  account/source/immutable assignment UUID, without totals or cross-page snapshots.
-  Actual N=100 budgets and populated-plan verification passed; see final handoff
-  evidence for observed access paths, without universal plan or latency guarantees.
-- Console scope is explicit: `--global` is exclusive with the paired resource options.
-  Batch JSON stdin is at most 64 KiB, depth 16 and 1–100 items, with exact fields;
-  global items omit resource fields (explicit null is rejected). Opaque cursors are
-  at most 512 characters, strictly decoded and bound to account/source/UUID; they
-  are pagination data, not authorization grants. Exit 2 is invalid input, 1 operational
-  failure, 0 success including deny. Preserve fixed errors and bounded parsing.
+- Every command/query handler declares exactly one `#[Authorize]`. Restricted forms name
+  a concrete final same-module voter; permission-bearing declarations use module-owned
+  string-backed permission enums and stable labels, while contextual declarations omit
+  the permission. Actor-unrestricted forms use only `#[Authorize(public: true)]` and are
+  excluded from capabilities. `CqrsPass` rejects bare/mixed forms and maps public actions
+  to the exact private Platform voter. There is no authorization YAML, resource
+  partition, Application policy service or policy locator.
+- One cohesive private lazy native voter per module receives a credential-free
+  `AuthorizationToken`. The exact compiler-owned public voter has no dependencies or SQL,
+  recognizes only inventoried public messages and is untagged when unused. The exact
+  private `app.authorization.voter` iterator feeds an isolated native decision manager
+  using `UnanimousStrategy(false)`. It does not replace firewall authorization or trace
+  sensitive subjects. Public bus admission does not expose or bypass an HTTP route.
+- Authorizing is generic and has no Authenticating/Task imports or account lookup.
+  Its public APIs are `ChangeSubjectAssignments`, `ListSubjectAssignments`,
+  `EvaluateSubjectEntitlements` and bounded role/capability use cases. There are no
+  resource access/grant or initial-binding APIs. PHP and wire fields use `subjectId`.
+- Assignment operations require an `assignments` operator or raw global
+  `authorizing.manage`. Catalogue operations require a `catalogue` operator or raw
+  global `authorizing.catalogue.manage`. Raw evaluation may allow orphan subjects;
+  unknown permissions deny. Role assignments and direct grants are global and additive;
+  there is no wildcard or cache.
+- Runtime PostgreSQL role keys are immutable. Label/bundle updates require expected
+  revision; retirement is irreversible. Active role definitions/memberships join every
+  entitlement query. Retired assignments remain listable/removable but grant nothing.
+  A role may explicitly combine any installed permissions across modules; there is no
+  separate per-role permission maximum. Retain the total 4096 active membership-edge
+  limit. Create-if-absent accepts only an exact active match.
+- Setup defaults are global snapshots: `task_tracking.user` has the three Task
+  permissions, `authorizing.administrator` has the two Authorizing permissions, and
+  `application.administrator` has all five currently installed permissions. Future
+  capabilities are not added automatically, including to `application.administrator`.
+- The fresh Authorizing baseline has exactly the role, role-permission, role-assignment
+  and permission-grant tables. Assignment natural keys are `(subject_id, role_key)` and
+  `(subject_id, permission_key)`; there are no resource/scope columns, initial-binding
+  table, `account_id` columns or assignment UUIDs. `Version20260915010000` owns this
+  complete schema; `Version20260917010000` and `Version20260920020000` are deleted.
+- Task's voter owns account checks and ownership. Account Create requires persisted self
+  plus global create; operators may create unowned or for any persisted owner. Account
+  Get/Complete require persisted actor, the corresponding global permission and exact
+  ownership. Account List requires persisted self, global view and `--owner`/owner target
+  equal to self. Missing, foreign and unowned Tasks deny accounts; `tasks` operators
+  bypass these checks. Creation performs no automatic authorization grant.
+- Task pages remain 1-100/default 50, owner-bound and keyset-based. Migration
+  `Version20260920010000` adds `(owner_account_id, id)`. Expected business-read budgets
+  are raw entitlement 1, Create 2, Get 3, List 3, Complete 4 and operator List 1.
+- The all-permissions administrator is an explicit assignment snapshot, not a bypass:
+  business voters still enforce actor kind, account existence, Task ownership and other
+  contextual predicates. Authorization/account/Task reads remain snapshots during races.
+- Validation/transaction/result/event ordering, caught-failure poisoning and actor/event
+  frames remain. Completion locking and first-timestamp semantics remain unchanged.
+  Four Task CLI adapters retain `tasks` scope; completion activity remains Task 11.
 
 ## Web authentication boundaries
 

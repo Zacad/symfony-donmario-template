@@ -50,9 +50,18 @@ final readonly class NativeEventsFixture
             throw new \LogicException('Expected module services.');
         }
         $module = 'App\\Module\\NativeObserving\\';
+        $moduleDefaults = $prototype['App\\Module\\TaskTracking\\'];
+        if (!\is_array($moduleDefaults) || !\is_array($moduleDefaults['exclude'] ?? null)) {
+            throw new \LogicException('Expected module resource exclusions.');
+        }
+        $exclusions = array_values(array_filter($moduleDefaults['exclude'], static fn (mixed $exclusion): bool => '../../Infrastructure/Framework/Symfony/Security/TaskTrackingVoter.php' !== $exclusion));
+        if (count($moduleDefaults['exclude']) - 1 !== count($exclusions)) {
+            throw new \LogicException('Expected exactly one TaskTracking voter exclusion.');
+        }
+        $moduleDefaults['exclude'] = $exclusions;
         $this->writeYaml('src/Module/NativeObserving/Resources/config/services.yaml', ['services' => [
             '_defaults' => $prototype['_defaults'],
-            $module => $prototype['App\\Module\\TaskTracking\\'],
+            $module => $moduleDefaults,
             $module.'Domain\\ObservationRepository' => ['alias' => $module.'Infrastructure\\Persistence\\DoctrineObservationRepository'],
             $module.'Infrastructure\\Persistence\\DoctrineObservationRepository' => ['arguments' => ['$fixtureRoot' => $this->projectDir]],
         ]]);

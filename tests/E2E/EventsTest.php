@@ -237,9 +237,10 @@ final class EventsTest extends DatabaseTestCase
             $cli->run();
             $this->successful($cli);
             $ids[] = trim($cli->getOutput());
-            foreach ($ids as $id) {
+            foreach ($ids as $index => $id) {
                 self::assertTrue(Uuid::isValid($id));
                 self::assertSame(1, $this->observer->fetchOne('SELECT count(*) FROM task_tracking_task WHERE id = ?', [$id]));
+                self::assertSame(0 === $index ? $account->toRfc4122() : null, $this->observer->fetchOne('SELECT owner_account_id FROM task_tracking_task WHERE id = ?', [$id]));
                 self::assertSame($this->async() ? 1 : 0, $this->observer->fetchOne("SELECT count(*) FROM platform_messaging_message WHERE queue_name = 'events' AND body LIKE ?", ['%'.$id.'%']));
             }
             if (!$this->async()) {
@@ -303,6 +304,39 @@ final class EventsTest extends DatabaseTestCase
         self::assertSame([], $this->fixture->sourceViolations());
         $this->successful($this->fixture->console(['doctrine:migrations:migrate']));
         $this->successful($this->fixture->console(['app:architecture:check', '--database']));
+    }
+
+    #[Group('task-listener-isolation')]
+    public function testCompiledListenerRetainsActorButCannotCreateAnUnownedTaskAndCaughtDenialRollsBack(): void
+    {
+        $this->prepare();
+        $account = Uuid::v7();
+        $this->observer->executeStatement('INSERT INTO authenticating_account (id, email, password_hash) VALUES (?, ?, ?)', [$account->toRfc4122(), 'task10-listener-'.$account.'@example.test', 'unused-task10-fixture']);
+        foreach (['task_tracking.task.create', 'task_tracking.task.view', 'task_tracking.task.complete'] as $permission) {
+            $this->observer->executeStatement('INSERT INTO authorizing_permission_grant (subject_id, permission_key) VALUES (?, ?)', [$account->toRfc4122(), $permission]);
+        }
+        try {
+            foreach (['TaskAccessListener.php.fixture' => 'src/Module/NativeObserving/Infrastructure/EventListener/TaskAccessListener.php', 'listener-attack.php.fixture' => 'listener-attack.php'] as $source => $target) {
+                $contents = file_get_contents(dirname(__DIR__).'/Fixtures/TaskTracking/'.$source);
+                self::assertIsString($contents);
+                $this->fixture->write($target, $contents);
+            }
+            $this->fixture->clearCache();
+            $process = $this->fixture->process(['listener-attack.php', $account->toRfc4122()], 'sync://');
+            $process->run();
+            self::assertSame(0, $process->getExitCode(), 'Compiled listener journey must pass without dumping exceptions.');
+            $result = json_decode($process->getOutput(), true, flags: JSON_THROW_ON_ERROR);
+            self::assertIsArray($result);
+            self::assertTrue($result['caught']);
+            self::assertTrue($result['rolledBack']);
+            self::assertTrue($result['contextRestored']);
+            self::assertIsString($result['recovered']);
+            self::assertSame($account->toRfc4122(), $this->observer->fetchOne('SELECT owner_account_id FROM task_tracking_task WHERE id = ? AND completed_at IS NOT NULL', [$result['recovered']]));
+            self::assertSame(0, $this->observer->fetchOne("SELECT count(*) FROM task_tracking_task WHERE title = 'task10-compiled-listener-attack'"));
+        } finally {
+            $this->observer->executeStatement('DELETE FROM task_tracking_task WHERE owner_account_id = ?', [$account->toRfc4122()]);
+            TaskBrowser::cleanup($this->observer, $account);
+        }
     }
 
     private function publish(): string

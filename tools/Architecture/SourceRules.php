@@ -153,40 +153,33 @@ final class SourceRules
                 .'|Resources\\\\migrations\\\\'.$part.')$~D', $class);
     }
 
-    /**
-     * Source class constants are declarations, not DI instances. Only a policy
-     * constant inside the handler's exact AuthorizeWith attribute gets that exception.
-     * Like the listener guard, this checks resolved syntax, not dynamic PHP execution.
-     *
-     * @param array<Node> $nodes
+    /** @param array<Node> $nodes
      *
      * @return list<string>
      */
     private function authorizationDependencyViolations(string $class, Stmt\ClassLike $declaration, string $path, array $nodes): array
     {
         $errors = [];
-        $policy = ContractTypes::isPolicy($class);
         $handler = ContractTypes::isApplicationHandler($class);
-        $authorizeWith = 'App\\Platform\\Authorization\\AuthorizeWith';
-        $policyDeclarations = [];
+        $voter = ContractTypes::isAuthorizationVoter($class);
+        $authorize = 'App\\Platform\\Authorization\\Authorize';
         $attributes = [];
+        $voterDeclarations = [];
         foreach ($declaration->attrGroups as $group) {
             foreach ($group->attrs as $attribute) {
-                if ($handler && $authorizeWith === $attribute->name->toString()) {
+                if ($handler && $authorize === $attribute->name->toString()) {
                     $attributes[] = $attribute;
                     foreach ($attribute->args as $argument) {
                         $constant = $argument->value;
-                        if ($constant instanceof Expr\ClassConstFetch && $constant->class instanceof Node\Name && $constant->name instanceof Node\Identifier && 'class' === $constant->name->name
-                            && ContractTypes::isPolicy($constant->class->toString())
-                            && substr($class, 0, (int) strrpos($class, '\\')) === substr($constant->class->toString(), 0, (int) strrpos($constant->class->toString(), '\\'))) {
-                            $policyDeclarations[$constant->class->toString()][] = $constant;
+                        if ($constant instanceof Expr\ClassConstFetch && $constant->class instanceof Node\Name
+                            && $constant->name instanceof Node\Identifier && 'class' === $constant->name->name
+                            && ContractTypes::isAuthorizationVoter($constant->class->toString())
+                            && ModuleMap::owner($class) === ModuleMap::owner($constant->class->toString())) {
+                            $voterDeclarations[$constant->class->toString()][] = $constant;
                         }
                     }
                 }
             }
-        }
-        if ('Application' === ModuleMap::layer($class) && str_ends_with($class, 'Policy') && !$policy) {
-            $errors[] = $this->diagnostic('authorization.policy_path', $path, $declaration, $class, 'policies require Application/<UseCase>/<Name>Policy');
         }
         foreach ($this->classReferences($declaration, $nodes) as [$reference, $site]) {
             $target = $reference->toString();
@@ -194,41 +187,30 @@ final class SourceRules
             if (1 === preg_match(ContractTypes::handlerPattern().'i', $target)) {
                 $errors[] = $this->diagnostic('source.handler_dependency', $path, $reference, $class, 'must invoke application handlers through CommandBus/QueryBus, not depend on '.$target);
             }
-            if (1 === preg_match(ContractTypes::policyPattern().'i', $target)
-                && !($handler && isset($policyDeclarations[$target]) && ($import || in_array($site, $policyDeclarations[$target], true)))) {
-                $errors[] = $this->diagnostic('authorization.policy_reference', $path, $reference, $class, 'policy '.$target.' is only a handler AuthorizeWith declaration, never an injected/called service');
+            if (ContractTypes::isAuthorizationVoter($target)
+                && !($handler && isset($voterDeclarations[$target]) && ($import || in_array($site, $voterDeclarations[$target], true)))) {
+                $errors[] = $this->diagnostic('authorization.voter_reference', $path, $reference, $class, 'module voters are only same-module handler Authorize metadata; the Platform public voter is compiler-owned');
             }
-            if ($policy && !$this->isPolicyDependency($class, $target)) {
-                $errors[] = $this->diagnostic('authorization.policy_dependency', $path, $reference, $class, 'policies may use only public data, QueryBus, Actor/ActorKind/PolicyContext, owning Domain ports/state and approved immutable values/exceptions; found '.$target);
-            }
-            if (0 === strcasecmp($target, $authorizeWith)
+            if (0 === strcasecmp($target, $authorize)
                 && !($handler && ($import || in_array($site, $attributes, true)))) {
-                $errors[] = $this->diagnostic('authorization.declaration', $path, $reference, $class, 'AuthorizeWith is only a handler class attribute');
+                $errors[] = $this->diagnostic('authorization.declaration', $path, $reference, $class, 'Authorize is only a handler class attribute');
             }
-            if (1 === preg_match('~^App\\\\Platform\\\\Authorization\\\\(?:Actor|ActorKind|PolicyContext)$~Di', $target) && !$policy) {
-                $errors[] = $this->diagnostic('authorization.context', $path, $reference, $class, 'Actor/ActorKind/PolicyContext belong only in policies, never message input or other module services');
+            if (1 === preg_match('~^App\\\\Platform\\\\Authorization\\\\(?:Actor|ActorKind|AuthorizationToken)$~Di', $target) && !$voter) {
+                $errors[] = $this->diagnostic('authorization.context', $path, $reference, $class, 'authorization actor/token facts belong only in voters');
             }
             if (0 === strcasecmp($target, 'App\\Platform\\Authorization\\AuthorizationDenied')
                 && !('UI' === ModuleMap::layer($class) && ($import || $site instanceof Stmt\Catch_))) {
-                $errors[] = $this->diagnostic('authorization.denied', $path, $reference, $class, 'UI may catch AuthorizationDenied; admission belongs to policies');
+                $errors[] = $this->diagnostic('authorization.denied', $path, $reference, $class, 'UI may catch AuthorizationDenied; admission belongs to voters');
             }
             if ((str_starts_with(strtolower($target), 'app\\platform\\authorization\\') && !ContractTypes::isAuthorizationData($target)
                 || 0 === strcasecmp($target, 'App\\Platform\\Messaging\\InvocationContext'))
-                && !ContractTypes::mayUseExecutionFacade($class, $target)) {
+                && !ContractTypes::mayUseExecutionFacade($class, $target)
+                && !($voter && 0 === strcasecmp($target, 'App\\Platform\\Authorization\\AuthorizationToken'))) {
                 $errors[] = $this->diagnostic('authorization.runtime', $path, $reference, $class, 'execution authority is private; '.$target.' is not an approved facade for this adapter');
             }
         }
 
         return $errors;
-    }
-
-    private function isPolicyDependency(string $source, string $target): bool
-    {
-        return in_array(strtolower($target), ['self', 'static', 'parent'], true)
-            || ContractTypes::isPublic($target) || ContractTypes::isImmutable($target)
-            || 1 === preg_match(ContractTypes::POLICY_EXCEPTION_PATTERN, $target)
-            || in_array($target, ['App\\Platform\\Messaging\\QueryBus', 'App\\Platform\\Authorization\\Actor', 'App\\Platform\\Authorization\\ActorKind', 'App\\Platform\\Authorization\\PolicyContext'], true)
-            || (ModuleMap::owner($source) === ModuleMap::owner($target) && 'Domain' === ModuleMap::layer($target) && !ContractTypes::isAnyEventData($target));
     }
 
     /**

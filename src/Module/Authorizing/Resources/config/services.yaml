@@ -14,9 +14,23 @@ services:
             - '../../Application/*/*Event.php'
             - '../../Domain/'
             - '../../Infrastructure/Event/'
+            - '../../Infrastructure/Framework/Symfony/Security/AuthorizingVoter.php'
             - '../../Resources/'
 
-    App\Module\Authorizing\Domain\AssignmentRepository:
+    App\Module\Authorizing\Domain\Assignment\AssignmentRepository:
         alias: App\Module\Authorizing\Infrastructure\Persistence\DoctrineAssignmentRepository
 
-    App\Module\Authorizing\Domain\AuthorizationCatalog: ~
+    App\Module\Authorizing\Domain\Role\RoleRepository:
+        alias: App\Module\Authorizing\Infrastructure\Persistence\DoctrineRoleRepository
+
+    App\Module\Authorizing\Domain\Capability\AuthorizationCatalogService:
+        arguments: [[]]
+
+    App\Module\Authorizing\Infrastructure\Framework\Symfony\Security\AuthorizingVoter:
+        autowire: true
+        autoconfigure: false
+        lazy: true
+        arguments:
+            $routes: []
+        tags:
+            - { name: app.authorization.voter }

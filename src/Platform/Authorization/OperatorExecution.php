@@ -20,7 +20,7 @@ final readonly class OperatorExecution
      */
     public function run(string $scope, callable $operation): mixed
     {
-        if (!in_array($scope, ['accounts', 'assignments', 'tasks'], true)) {
+        if (!in_array($scope, ['accounts', 'assignments', 'catalogue', 'tasks'], true)) {
             throw new \LogicException('authorization.context: Unknown operator scope.');
         }
 

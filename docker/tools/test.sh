@@ -194,6 +194,11 @@ else
     step collections compose run --rm --no-deps runner php vendor/bin/phpunit tests/E2E/CollectionsTest.php
     step authorizing compose run --rm --no-deps runner php vendor/bin/phpunit tests/E2E/AuthorizingTest.php
     step authorization-enforcement compose run --rm --no-deps runner php vendor/bin/phpunit tests/E2E/AuthorizationEnforcementTest.php --exclude-group authorization-outage-prepare --exclude-group authorization-outage-down --exclude-group authorization-outage-recover
+    step task-tracking compose run --rm --no-deps runner php vendor/bin/phpunit tests/E2E/TaskTrackingTest.php
+    step task-completion compose run --rm --no-deps runner php vendor/bin/phpunit tests/E2E/TaskCompletionTest.php
+    step task-list-performance compose run --rm --no-deps runner php vendor/bin/phpunit tests/E2E/TaskListPerformanceTest.php
+    step task-atomic-sync compose run --rm --no-deps runner php vendor/bin/phpunit tests/E2E/TaskTrackingAtomicTest.php
+    step task-listener-isolation compose run --rm --no-deps runner php vendor/bin/phpunit tests/E2E/EventsTest.php --group task-listener-isolation
     step persistence-create compose run --rm --no-deps runner php vendor/bin/phpunit tests/E2E/PersistenceCreateTest.php
     step authenticating-provision compose run --rm --no-deps runner php vendor/bin/phpunit tests/E2E/AuthenticatingProvisionTest.php
     step authenticating-jwt compose run --rm --no-deps runner php vendor/bin/phpunit tests/E2E/AuthenticatingJwtTest.php
@@ -243,6 +248,7 @@ else
     retire_generation authenticating-web-generation app
     step events-async-app compose up --detach --no-deps --force-recreate --wait --wait-timeout 60 app
     step events-async compose run --rm --no-deps runner php vendor/bin/phpunit tests/E2E/EventsTest.php --group native-fixture --group native-mode --group native-async
+    step task-atomic-async compose run --rm --no-deps runner php vendor/bin/phpunit tests/E2E/TaskTrackingAtomicTest.php
     step events-worker-seed compose run --rm --no-deps runner php vendor/bin/phpunit tests/E2E/EventsTest.php --filter testSeedComposeWorker
     step events-worker-start compose --profile worker up --detach --no-deps --wait --wait-timeout 60 worker
     step events-worker-observe compose run --rm --no-deps runner php vendor/bin/phpunit tests/E2E/EventsTest.php --filter testObserveComposeWorker
@@ -256,6 +262,7 @@ else
     step stop-database compose stop database
     step database-down compose run --rm --no-deps runner php vendor/bin/phpunit tests/E2E/DatabaseDownTest.php
     step authorizing-database-down compose run --rm --no-deps runner php vendor/bin/phpunit tests/E2E/AuthorizingDatabaseDownTest.php
+    step task-tracking-database-down compose run --rm --no-deps runner php vendor/bin/phpunit tests/E2E/TaskTrackingDatabaseDownTest.php
     step authorization-enforcement-down compose run --rm --no-deps runner php vendor/bin/phpunit tests/E2E/AuthorizationEnforcementTest.php --filter testAssertOutage
     step authenticating-database-down compose run --rm --no-deps runner php vendor/bin/phpunit tests/E2E/AuthenticatingDatabaseDownTest.php
     step authenticating-jwt-database-down compose run --rm --no-deps runner php vendor/bin/phpunit tests/E2E/AuthenticatingJwtDatabaseDownTest.php

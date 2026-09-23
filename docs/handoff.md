@@ -1,10 +1,280 @@
-# Session handoff — Task 9 accepted; Task 10 discovery/design in fresh session
+# Session handoff - Clean Authorizing acceptance pending
 
-Date: **2026-09-16**
+Date: **2026-09-22**
 
 Repository: `/var/home/adam/Projects/symfony-donmario-template`
 
 ## Status and next gate
+
+**The clean [Authorizing/native-voter/Task-ownership model](tasks/10-authorizing-rework.md)
+is approved, implemented, fully verified and freshly reviewed; user acceptance is pending.** Do not
+begin Task 11, commit or push. Main owns the active record.
+
+This is a fresh-template-only redesign. Compatibility with authorization schemas or rows
+from the unaccepted intermediate Task 10 reworks is explicitly not required. Rewrite
+`Version20260915010000` as the complete clean baseline and delete
+`Version20260917010000` and `Version20260920020000`. Existing intermediate databases must
+be disposed/recreated; do not add compatibility migrations, fallback reads or cleanup APIs.
+
+The clean Authorizing schema has exactly four tables:
+
+| Table | Natural identity |
+| --- | --- |
+| `authorizing_role` | `role_key` |
+| `authorizing_role_permission` | `(role_key, permission_key)` |
+| `authorizing_role_assignment` | `(subject_id, role_key)` |
+| `authorizing_permission_grant` | `(subject_id, permission_key)` |
+
+There are no resource grants/assignments, initial binding, scope/resource columns,
+`account_id` columns or synthetic assignment IDs. The approved global permission,
+role/direct-grant, native-voter, Task ownership, DBAL repository, lock namespace and query
+budget semantics otherwise remain.
+
+Authorizing Domain remains organized by Assignment, Capability and Role. Explicit
+technical suffixes are local to this module and classify responsibilities without creating
+technical namespaces. Group by business reason to change; do not create `Domain/Mapping`,
+`Domain/Entity`, `Domain/ValueObject` or empty placeholders. `Entity` includes rich and
+narrow persisted models, `ValueObject` is immutable validated identity-free data, `Enum`
+is closed backed vocabulary, `Service` is a stateless Domain collaborator, and persistence
+ports retain `Repository`. Cross-concept validators/exceptions may remain at the root; do
+not generalize this naming convention to another module without a separate decision.
+`RoleEntity` owns creation,
+definition/revision and retirement. Assignment uses
+`AssignmentReferenceValueObject(kind, key)`,
+`AssignmentChangeValueObject(operation, reference)` and
+`AssignmentChangeCountsValueObject(added, removed)`; there is no `ChangeSet`,
+`StoredAssignment` or Domain cursor. Public mutation fields are exactly
+`operation`/`kind`/`key`; assignment rows/cursors use `kind`/`key`, with cursors also bound
+to the subject.
+
+| Clean-model stage | State |
+| --- | --- |
+| User design approval | **COMPLETE**, 2026-09-22 |
+| Implementation | **COMPLETE** |
+| Focused verification | **PASS: 723 / 4280** |
+| Fresh setup/full check/E2E/fresh consumer | **COMPLETE** |
+| Fresh independent review | **COMPLETE**: both reviewers APPROVED after recheck |
+| User acceptance | **PENDING** |
+
+Current evidence: check `run-K22OUIXu` passed **1147 / 6248**, Deptrac
+**2285 / 0 / 0**; standalone E2E `run-MqAHjmgS` passed **246 / 6631**, all **53
+phases**; fresh consumer `/tmp/donmario-setup-T6lsRfg6/` passed with embedded
+`run-LWKUVPhh` at **246 / 6631**, all **53 phases**, plus setup, clean-schema,
+defaults, persistence and isolation checkpoints. The repository-local development database
+still contains the two intentionally unsupported intermediate migration records, so direct
+setup refused it without data destruction; fresh and repeat setup passed in the consumer.
+
+Initial reviewers `ses_f35d3a93dffeUpQzpNFkQkqQrG` and
+`ses_f35d3a923ffeRNh6GdBk2tcT3v` found two runtime/coverage and four documentation/compiler-
+coverage issues. They are resolved: retirement is one atomic entity transition, corrupt
+retired revision-one rows fail closed, N=100 natural-key mutation/list continuation has a
+populated PostgreSQL index plan, permission enum negative compilation cases are covered and
+current documentation is reconciled. Focused recheck passed **128 / 288**; the full evidence
+above is post-fix. Both reviewers rechecked the final tree without rerunning suites and
+**APPROVED with no findings or material coverage gaps**. Runtime/security review:
+`ses_f35d3a93dffeUpQzpNFkQkqQrG`; architecture/evidence review:
+`ses_f35d3a923ffeRNh6GdBk2tcT3v`.
+
+The user's final organization follow-up removed the empty physical `Domain/Mapping`
+directory and made the concept-first and Authorizing-local suffix decisions explicit in
+the normative architecture, engineer guide and agent instructions. Historical Mapping
+references remain only in superseded provenance. Focused documentation reviewer
+`ses_f32b82d86ffehclt4pcxs7aept` **APPROVED with no findings**; `git diff --check` passed
+and no behavioral suite was rerun for this docs/empty-directory-only change.
+
+### Next-session prompt
+
+> Read `AGENTS.md`, this handoff, active `docs/tasks/10-authorizing-rework.md`, `README.md`,
+> `docs/authorization.md`, `docs/architecture.md` and `docs/roadmap.md`; inspect manifests,
+> locks and the working-tree diff. Continue only the approved clean Authorizing model.
+> Preserve historical evidence, accepted 8b/9 delivery and intended uncommitted Task 10
+> work. Do not add persisted-data compatibility. Inspect completed verification evidence
+> and obtain fresh independent review, resolving and reverifying any findings.
+> No Task 11 work or Git commit/push is authorized.
+
+## Historical Intermediate Rework Status - Superseded
+
+The following 2026-09-20/21 status and evidence accurately records the verified but
+unaccepted intermediate model. It is regression provenance only and does not verify the
+clean four-table baseline or preserve its schema requirements.
+
+**The [global Authorizing/native-voter/Task-ownership redesign](tasks/10-authorizing-rework.md)
+and its explicit public-action amendment were each user-approved with exact `proceed` on
+2026-09-20.** The pre-amendment redesign was implemented, fully verified and freshly
+reviewed. The amendment is implemented, fully verified and freshly reviewed; both
+amendment reviewers approve with no findings. User acceptance remains pending. Do not
+begin Task 11, commit or push. Main owns the task record.
+
+The user approved the post-rework dead-code/fixture/test/documentation cleanup with exact
+`proceed` on 2026-09-21. It is implemented, fully verified and freshly reviewed with no
+findings. After raising Domain discoverability and cleanup-completeness concerns, the user
+selected **“Bounded full cleanup (Recommended)”** on 2026-09-21. That follow-up is also
+implemented, fully verified and freshly reviewed with no findings; user acceptance remains
+pending. The user then approved business-concept Domain namespaces. Assignment, capability
+and role types are now grouped by concept, while schema-only classes remain in
+`Domain/Mapping`; that namespace-only follow-up is fully verified and freshly reviewed
+with no remaining findings. None of these cleanups reopens the authorization model or adds
+adapters/features.
+
+### Historical implemented target in brief
+
+- Every command/query handler has exactly one `#[Authorize]`. Restricted forms name a
+  concrete final same-module voter; actor-unrestricted forms use only
+  `#[Authorize(public: true)]`. Module-owned backed permission enums and stable labels
+  feed `CqrsPass`, which rejects bare/mixed forms, builds the global `AuthorizationCatalog`
+  and validates exact voter routing. Public actions add no capability. There is
+  no authorization YAML or resource partition.
+- One private lazy native voter per module is evaluated by a dedicated private native
+  decision manager over only `app.authorization.voter`, using
+  `UnanimousStrategy(false)`. It is isolated from firewall/global authorization and
+  tracing. The explicit credential-free token carries Actor and support-read provenance;
+  invocation/transaction ownership and event frames remain infrastructure context.
+- The exact compiler-selected Platform public voter is private/lazy, recognizes only
+  inventoried public messages, accepts only the internal token, has no dependencies/SQL
+  and is untagged when unused. Public bus admission grants every actor but does not expose
+  or bypass an HTTP/transport route.
+- Authorizing has no Authenticating/Task imports or account lookup. Its subject-named
+  management/evaluation and bounded runtime role/capability APIs operate on opaque UUIDs.
+  Roles and direct grants are global and additive; explicit roles may combine installed
+  permissions across modules. There is no wildcard or separate per-role permission max;
+  the total 4096 active membership-edge bound remains. Batch JSON/cursors use `subjectId`;
+  physical `account_id` storage, assignment UUIDs and advisory-lock namespace remain.
+- Runtime PostgreSQL roles have immutable keys, revisioned label/bundle updates and
+  irreversible retirement. Live evaluation joins active definitions/memberships; retired
+  assignments list/remove but grant nothing. Defaults are explicit global snapshots:
+  `task_tracking.user` has the three Task permissions, `authorizing.administrator` the
+  two Authorizing permissions and `application.administrator` all five current
+  permissions. Future capabilities are not added automatically.
+- Resource assignment/grant rows grant nothing and cannot be added; they remain
+  listable/removable for legacy cleanup. Retained role scope/resource columns and
+  `authorizing_initial_resource_role` are inert. Generic resource and initial-binding
+  APIs are removed; the authorization schema and `Version20260917010000` remain.
+  Conditional migration `Version20260920020000` preserves historical global Task role
+  assignments without creating those roles on fresh installations.
+- TaskTracking owns account eligibility and immutable-owner admission. Accounts need the
+  global permission plus exact ownership for Get/Complete and self owner filtering for
+  List. Missing, foreign and unowned Tasks deny accounts; `tasks` operators bypass.
+  Create requires persisted self plus global create; it performs no automatic grant.
+- Task List uses `--owner`, pages 1-100/default 50 and the new
+  `Version20260920010000` `(owner_account_id, id)` index. Expected business reads are raw
+  entitlement 1, Create 2, Get 3, List 3, Complete 4 and operator List 1.
+- `application.administrator` is an explicit permission snapshot, not a bypass. Business
+  voters still enforce actor kind, account existence, ownership and contextual rules.
+- Input/transaction/admission/result/event ordering, caught-failure poisoning, event-frame
+  cleanup, Task completion locking, list pagination and revocation-race limits
+  remain. Authorization/account/Task reads are snapshots during races.
+
+### Historical intermediate evidence
+
+| Stage | Result |
+| --- | --- |
+| Compiler-focused | **PASS: 499 / 3658** |
+| Authorizing-focused | **PASS: 41 / 154** |
+| Task-focused | **PASS: 36 / 127** |
+| Scoped static/style/syntax | **PASS** |
+| Integration/setup | **PASS** through `Version20260920020000`; app/database healthy |
+| Full check | **PASS**, `run-bugsGQQV`: **1102 / 6082**, Deptrac **2326 / 0 / 0** |
+| Standalone E2E | **PASS**, `run-0dhcVcQ5`: **243 / 6551**, all **53 phases** |
+| Fresh consumer | **PASS**, `/tmp/opencode/donmario-setup-5WO4i6pr/`; embedded `run-X2HZiZKb`: **243 / 6549**, all **53 phases**, plus setup/persistence/isolation checkpoints |
+| Authorization/security review | **APPROVED with no findings**, `ses_f40e6a137ffexGfGutmbAoM5lt` |
+| Persistence/performance/setup review | **APPROVED with no findings**, `ses_f40e6a10fffe3u30iD5Iya0dxa` |
+| Public-action amendment check | **PASS**, `run-YdFZCQO0`: **1117 / 6160**, Deptrac **2338 / 0 / 0** |
+| Public-action amendment E2E | **PASS**, `run-mcbPhvEu`: **243 / 6551**, all **53 phases** |
+| Public-action amendment fresh consumer | **PASS**, `/tmp/opencode/donmario-setup-GH880Uk2/`; embedded `run-7e3fyExj`: **243 / 6549**, all **53 phases**, plus setup/persistence/isolation checkpoints |
+| Public-action amendment security/architecture review | **APPROVED with no findings**, `ses_f3faeadd9ffekQfHYhpA16htvB` |
+| Public-action amendment implementation/runtime/test review | **APPROVED with no findings**, `ses_f3faead01ffe3ztZxIfDdppVk6`; stale Collections README wording corrected |
+| Post-rework cleanup approval | **COMPLETE**: exact `proceed`, 2026-09-21 |
+| Post-rework cleanup implementation/focused verification | **COMPLETE** |
+| Post-rework cleanup focused PHPUnit selection | **PASS: 510 / 3917** across affected authorization/runtime/unit/architecture suites |
+| Post-rework cleanup check | **PASS**, `run-1wjNygkA`: **1118 / 6168**, Deptrac **2321 / 0 / 0** |
+| Post-rework cleanup standalone E2E | **PASS**, `run-jKMu34tA`: **244 / 6547**, all **53 phases** |
+| Post-rework cleanup fresh consumer | **PASS**, `/tmp/opencode/donmario-setup-GnWbKpP7/`; embedded `run-haQZJCKf`: **244 / 6547**, all **53 phases**, plus setup/persistence/isolation checkpoints |
+| Post-rework cleanup security/runtime review | **APPROVED with no findings**, `ses_f3c575379ffee3DS6e7LpzI86H`; no suites rerun |
+| Post-rework cleanup persistence/tests/docs review | **APPROVED with no findings**, `ses_f3c57534fffe0ulEUkve8TXPLI`; no suites rerun |
+| Domain organization follow-up approval | **COMPLETE**: user selected **“Bounded full cleanup (Recommended)”**, 2026-09-21 |
+| Domain organization follow-up final check | **PASS**, `run-kydGbTrF`: **1119 / 6173**, Deptrac **2319 / 0 / 0** |
+| Domain organization follow-up standalone E2E | **PASS**, `run-lRiRb342`: **244 / 6545**, all **53 phases** |
+| Domain organization follow-up fresh consumer | **PASS**, `/tmp/opencode/donmario-setup-6Cyl5Sod/`; embedded `run-6Cflj2DF`: **244 / 6541**, all **53 phases**, plus setup/persistence/isolation checkpoints |
+| Domain organization implementation review | **APPROVED with no findings**, `ses_f3ac53f4effej7rD4xiCuPuzyC`; no suites rerun |
+| Domain organization tests/docs review | **APPROVED after four findings were resolved**, `ses_f3ac53e51ffegJQaa52DELgFvh`; final recheck has no findings, no suites rerun by reviewer |
+| Concept namespace focused verification | **PASS: 418 / 3500** across Domain/application/repository/compiler/source suites |
+| Concept namespace final check | **PASS**, `run-P3J7V3eL`: **1119 / 6173**, Deptrac **2319 / 0 / 0** |
+| Concept namespace standalone E2E | **PASS**, `run-gmpy3e9m`: **244 / 6538**, all **53 phases** |
+| Concept namespace fresh consumer | **PASS**, `/tmp/donmario-setup-YLUpCxuq/`; embedded `run-GEsnErrk`: **244 / 6547**, all **53 phases**, plus setup/persistence/isolation checkpoints |
+| Concept namespace implementation review | **APPROVED after the empty experimental directory was removed**, `ses_f3a72b8d2ffev4JHDkDdRoGAlQ`; final recheck has no findings, no suites rerun |
+| Concept namespace docs/coverage review | **APPROVED after the same finding was resolved**, `ses_f3a72b8c2ffeQvI5DX3fdNGLwf`; final recheck has no findings, no suites rerun |
+
+The public-action amendment, pre-amendment redesign and all cleanup follow-ups were fully
+verified and freshly reviewed for that intermediate model. The clean-model approval
+supersedes its former user-acceptance gate.
+
+### Historical next-session prompt - superseded
+
+> Read `AGENTS.md`, `docs/handoff.md`, active `docs/tasks/10-authorizing-rework.md`,
+> `README.md`, `docs/architecture.md`, and `docs/roadmap.md`. Inspect `composer.json`,
+> `composer.lock`, `symfony.lock` and the working-tree diff. The 2026-09-20 global
+> permission/Task-ownership redesign was approved with exact `proceed` and is implemented
+> fully verified and freshly independently reviewed with no final findings. The bounded
+> post-rework cleanup was separately approved with exact `proceed`; the subsequent bounded
+> Domain cleanup and business-concept namespace organization were selected by the user.
+> All are implemented, fully verified and freshly reviewed with no remaining findings.
+> Obtain user acceptance before Task 11. Preserve intended uncommitted Task
+> 10 changes based on `270ba43`, historical evidence, local secrets/volumes and applied
+> migrations. No Task 11 work or Git commit/push is authorized.
+
+## Pre-rework Task 10 regression baseline — not user accepted
+
+**Task 10 — TaskTracking use cases/CLI was IMPLEMENTED, VERIFIED and REVIEWED on
+2026-09-16; the authorization design is now superseded by the approved correction.**
+The user originally selected revocable owner access,
+all viewable tasks and unowned legacy/operator tasks, then approved the complete
+design with **“proceed”**. See [Task 10](tasks/10-task-tracking.md) for the approved
+design, implementation boundaries, exact commands/evidence and fresh reviews.
+
+| Command | Final result |
+| --- | --- |
+| `./bin/dev setup` | **PASS**; first applied `Version20260916010000`, final retained keys/dependencies/current migration; app/database healthy. |
+| `./bin/dev check` | **PASS**, `var/test-runs/run-Jzd2z00j/`: **1467 tests / 8917 assertions**, Deptrac **2200 allowed / 0 violations / 0 uncovered**. |
+| `./bin/dev test` | **PASS**, `var/test-runs/run-kLIovsdQ/`: **252 tests / 7346 assertions**, all **53 PHPUnit phases**. |
+| `TMPDIR=/tmp/opencode ./bin/dev verify-setup` | **PASS**, `/tmp/opencode/donmario-setup-zfkkNeft/`; embedded **252 / 7350**, all **53 phases**, at `application/var/test-runs/run-4SWsQ0go/`; all five TaskTracking ownership/grant UUID/visibility/completion persistence checkpoints passed. |
+
+Fresh independent reviewers **`ses_f55a7cd3effeWy1iCZ773BwaKm`** (security/policies/
+event caller boundary) and **`ses_f55a7cd2effeL2gpYyxGtTaSdL`** (persistence/list/
+concurrency/consumer) **APPROVED with no findings or material coverage gaps**. They
+inspected completed evidence, did not edit or rerun suites. Only docs changed afterward.
+N=100/8k populated plans and actual concurrent completion/rollback passed. Final
+Docker inspection found this project's app/database healthy, with no test/worker/
+consumer containers. Dependencies/locks are unchanged.
+
+The former next gate of accepting this implementation is superseded by the approved
+rework above. Task 11 remains deferred. Do not rerun passing suites merely to resume.
+Main owns the records. **No Task 10 Git delivery is authorized**;
+the earlier request delivered accepted 8b/9 as `270ba43`, not these current changes.
+Preserve the intended uncommitted Task 10 work. Earlier next-Task-10 discovery notes
+below are superseded history.
+
+### Installed pre-rework Task 10 boundaries
+
+- Task carries nullable immutable owner UUID and nullable UTC-second completion time.
+  Legacy rows remain unowned/open. Owned creation nests the fixed editor grant before
+  the existing creation event, atomically. Policies require account self ownership;
+  CLI may choose `--owner` or create unowned. Ownership grants no revocation bypass.
+- Four Task CLI adapters use exact `tasks` scope. List optionally selects `--visible-to`;
+  every account-targeted list uses live Authorizing visibility. UUID keyset pages are
+  bounded to 100/default 50. Orphans can produce empty pages with continuation; no refill
+  loops. Operator-wide costs one business read; targeted lists at most four.
+- New Authorizing grant/list APIs have exact direct caller, actor/target and scope
+  policies. Their account-existence reads have exact caller allowances. General
+  management remains protected. Cross-module integration uses public bus DTOs only.
+- Event middleware brackets native handling with a shared execution-context event
+  frame. Listeners cannot borrow Create bootstrap authority; async commands retain
+  independent transaction/reset semantics and no publisher identity is queued.
+- Completion requires exact complete permission or Task operator, is idempotent and
+  row-lock serialized. Preserve pending local changes; refresh clean stale state only;
+  dirty/stale or removed/deleted managed conflicts fail with rollback. Root bus alone
+  flushes/commits. Same-transaction authorization does not serialize revocation.
+
+## Accepted Task 9 checkpoint (historical delivery)
 
 **Latest accepted checkpoint: Task 9, including the `ActorKind` enum correction, is
 IMPLEMENTED, VERIFIED, REVIEWED and USER ACCEPTED on 2026-09-16.** After the additional
@@ -17,14 +287,9 @@ with no substantive findings or material coverage gaps after inspecting code and
 evidence. No suites rerun or code edits followed that review. The acceptance is recorded
 in [Task 9](tasks/09-authorization-enforcement.md#user-acceptance--2026-09-16).
 
-**Next session: Task 10 — TaskTracking use cases/CLI, discovery/design only.** Read
-this handoff, `AGENTS.md`, README, architecture, roadmap and Task 9's accepted record.
-Inspect the existing Create/Get use cases and accepted policy boundaries, then propose
-one coherent scope for create/list/complete, ownership and invariants, with acceptance
-criteria and security/performance review. Initial access and list visibility remain
-design questions, not already-approved capabilities. Obtain design approval before
-implementation. Do not begin Task 10 in this session or repeat passing suites merely
-to resume. **Git delivery is authorized:** on 2026-09-16 the user said exactly
+The former next gate was Task 10 discovery/design; that gate and implementation
+approval are now satisfied as recorded above. **Historical Git delivery authorization:**
+on 2026-09-16 the user said exactly
 **“commit and push changes”**. This delivery commit includes the accepted 8b/9 work,
 enum correction and handoff. Use Git history for its hash; future commits/pushes need
 fresh authorization. Earlier uncommitted/no-authorization notes are historical.
@@ -67,7 +332,7 @@ remain. Do not rerun passing suites merely to resume.
 
 Earlier awaiting-8b-acceptance and Task 9 design-gate records below are **historical
 and superseded by this checkpoint**. Retained 8a/8b results do not verify Task 9.
-Next gate: Task 10 discovery/design in the fresh session, then user design approval.
+The former Task 10 discovery/design gate is superseded by the current status above.
 
 ### Accepted historical checkpoints
 
@@ -129,8 +394,10 @@ as historical evidence, not current operating instructions.
 ## Read first
 
 1. `AGENTS.md`, `README.md`, `docs/architecture.md`, `docs/roadmap.md`.
-2. `docs/tasks/09-authorization-enforcement.md` — main-owned active task record;
+2. `docs/tasks/10-authorizing-rework.md` — main-owned active correction record;
    reconcile its progress with subsequent user/main updates.
+   `docs/tasks/10-task-tracking.md` — pre-rework implementation and regression evidence.
+   `docs/tasks/09-authorization-enforcement.md` — accepted enforcement checkpoint.
    `docs/tasks/08-authorizing.md` — accepted 8a/8b design and retained evidence.
    `docs/tasks/07-jwt-authentication.md` — accepted design, verification/review evidence
    and user acceptance recorded on 2026-09-14.
@@ -148,7 +415,11 @@ before editing. The user's 2026-09-15 commit/push request applied only to the ve
 8a checkpoint; the subsequent 2026-09-16 request authorizes this 8b/9 delivery only.
 Preserve the instruction to use subagents for independent work.
 
-## Current Task 9 implementation
+## Historical Task 9 policy baseline - superseded operating design
+
+The identifiers and policy mechanism in this section describe the accepted Task 9
+checkpoint only. They are intentionally retained as historical provenance and are not
+current implementation instructions; the native-voter cutover at the top supersedes them.
 
 - Handler-level `#[AuthorizeWith(...)]` selects a co-located private policy for each
   command/query. Source/DI/Deptrac rules align; policies cannot be injected into
@@ -170,23 +441,26 @@ Preserve the instruction to use subagents for independent work.
 - Dev/test Task HTTP routes use web-session identity, with fixed `Access denied.`
   JSON and 401/403 for anonymous/authenticated denial. Create requires global create;
   Get requires exact-resource view. No automatic Task grants, list filtering or
-  durable service identity yet. [Architecture](architecture.md#policy-only-authorization-task-9)
-  and README describe exact policies, adapters and limits.
+  durable service identity yet. The historical [Task 9 record](tasks/09-authorization-enforcement.md)
+  preserves the exact policies, adapters and limits.
 
-## Accepted 8b implementation
+## Historical accepted 8b implementation - superseded API names
+
+The account-named APIs and account-coupled behavior below are retained only as evidence
+of the accepted 8b checkpoint. Current Authorizing APIs are subject-named and generic.
 
 - Authorizing owns `Domain/AuthorizationCatalog` and four mapped global/resource
   role-assignment and direct-permission-grant tables. Module migration
   `Version20260915010000` was applied by passing setup; dependencies and locks are
-  unchanged. [Architecture](architecture.md#authorizing-modelmanagement-8b-user-accepted-2026-09-15)
-  records exact entity/table names and ownership boundaries.
+  unchanged. The historical [8b record](tasks/08-authorizing.md) preserves exact
+  entity/table names and ownership boundaries.
 - Three public APIs are implemented: `ChangeAccountAssignmentsCommand`,
   `EvaluatePermissionsQuery` and `ListAccountAssignmentsQuery`. Authenticating owns
   `CheckAccountExistenceQuery`, exposing only UUID/existence results through QueryBus.
   Eight operator console commands adapt these APIs; authority comes from trusted
   deployment shell/container access, now expressed as explicit `assignments` scope.
-  No new HTTP/API management routes exist. [README](../README.md#authorizing-operator-management-8b-user-accepted-2026-09-15)
-  supplies exact commands, batch JSON examples and catalogue customization.
+  No new HTTP/API management routes exist. The historical 8b record preserves its
+  original commands, batch JSON examples and catalogue customization.
 - Sources are additive, with no cache or JWT/session permission authority. Global
   checks use only global sources for the capability across its declared resource
   type; resource checks also use exact `(type, UUID)` sources. Known wrong scope/type
@@ -572,8 +846,10 @@ At the pre-correction checkpoint, main's actual `docker ps` showed the project's
 and no consumer remnants. Development was in sync mode. This is historical runtime
 state; the completed post-correction setup also confirmed app/database health,
 and fresh-consumer verification completed cleanup.
-Preserve local credentials, volumes and applied migrations. Evidence directories
-may contain private settings; share only redacted logs. Tests must use isolated data.
+Preserve local credentials and evidence, but do not treat the old instruction to retain an
+intermediate authorization database as a compatibility requirement: the clean model uses
+a recreated database. Evidence directories may contain private settings; share only
+redacted logs. Tests must use isolated data.
 
 ## Historical fresh-session prompt — superseded
 

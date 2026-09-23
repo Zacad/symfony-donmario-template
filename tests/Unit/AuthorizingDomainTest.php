@@ -4,226 +4,264 @@ declare(strict_types=1);
 
 namespace App\Tests\Unit;
 
-use App\Module\Authorizing\Domain\AssignmentChange;
-use App\Module\Authorizing\Domain\AuthorizationCatalog;
-use App\Module\Authorizing\Domain\InvalidAuthorizationInput;
-use App\Module\Authorizing\Domain\PermissionCheck;
+use App\Module\Authorizing\Domain\Assignment\AssignmentChangeCountsValueObject;
+use App\Module\Authorizing\Domain\Assignment\AssignmentChangeValueObject;
+use App\Module\Authorizing\Domain\Assignment\AssignmentKindEnum;
+use App\Module\Authorizing\Domain\Assignment\AssignmentOperationEnum;
+use App\Module\Authorizing\Domain\Assignment\AssignmentReferenceValueObject;
+use App\Module\Authorizing\Domain\Assignment\EntitlementCheckValueObject;
+use App\Module\Authorizing\Domain\Assignment\PermissionGrantEntity;
+use App\Module\Authorizing\Domain\Assignment\RoleAssignmentEntity;
+use App\Module\Authorizing\Domain\Capability\AuthorizationCatalogService;
+use App\Module\Authorizing\Domain\InvalidAuthorizationInputException;
+use App\Module\Authorizing\Domain\Role\RoleEntity;
+use App\Module\Authorizing\Domain\Role\RolePermissionMembershipEntity;
+use App\Module\Authorizing\Domain\Role\RolePermissionSetValueObject;
+use App\Tests\Fixtures\Authorizing\AuthorizationCatalogFixture;
 use PHPUnit\Framework\Attributes\DataProvider;
 use PHPUnit\Framework\TestCase;
 use Symfony\Component\Uid\Uuid;
 
 final class AuthorizingDomainTest extends TestCase
 {
-    /** @param list<string> $roles */
-    #[DataProvider('permissionBundles')]
-    public function testCatalogueHasOnlyExplicitFlatRoleBundles(string $permission, array $roles): void
+    public function testRolePermissionSetSortsCrossModulePermissions(): void
     {
-        $catalog = new AuthorizationCatalog();
+        $permissions = AuthorizationCatalogFixture::create()->rolePermissionSet([
+            'task_tracking.task.view',
+            'authorizing.manage',
+        ]);
 
-        self::assertTrue($catalog->isKnownPermission($permission));
-        self::assertSame($roles, $catalog->rolesForPermission($permission));
-        $catalog->validateCheck(new PermissionCheck(Uuid::v7(), $permission, 'global'));
+        self::assertSame(['authorizing.manage', 'task_tracking.task.view'], $permissions->permissions);
+        self::assertSame(['permissions'], array_keys(get_object_vars($permissions)));
     }
 
-    /** @return iterable<string, array{string, list<string>}> */
-    public static function permissionBundles(): iterable
+    public function testRolePermissionSetAcceptsTheTotalMembershipBound(): void
     {
-        yield 'create is global-only' => ['task_tracking.task.create', ['task_tracking.creator']];
-        yield 'view is additive reader and editor' => ['task_tracking.task.view', ['task_tracking.reader', 'task_tracking.editor']];
-        yield 'complete has no reader or administrator bypass' => ['task_tracking.task.complete', ['task_tracking.editor']];
-        yield 'administration has no task role' => ['authorizing.manage', ['authorizing.administrator']];
+        $permissions = [];
+        for ($index = 0; $index < 4096; ++$index) {
+            $permissions[] = sprintf('permission.%04d', $index);
+        }
+
+        self::assertCount(4096, new RolePermissionSetValueObject($permissions)->permissions);
     }
 
-    public function testUnknownPermissionHasNoRoleFallbackAndIsNotAnInvalidCheck(): void
+    /** @param list<string> $permissions */
+    #[DataProvider('invalidPermissionSets')]
+    public function testRolePermissionSetRejectsDuplicatesInvalidKeysAndBounds(array $permissions): void
     {
-        $catalog = new AuthorizationCatalog();
-        foreach (['task_tracking.task', 'task_tracking.task.future', 'authorizing.administrator', 'retired.permission'] as $permission) {
-            self::assertFalse($catalog->isKnownPermission($permission));
-            self::assertSame([], $catalog->rolesForPermission($permission));
-            $catalog->validateCheck(new PermissionCheck(Uuid::v7(), $permission, 'global'));
-            $catalog->validateCheck(new PermissionCheck(Uuid::v7(), $permission, 'resource', 'retired.type', Uuid::v7()));
+        $this->expectException(InvalidAuthorizationInputException::class);
+        new RolePermissionSetValueObject($permissions);
+    }
+
+    /** @return iterable<string, array{list<string>}> */
+    public static function invalidPermissionSets(): iterable
+    {
+        yield 'empty' => [[]];
+        yield 'duplicate' => [['authorizing.manage', 'authorizing.manage']];
+        yield 'malformed key' => [['Permission.Read']];
+        yield 'over total edge bound' => [array_fill(0, 4097, 'authorizing.manage')];
+    }
+
+    public function testRoleCreationAndDefinitionOwnRevisionedLifecycle(): void
+    {
+        $role = RoleEntity::create('operations.lead', 'Operations lead', new RolePermissionSetValueObject(['authorizing.manage']), null);
+
+        self::assertSame(['operations.lead', 'Operations lead', 1, null, ['authorizing.manage']], [
+            $role->key(),
+            $role->label(),
+            $role->revision(),
+            $role->retiredAt(),
+            $role->permissions(),
+        ]);
+        self::assertTrue($role->define('Task reader', new RolePermissionSetValueObject(['task_tracking.task.view']), 1, false));
+        self::assertSame(['Task reader', 2, ['task_tracking.task.view']], [$role->label(), $role->revision(), $role->permissions()]);
+    }
+
+    public function testNewRoleCannotClaimAnExistingRevision(): void
+    {
+        $this->expectException(InvalidAuthorizationInputException::class);
+        RoleEntity::create('operations.lead', 'Operations lead', new RolePermissionSetValueObject(['authorizing.manage']), 1);
+    }
+
+    public function testCreateIfAbsentAcceptsOnlyAnExactActiveDefinition(): void
+    {
+        $permissions = new RolePermissionSetValueObject(['authorizing.manage']);
+        $role = RoleEntity::create('operations.lead', 'Operations lead', $permissions, null);
+
+        self::assertFalse($role->define('Operations lead', $permissions, null, true));
+        foreach ([
+            ['Different label', $permissions],
+            ['Operations lead', new RolePermissionSetValueObject(['task_tracking.task.view'])],
+        ] as [$label, $candidate]) {
+            try {
+                $role->define($label, $candidate, null, true);
+                self::fail('A mismatched create-if-absent definition was accepted.');
+            } catch (InvalidAuthorizationInputException) {
+            }
         }
     }
 
-    #[DataProvider('supportedAssignments')]
-    public function testAdditionsSupportOnlyDeclaredScopes(string $kind, string $key, string $scope): void
+    public function testRoleRevisionChecksRetirementAndIrreversibility(): void
     {
-        $change = new AssignmentChange('add', $kind, $key, $scope, 'resource' === $scope ? 'task_tracking.task' : null, 'resource' === $scope ? Uuid::v7() : null);
-        (new AuthorizationCatalog())->validateChange($change);
-
-        self::assertSame($scope, $change->scope);
-    }
-
-    /** @return iterable<string, array{string, string, string}> */
-    public static function supportedAssignments(): iterable
-    {
-        yield 'global creator' => ['role', 'task_tracking.creator', 'global'];
-        yield 'global reader' => ['role', 'task_tracking.reader', 'global'];
-        yield 'global editor' => ['role', 'task_tracking.editor', 'global'];
-        yield 'global administrator' => ['role', 'authorizing.administrator', 'global'];
-        yield 'resource reader' => ['role', 'task_tracking.reader', 'resource'];
-        yield 'resource editor' => ['role', 'task_tracking.editor', 'resource'];
-        yield 'global create grant' => ['permission', 'task_tracking.task.create', 'global'];
-        yield 'global view grant' => ['permission', 'task_tracking.task.view', 'global'];
-        yield 'global complete grant' => ['permission', 'task_tracking.task.complete', 'global'];
-        yield 'global manage grant' => ['permission', 'authorizing.manage', 'global'];
-        yield 'resource view grant' => ['permission', 'task_tracking.task.view', 'resource'];
-        yield 'resource complete grant' => ['permission', 'task_tracking.task.complete', 'resource'];
-    }
-
-    #[DataProvider('unsupportedAssignments')]
-    public function testUnknownAndIncompatibleAdditionsFail(string $kind, string $key, string $scope, ?string $resourceType): void
-    {
-        $change = new AssignmentChange('add', $kind, $key, $scope, $resourceType, 'resource' === $scope ? Uuid::v7() : null);
-        $this->expectException(InvalidAuthorizationInput::class);
-        $this->expectExceptionMessage('Invalid authorization input.');
-
-        (new AuthorizationCatalog())->validateChange($change);
-    }
-
-    #[DataProvider('unsupportedAssignments')]
-    public function testRetiredOrReScopedAssignmentsRemainRemovable(string $kind, string $key, string $scope, ?string $resourceType): void
-    {
-        $change = new AssignmentChange('remove', $kind, $key, $scope, $resourceType, 'resource' === $scope ? Uuid::v7() : null);
-        (new AuthorizationCatalog())->validateChange($change);
-
-        self::assertSame('remove', $change->operation);
-    }
-
-    /** @return iterable<string, array{string, string, string, ?string}> */
-    public static function unsupportedAssignments(): iterable
-    {
-        yield 'unknown global role' => ['role', 'retired.role', 'global', null];
-        yield 'unknown resource role and type' => ['role', 'retired.role', 'resource', 'retired.type'];
-        yield 'unknown global grant' => ['permission', 'retired.permission', 'global', null];
-        yield 'unknown resource grant and type' => ['permission', 'retired.permission', 'resource', 'retired.type'];
-        yield 'resource creator' => ['role', 'task_tracking.creator', 'resource', 'task_tracking.task'];
-        yield 'resource administrator' => ['role', 'authorizing.administrator', 'resource', 'task_tracking.task'];
-        yield 'resource create' => ['permission', 'task_tracking.task.create', 'resource', 'task_tracking.task'];
-        yield 'resource manage' => ['permission', 'authorizing.manage', 'resource', 'task_tracking.task'];
-        yield 'wrong reader type' => ['role', 'task_tracking.reader', 'resource', 'another.type'];
-        yield 'wrong editor type' => ['role', 'task_tracking.editor', 'resource', 'another.type'];
-        yield 'wrong grant type' => ['permission', 'task_tracking.task.view', 'resource', 'another.type'];
-        yield 'permission used as role' => ['role', 'task_tracking.task.view', 'global', null];
-        yield 'role used as permission' => ['permission', 'task_tracking.editor', 'global', null];
-    }
-
-    public function testResourceCapablePermissionsMayBeCheckedGloballyOrForTheirExactType(): void
-    {
-        $catalog = new AuthorizationCatalog();
-        foreach (['task_tracking.task.view', 'task_tracking.task.complete'] as $permission) {
-            $catalog->validateCheck(new PermissionCheck(Uuid::v7(), $permission, 'global'));
-            $catalog->validateCheck(new PermissionCheck(Uuid::v7(), $permission, 'resource', 'task_tracking.task', Uuid::v7()));
-            self::assertTrue($catalog->isKnownPermission($permission));
+        $role = RoleEntity::create('operations.lead', 'Operations lead', new RolePermissionSetValueObject(['authorizing.manage']), null);
+        foreach ([null, 2] as $revision) {
+            try {
+                $role->define('Updated', new RolePermissionSetValueObject(['authorizing.manage']), $revision, false);
+                self::fail('An invalid expected revision was accepted.');
+            } catch (InvalidAuthorizationInputException) {
+            }
         }
+
+        $retiredAt = new \DateTimeImmutable('2026-09-22T12:00:00Z');
+        self::assertTrue($role->retire(1, $retiredAt));
+        self::assertSame([2, $retiredAt], [$role->revision(), $role->retiredAt()]);
+        self::assertFalse($role->retire(2, $retiredAt));
+
+        $this->expectException(InvalidAuthorizationInputException::class);
+        $role->define('Updated', new RolePermissionSetValueObject(['authorizing.manage']), 2, false);
     }
 
-    #[DataProvider('incompatibleChecks')]
-    public function testKnownPermissionIncompatibleScopeFailsInsteadOfDenying(string $permission, string $resourceType): void
+    public function testRoleRevisionCannotOverflow(): void
     {
-        $check = new PermissionCheck(Uuid::v7(), $permission, 'resource', $resourceType, Uuid::v7());
-        $this->expectException(InvalidAuthorizationInput::class);
+        $permissions = new RolePermissionSetValueObject(['authorizing.manage']);
+        $role = RoleEntity::reconstitute('operations.lead', 'Operations lead', 2147483647, null, $permissions->permissions);
+        try {
+            $role->define('Updated', $permissions, 2147483647, false);
+            self::fail('A role definition overflow was accepted.');
+        } catch (InvalidAuthorizationInputException) {
+        }
 
-        (new AuthorizationCatalog())->validateCheck($check);
+        $this->expectException(InvalidAuthorizationInputException::class);
+        $role->retire(2147483647, new \DateTimeImmutable('2026-09-22T12:00:00Z'));
     }
 
-    /** @return iterable<string, array{string, string}> */
-    public static function incompatibleChecks(): iterable
+    /** @param list<string> $permissions */
+    #[DataProvider('corruptStoredRoles')]
+    public function testCorruptRoleReconstitutionFailsClosed(string $key, string $label, int $revision, array $permissions): void
     {
-        yield 'create is global-only' => ['task_tracking.task.create', 'task_tracking.task'];
-        yield 'manage is global-only' => ['authorizing.manage', 'task_tracking.task'];
-        yield 'view wrong type' => ['task_tracking.task.view', 'another.type'];
-        yield 'complete wrong type' => ['task_tracking.task.complete', 'another.type'];
+        $this->expectException(\UnexpectedValueException::class);
+        $this->expectExceptionMessage('Invalid stored authorization role.');
+        RoleEntity::reconstitute($key, $label, $revision, null, $permissions);
+    }
+
+    /** @return iterable<string, array{string, string, int, list<string>}> */
+    public static function corruptStoredRoles(): iterable
+    {
+        yield 'malformed key' => ['Operations Lead', 'Operations lead', 1, ['authorizing.manage']];
+        yield 'malformed label' => ['operations.lead', "Operations\nlead", 1, ['authorizing.manage']];
+        yield 'zero revision' => ['operations.lead', 'Operations lead', 0, ['authorizing.manage']];
+        yield 'empty permission set' => ['operations.lead', 'Operations lead', 1, []];
+        yield 'duplicate permission' => ['operations.lead', 'Operations lead', 1, ['authorizing.manage', 'authorizing.manage']];
+    }
+
+    public function testRetiredStoredRoleMustHaveAdvancedRevision(): void
+    {
+        $this->expectException(\UnexpectedValueException::class);
+        $this->expectExceptionMessage('Invalid stored authorization role.');
+        RoleEntity::reconstitute(
+            'operations.lead',
+            'Operations lead',
+            1,
+            new \DateTimeImmutable('2026-09-22T12:00:00Z'),
+            ['authorizing.manage'],
+        );
+    }
+
+    public function testAssignmentValuesUseEnumAndNaturalKindKeyShapes(): void
+    {
+        $reference = new AssignmentReferenceValueObject(AssignmentKindEnum::Permission, 'authorizing.manage');
+        $change = new AssignmentChangeValueObject(AssignmentOperationEnum::Add, $reference);
+        $counts = new AssignmentChangeCountsValueObject(2, 1);
+
+        self::assertSame(['role', 'permission'], array_column(AssignmentKindEnum::cases(), 'value'));
+        self::assertSame(['add', 'remove'], array_column(AssignmentOperationEnum::cases(), 'value'));
+        self::assertSame(['kind', 'key'], array_keys(get_object_vars($reference)));
+        self::assertSame(['operation', 'reference'], array_keys(get_object_vars($change)));
+        self::assertSame(['added', 'removed'], array_keys(get_object_vars($counts)));
+        self::assertSame([2, 1], [$counts->added, $counts->removed]);
+    }
+
+    public function testAssignmentEntitiesExposeNaturalIdentityAndGuardRetiredRoles(): void
+    {
+        $subjectId = Uuid::v7();
+        $role = RoleEntity::create('operations.lead', 'Operations lead', new RolePermissionSetValueObject(['authorizing.manage']), null);
+        $assignment = RoleAssignmentEntity::assign($subjectId, $role);
+        $grant = new PermissionGrantEntity($subjectId, 'authorizing.manage');
+        $membership = new RolePermissionMembershipEntity($role, 'authorizing.manage');
+
+        self::assertSame($subjectId, $assignment->subjectId());
+        self::assertSame($role, $assignment->role());
+        self::assertSame([$subjectId, 'authorizing.manage'], [$grant->subjectId(), $grant->permissionKey()]);
+        self::assertSame([$role, 'authorizing.manage'], [$membership->role(), $membership->permissionKey()]);
+
+        self::assertTrue($role->retire(1, new \DateTimeImmutable('2026-09-22T12:00:00Z')));
+        $this->expectException(InvalidAuthorizationInputException::class);
+        RoleAssignmentEntity::assign(Uuid::v7(), $role);
+    }
+
+    public function testNegativeAssignmentCountsAreRejected(): void
+    {
+        $this->expectException(InvalidAuthorizationInputException::class);
+        new AssignmentChangeCountsValueObject(-1, 0);
+    }
+
+    public function testUnknownWellFormedPermissionIsAValidDenyingCheck(): void
+    {
+        $check = new EntitlementCheckValueObject(Uuid::v7(), 'retired.permission');
+
+        self::assertFalse(AuthorizationCatalogFixture::create()->isKnownPermission($check->permission));
+        self::assertSame(['subjectId', 'permission'], array_keys(get_object_vars($check)));
+    }
+
+    public function testCatalogAcceptsKnownPermissionAdditionsAndAnyRemoval(): void
+    {
+        $catalog = AuthorizationCatalogFixture::create();
+        $catalog->validateChange(new AssignmentChangeValueObject(
+            AssignmentOperationEnum::Add,
+            new AssignmentReferenceValueObject(AssignmentKindEnum::Permission, 'authorizing.manage'),
+        ));
+        $catalog->validateChange(new AssignmentChangeValueObject(
+            AssignmentOperationEnum::Remove,
+            new AssignmentReferenceValueObject(AssignmentKindEnum::Permission, 'retired.permission'),
+        ));
+        $this->addToAssertionCount(1);
+    }
+
+    public function testCatalogRejectsUnknownPermissionAddition(): void
+    {
+        $this->expectException(InvalidAuthorizationInputException::class);
+        AuthorizationCatalogFixture::create()->validateChange(new AssignmentChangeValueObject(
+            AssignmentOperationEnum::Add,
+            new AssignmentReferenceValueObject(AssignmentKindEnum::Permission, 'retired.permission'),
+        ));
+    }
+
+    public function testCatalogAppliesPermissionSetBoundAfterConstruction(): void
+    {
+        $capabilities = [];
+        for ($index = 0; $index < 4096; ++$index) {
+            $key = sprintf('permission.%04d', $index);
+            $capabilities[] = ['module' => 'permission', 'key' => $key, 'label' => $key, 'access' => 'read', 'operations' => ['PermissionQuery']];
+        }
+        $catalog = new AuthorizationCatalogService($capabilities);
+
+        self::assertCount(4096, $catalog->rolePermissionSet(array_column($capabilities, 'key'))->permissions);
     }
 
     #[DataProvider('invalidKeys')]
-    public function testChangeRejectsMalformedKeysEvenForRemoval(string $key): void
+    public function testMalformedKeysAndWildcardsRemainRejected(string $key): void
     {
-        $this->expectException(InvalidAuthorizationInput::class);
-        $this->expectExceptionMessage('Invalid authorization input.');
-        new AssignmentChange('remove', 'role', $key, 'global');
-    }
-
-    #[DataProvider('invalidKeys')]
-    public function testCheckRejectsMalformedUnknownPermissions(string $key): void
-    {
-        $this->expectException(InvalidAuthorizationInput::class);
-        new PermissionCheck(Uuid::v7(), $key, 'global');
-    }
-
-    #[DataProvider('invalidKeys')]
-    public function testCheckRejectsMalformedResourceTypesEvenForUnknownPermissions(string $key): void
-    {
-        $this->expectException(InvalidAuthorizationInput::class);
-        new PermissionCheck(Uuid::v7(), 'unknown.permission', 'resource', $key, Uuid::v7());
+        $this->expectException(InvalidAuthorizationInputException::class);
+        new EntitlementCheckValueObject(Uuid::v7(), $key);
     }
 
     /** @return iterable<string, array{string}> */
     public static function invalidKeys(): iterable
     {
         yield 'empty' => [''];
+        yield 'uppercase' => ['Permission.Read'];
+        yield 'wildcard' => ['permission.*'];
         yield 'too long' => [str_repeat('a', 65)];
-        yield 'uppercase' => ['Task_tracking.reader'];
-        yield 'unicode' => ['tâsk.reader'];
-        yield 'leading space' => [' task_tracking.reader'];
-        yield 'newline suffix' => ["task_tracking.reader\n"];
-        yield 'NUL' => ["task\0reader"];
-        yield 'wildcard' => ['task_tracking.*'];
-        yield 'colon' => ['task:reader'];
-        yield 'slash' => ['task/reader'];
-    }
-
-    public function testSyntaxBoundariesRemainUsableForRetiredKeyCleanup(): void
-    {
-        $catalog = new AuthorizationCatalog();
-        foreach (['a', 'a0.b_c-d', str_repeat('a', 64)] as $key) {
-            $change = new AssignmentChange('remove', 'permission', $key, 'resource', $key, Uuid::v7());
-            $catalog->validateChange($change);
-            self::assertSame($key, $change->key);
-        }
-    }
-
-    #[DataProvider('invalidScopes')]
-    public function testScopeAndCoordinatesAreAnExactPairForChanges(string $scope, ?string $resourceType, bool $hasResourceId): void
-    {
-        $this->expectException(InvalidAuthorizationInput::class);
-        new AssignmentChange('remove', 'role', 'retired.role', $scope, $resourceType, $hasResourceId ? Uuid::v7() : null);
-    }
-
-    #[DataProvider('invalidScopes')]
-    public function testScopeAndCoordinatesAreAnExactPairForChecks(string $scope, ?string $resourceType, bool $hasResourceId): void
-    {
-        $this->expectException(InvalidAuthorizationInput::class);
-        new PermissionCheck(Uuid::v7(), 'retired.permission', $scope, $resourceType, $hasResourceId ? Uuid::v7() : null);
-    }
-
-    /** @return iterable<string, array{string, ?string, bool}> */
-    public static function invalidScopes(): iterable
-    {
-        yield 'unknown scope' => ['all', null, false];
-        yield 'scope case sensitive' => ['Global', null, false];
-        yield 'global with type' => ['global', 'task_tracking.task', false];
-        yield 'global with UUID' => ['global', null, true];
-        yield 'global with both' => ['global', 'task_tracking.task', true];
-        yield 'resource without both' => ['resource', null, false];
-        yield 'resource without type' => ['resource', null, true];
-        yield 'resource without UUID' => ['resource', 'task_tracking.task', false];
-        yield 'resource malformed type' => ['resource', 'UPPERCASE', true];
-    }
-
-    #[DataProvider('invalidOperationsAndKinds')]
-    public function testChangeOperationAndKindAreExact(string $operation, string $kind): void
-    {
-        $this->expectException(InvalidAuthorizationInput::class);
-        new AssignmentChange($operation, $kind, 'task_tracking.reader', 'global');
-    }
-
-    /** @return iterable<string, array{string, string}> */
-    public static function invalidOperationsAndKinds(): iterable
-    {
-        yield 'unknown operation' => ['replace', 'role'];
-        yield 'operation case' => ['ADD', 'role'];
-        yield 'unknown kind' => ['add', 'grant'];
-        yield 'kind case' => ['add', 'Role'];
+        yield 'newline' => ["permission.read\n"];
     }
 }

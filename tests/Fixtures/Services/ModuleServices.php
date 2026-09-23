@@ -143,15 +143,6 @@ namespace App\Module\DiConsuming\Domain {
 }
 
 namespace App\Module\DiConsuming\Application\Lookup {
-    use App\Module\DiConsuming\Domain\RepositoryPort;
-
-    final readonly class LookupPolicy
-    {
-        public function __construct(public mixed $dependency = null, public ?RepositoryPort $repository = null)
-        {
-        }
-    }
-
     final class LookupHandler
     {
     }
@@ -196,6 +187,31 @@ namespace App\Module\DiConsuming\Infrastructure {
         public function __construct(ManagerRegistry $registry)
         {
             parent::__construct($registry, Record::class);
+        }
+    }
+}
+
+namespace App\Module\DiConsuming\Infrastructure\Framework\Symfony\Security {
+    use App\Module\DiConsuming\Domain\RepositoryPort;
+    use App\Platform\Messaging\QueryBus;
+    use Symfony\Component\Security\Core\Authentication\Token\TokenInterface;
+    use Symfony\Component\Security\Core\Authorization\Voter\Voter;
+
+    /** @extends Voter<string, object> */
+    final class DiConsumingVoter extends Voter
+    {
+        public function __construct(public QueryBus $queries, public RepositoryPort $repository)
+        {
+        }
+
+        protected function supports(string $attribute, mixed $subject): bool
+        {
+            return false;
+        }
+
+        protected function voteOnAttribute(string $attribute, mixed $subject, TokenInterface $token, ?\Symfony\Component\Security\Core\Authorization\Voter\Vote $vote = null): bool
+        {
+            return false;
         }
     }
 }

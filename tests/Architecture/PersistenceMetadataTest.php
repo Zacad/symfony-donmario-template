@@ -5,6 +5,10 @@ declare(strict_types=1);
 namespace App\Tests\Architecture;
 
 use App\Module\Archiving\Domain\Archive;
+use App\Module\Authorizing\Domain\Assignment\PermissionGrantEntity;
+use App\Module\Authorizing\Domain\Assignment\RoleAssignmentEntity;
+use App\Module\Authorizing\Domain\Role\RoleEntity;
+use App\Module\Authorizing\Domain\Role\RolePermissionMembershipEntity;
 use App\Module\Persisting\Domain\ForeignAssociation;
 use App\Module\Persisting\Domain\ForeignEmbeddable;
 use App\Module\Persisting\Domain\ForeignInheritance;
@@ -41,9 +45,22 @@ final class PersistenceMetadataTest extends KernelTestCase
         self::assertFalse($entityManager->getConnection()->isConnected());
 
         $guard = new PersistenceBoundaries($entityManager, new ModuleMap(\dirname(__DIR__, 2)));
-        self::assertSame('TaskTracking', $guard->assertMetadata()['public.task_tracking_task'] ?? null);
+        $tables = $guard->assertMetadata();
+        self::assertSame('TaskTracking', $tables['public.task_tracking_task'] ?? null);
+        self::assertSame([
+            'public.authorizing_permission_grant' => 'Authorizing',
+            'public.authorizing_role' => 'Authorizing',
+            'public.authorizing_role_assignment' => 'Authorizing',
+            'public.authorizing_role_permission' => 'Authorizing',
+        ], array_filter($tables, static fn (string $module, string $table): bool => 'Authorizing' === $module || str_starts_with($table, 'public.authorizing_'), ARRAY_FILTER_USE_BOTH));
         $metadata = $entityManager->getMetadataFactory()->getAllMetadata();
-        self::assertContains(Task::class, array_map(static fn (ClassMetadata $class): string => $class->name, $metadata));
+        $classes = array_map(static fn (ClassMetadata $class): string => $class->name, $metadata);
+        self::assertContains(Task::class, $classes);
+        $authorizing = array_values(array_filter($classes, static fn (string $class): bool => str_starts_with($class, 'App\\Module\\Authorizing\\')));
+        sort($authorizing);
+        $expectedAuthorizing = [PermissionGrantEntity::class, RoleAssignmentEntity::class, RoleEntity::class, RolePermissionMembershipEntity::class];
+        sort($expectedAuthorizing);
+        self::assertSame($expectedAuthorizing, $authorizing);
 
         $command = new CommandTester(new CheckPersistenceCommand($guard));
         self::assertSame(Command::SUCCESS, $command->execute([]));

@@ -1,5 +1,15 @@
 # Subtask 8 — DTO collections and Authorizing model/management
 
+> **Superseded authorization behavior:** This accepted record and all evidence below are
+> retained as historical provenance. Current behavior is defined by the
+> [clean Authorizing/native-voter/Task-ownership rework](10-authorizing-rework.md): global
+> subject assignments, runtime role/capability APIs and native voters on a fresh four-table
+> baseline. The historical account/resource APIs and schema below are not current. Their
+> accepted evidence remains provenance, but compatibility is not required: the clean model
+> rewrites `Version20260915010000`, deletes the two intermediate authorization migrations
+> and retains no resource/initial-binding schema. Clean-model implementation, verification
+> and fresh review are complete; user acceptance is pending.
+
 ## Approval and current checkpoint
 
 **Current checkpoint (2026-09-15): 8b is IMPLEMENTED, VERIFIED, REVIEWED and USER

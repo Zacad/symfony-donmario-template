@@ -4,10 +4,15 @@ declare(strict_types=1);
 
 namespace App\Tests\Architecture;
 
+use App\Module\Authorizing\Domain\Capability\AuthorizationCatalogService;
+use App\Module\Authorizing\Domain\Capability\AuthorizingPermissionEnum;
 use App\Module\TaskTracking\Application\CreateTask\CreateTaskCommand;
 use App\Module\TaskTracking\Application\CreateTask\TaskCreatedEvent;
 use App\Module\TaskTracking\Application\GetTask\GetTaskQuery;
+use App\Module\TaskTracking\Domain\TaskPermission;
+use App\Module\TaskTracking\Infrastructure\Framework\Symfony\Security\TaskTrackingVoter;
 use App\Platform\Authorization\AuthorizationMiddleware;
+use App\Platform\Authorization\PublicAccessVoter;
 use App\Platform\Messaging\CommandBus;
 use App\Platform\Messaging\QueryBus;
 use App\Tests\Fixtures\Collections\CollectionsFixture;
@@ -17,12 +22,10 @@ use Doctrine\Persistence\ManagerRegistry;
 use PHPUnit\Framework\Attributes\DataProvider;
 use PHPUnit\Framework\TestCase;
 use Psr\Container\ContainerInterface;
-use Symfony\Component\DependencyInjection\Argument\ServiceClosureArgument;
+use Symfony\Component\DependencyInjection\Argument\TaggedIteratorArgument;
 use Symfony\Component\DependencyInjection\Compiler\CompilerPassInterface;
 use Symfony\Component\DependencyInjection\Compiler\PassConfig;
 use Symfony\Component\DependencyInjection\ContainerBuilder;
-use Symfony\Component\DependencyInjection\Reference;
-use Symfony\Component\DependencyInjection\ServiceLocator;
 use Symfony\Component\Messenger\Envelope;
 use Symfony\Component\Messenger\Exception\ValidationFailedException;
 use Symfony\Component\Messenger\Message\RedispatchMessage;
@@ -92,10 +95,16 @@ final class CqrsTest extends TestCase
         yield 'public handler alias' => ['public-handler', 'handler_visibility'];
         yield 'public handler alias chain' => ['public-handler-chain', 'handler_visibility'];
         yield 'public alias to an untagged handler copy' => ['public-handler-copy', 'handler_visibility'];
-        foreach (['missing', 'duplicate', 'method', 'policy-missing', 'policy-mutable', 'policy-nonfinal', 'policy-foreign', 'policy-message', 'policy-context', 'policy-return', 'policy-optional', 'policy-variadic', 'policy-reference', 'policy-public', 'policy-alias', 'policy-copy', 'data-service', 'locator-map', 'locator-public', 'locator-alias'] as $scenario) {
+        foreach (['missing', 'duplicate', 'method', 'missing-voter', 'public-voter', 'public-permission', 'public-label', 'foreign-permission', 'permission-integer', 'permission-suffix', 'permission-key', 'permission-prefix', 'permission-layer', 'invalid-label', 'missing-label', 'long-label', 'label-without-permission', 'data-service'] as $scenario) {
             yield 'authorization '.$scenario => ['authorization-'.$scenario, 'authorization'];
         }
-        foreach (['context', 'policy-factory', 'locator-factory', 'after-result'] as $scenario) {
+        foreach (['foreign-voter', 'public-direct-voter', 'invalid-metadata', 'voter-missing', 'voter-duplicate', 'voter-public', 'voter-eager', 'voter-nonautowired', 'voter-autoconfigured', 'voter-security-tag', 'voter-tag-metadata', 'voter-copy', 'voter-unreferenced', 'voter-public-alias'] as $scenario) {
+            yield 'authorization '.$scenario => ['authorization-'.$scenario, 'authorization_voter'];
+        }
+        foreach (['manager-public', 'strategy-public', 'strategy-allow-abstain', 'manager-reference', 'manager-voters-literal', 'manager-voters-tag', 'manager-voters-index', 'manager-voters-exclude', 'manager-voters-self'] as $scenario) {
+            yield 'authorization '.$scenario => ['authorization-'.$scenario, 'manager-reference' === $scenario ? 'wiring' : 'authorization_manager'];
+        }
+        foreach (['context', 'after-result'] as $scenario) {
             yield 'authorization '.$scenario => ['authorization-'.$scenario, 'wiring'];
         }
         yield 'missing command authorization' => ['authorization-missing-command', 'middleware'];
@@ -127,7 +136,7 @@ final class CqrsTest extends TestCase
         }
     }
 
-    public function testCompilationBuildsExactLazyPolicyMap(): void
+    public function testCompilationBuildsRoutesAndAcceptsSuffixedAndLegacyPermissionEnums(): void
     {
         CompilationKernel::run('authorization-valid', static function (ContainerBuilder $container): void {
             $inspection = new class implements CompilerPassInterface {
@@ -135,31 +144,94 @@ final class CqrsTest extends TestCase
 
                 public function process(ContainerBuilder $container): void
                 {
-                    $reference = $container->getDefinition(AuthorizationMiddleware::class)->getArgument(2);
-                    TestCase::assertInstanceOf(Reference::class, $reference);
-                    $locator = $container->findDefinition((string) $reference);
-                    TestCase::assertSame(ServiceLocator::class, $locator->getClass());
-                    TestCase::assertFalse($locator->isPublic());
-                    TestCase::assertNull($locator->getFactory());
-                    $map = $locator->getArgument(0);
-                    TestCase::assertIsArray($map);
+                    $routes = $container->getDefinition(AuthorizationMiddleware::class)->getArgument(3);
+                    TestCase::assertIsArray($routes);
                     $inventory = $container->getDefinition('app.command_policy')->getArgument(1);
                     TestCase::assertIsArray($inventory);
                     $expected = array_keys(array_filter($inventory, static fn (mixed $kind): bool => 'event' !== $kind));
                     sort($expected);
-                    TestCase::assertSame($expected, array_keys($map));
-                    TestCase::assertArrayHasKey(CreateTaskCommand::class, $map);
-                    TestCase::assertArrayHasKey(GetTaskQuery::class, $map);
-                    TestCase::assertArrayNotHasKey(TaskCreatedEvent::class, $map);
-                    foreach ($map as $message => $closure) {
-                        TestCase::assertInstanceOf(ServiceClosureArgument::class, $closure);
-                        $policy = $closure->getValues()[0];
-                        TestCase::assertInstanceOf(Reference::class, $policy);
-                        $definition = $container->findDefinition((string) $policy);
-                        TestCase::assertFalse($definition->isPublic());
-                        $invoke = new \ReflectionMethod($definition->getClass() ?? '', '__invoke');
-                        TestCase::assertSame($message, (string) $invoke->getParameters()[0]->getType());
+                    TestCase::assertSame($expected, array_keys($routes));
+                    TestCase::assertSame(TaskTrackingVoter::class, $routes[CreateTaskCommand::class]);
+                    TestCase::assertArrayHasKey(GetTaskQuery::class, $routes);
+                    TestCase::assertArrayNotHasKey(TaskCreatedEvent::class, $routes);
+                    TestCase::assertFalse($container->getDefinition(PublicAccessVoter::class)->hasTag('app.authorization.voter'));
+
+                    $capabilities = $container->getDefinition(AuthorizationCatalogService::class)->getArgument(0);
+                    TestCase::assertIsArray($capabilities);
+                    TestCase::assertNotSame([], $capabilities);
+                    TestCase::assertContains(TaskPermission::Create->value, array_column($capabilities, 'key'));
+                    /** @var array<string, array{module: string, key: string, label: string, access: string, operations: list<string>}> $byKey */
+                    $byKey = array_column($capabilities, null, 'key');
+                    TestCase::assertSame([
+                        'module' => 'task_tracking',
+                        'key' => TaskPermission::View->value,
+                        'label' => 'View tasks',
+                        'access' => 'read',
+                        'operations' => ['GetTaskQuery', 'ListTasksQuery'],
+                    ], $byKey[TaskPermission::View->value]);
+                    TestCase::assertSame('write', $byKey[TaskPermission::Create->value]['access']);
+                    TestCase::assertSame([
+                        'module' => 'authorizing',
+                        'key' => AuthorizingPermissionEnum::CatalogueManage->value,
+                        'label' => 'Manage authorization catalogue',
+                        'access' => 'write',
+                        'operations' => [
+                            'DefineRoleCommand',
+                            'GetRoleQuery',
+                            'ListAuthorizationCapabilitiesQuery',
+                            'ListRolesQuery',
+                            'RetireRoleCommand',
+                        ],
+                    ], $byKey[AuthorizingPermissionEnum::CatalogueManage->value]);
+                    TestCase::assertContains(AuthorizingPermissionEnum::Manage->value, array_column($capabilities, 'key'));
+
+                    $voterPermissions = $container->getDefinition(TaskTrackingVoter::class)->getArgument(0);
+                    TestCase::assertIsArray($voterPermissions);
+                    TestCase::assertSame(TaskPermission::Create->value, $voterPermissions[CreateTaskCommand::class]);
+                    $voters = $container->getDefinition('app.authorization.decision_manager')->getArgument(0);
+                    TestCase::assertInstanceOf(TaggedIteratorArgument::class, $voters);
+                    TestCase::assertSame('app.authorization.voter', $voters->getTag());
+                    $this->inspected = true;
+                }
+            };
+            $container->addCompilerPass($inspection, PassConfig::TYPE_BEFORE_REMOVING, 5);
+            $container->compile();
+            self::assertTrue($inspection->inspected);
+        });
+    }
+
+    public function testExplicitPublicAuthorizationUsesExactVoterWithoutCreatingACapability(): void
+    {
+        CompilationKernel::run('authorization-public', static function (ContainerBuilder $container): void {
+            $inspection = new class implements CompilerPassInterface {
+                public bool $inspected = false;
+
+                public function process(ContainerBuilder $container): void
+                {
+                    $routes = $container->getDefinition(AuthorizationMiddleware::class)->getArgument(3);
+                    TestCase::assertIsArray($routes);
+                    TestCase::assertSame(PublicAccessVoter::class, $routes[CreateTaskCommand::class]);
+                    TestCase::assertSame(TaskTrackingVoter::class, $routes[GetTaskQuery::class]);
+
+                    $publicMessages = $container->getDefinition(PublicAccessVoter::class)->getArgument(0);
+                    TestCase::assertSame([CreateTaskCommand::class => null], $publicMessages);
+                    $taskPermissions = $container->getDefinition(TaskTrackingVoter::class)->getArgument(0);
+                    TestCase::assertIsArray($taskPermissions);
+                    TestCase::assertArrayNotHasKey(CreateTaskCommand::class, $taskPermissions);
+
+                    $capabilities = $container->getDefinition(AuthorizationCatalogService::class)->getArgument(0);
+                    TestCase::assertIsArray($capabilities);
+                    TestCase::assertNotContains(TaskPermission::Create->value, array_column($capabilities, 'key'));
+                    $operations = [];
+                    foreach ($capabilities as $capability) {
+                        TestCase::assertIsArray($capability);
+                        TestCase::assertIsArray($capability['operations'] ?? null);
+                        foreach ($capability['operations'] as $operation) {
+                            TestCase::assertIsString($operation);
+                            $operations[] = $operation;
+                        }
                     }
+                    TestCase::assertNotContains('CreateTaskCommand', $operations);
                     $this->inspected = true;
                 }
             };

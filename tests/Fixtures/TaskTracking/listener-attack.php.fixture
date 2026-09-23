@@ -1,0 +1,76 @@
+<?php
+
+declare(strict_types=1);
+
+use App\Module\Authenticating\Infrastructure\Framework\Symfony\Security\AccountPrincipal;
+use App\Module\NativeObserving\Infrastructure\EventListener\TaskAccessListener;
+use App\Module\TaskTracking\Application\CreateTask\CreateTaskCommand;
+use App\Module\TaskTracking\Application\GetTask\GetTaskQuery;
+use App\Module\TaskTracking\Application\GetTask\GetTaskResult;
+use App\Platform\Authorization\AuthorizationDenied;
+use Symfony\Component\HttpFoundation\Request;
+use Symfony\Component\Security\Core\Authentication\Token\UsernamePasswordToken;
+use Symfony\Component\Uid\Uuid;
+
+try {
+    $kernel = require __DIR__.'/bootstrap.php';
+    $container = $kernel->getContainer()->get('test.service_container');
+    $commands = $container->get('test.native.commands');
+    $queries = $container->get('test.native.queries');
+    $db = $container->get('doctrine.dbal.default_connection');
+    if ('app_test' !== $db->fetchOne('SELECT current_database()') || 'app' !== $db->fetchOne('SELECT current_user')) {
+        throw new LogicException('Wrong verification database.');
+    }
+    $account = Uuid::fromString($argv[1]);
+    $requests = $container->get('request_stack');
+    $tokens = $container->get('security.token_storage');
+    $requests->push(Request::create('/_demo/tasks'));
+    $tokens->setToken(new UsernamePasswordToken(new AccountPrincipal($account, 'listener@example.test', 'unused-task10-fixture'), 'main', []));
+    TaskAccessListener::$account = $account;
+    $denied = false;
+    try {
+        $commands->dispatch(new CreateTaskCommand('task10-compiled-listener-attack', $account));
+    } catch (AuthorizationDenied) {
+        $denied = true;
+    }
+    $task = TaskAccessListener::$task;
+    if (!$denied || !TaskAccessListener::$caught || null === $task || $db->isTransactionActive()
+        || 0 !== $db->fetchOne('SELECT count(*) FROM task_tracking_task WHERE id = ?', [$task->toRfc4122()])
+        || 0 !== $db->fetchOne("SELECT count(*) FROM task_tracking_task WHERE title = 'task10-listener-forged-unowned'")) {
+        throw new LogicException('Caught listener unowned-create denial did not roll back the root.');
+    }
+    TaskAccessListener::$attack = false;
+    $recovered = $commands->dispatch(new CreateTaskCommand('task10-compiled-listener-recovery', $account));
+    if (!$recovered instanceof Uuid || !TaskAccessListener::$completed) {
+        throw new LogicException('Same-process listener recovery failed.');
+    }
+    $result = $queries->ask(new GetTaskQuery($recovered->toRfc4122()));
+    if (!$result instanceof GetTaskResult || null === $result->completedAt) {
+        throw new LogicException('Account context was not restored after the listener.');
+    }
+    $standaloneDenied = false;
+    try {
+        $commands->dispatch(new CreateTaskCommand('task10-listener-standalone-unowned'));
+    } catch (AuthorizationDenied) {
+        $standaloneDenied = true;
+    }
+    if (!$standaloneDenied) {
+        throw new LogicException('Task ownership authority leaked after event return.');
+    }
+    $tokens->setToken(null);
+    $requests->pop();
+    $anonymousDenied = false;
+    try {
+        $queries->ask(new GetTaskQuery($recovered->toRfc4122()));
+    } catch (AuthorizationDenied $failure) {
+        $anonymousDenied = !$failure->authenticated;
+    }
+    if (!$anonymousDenied) {
+        throw new LogicException('Account identity leaked outside the request.');
+    }
+    print json_encode(['caught' => true, 'rolledBack' => true, 'recovered' => $recovered->toRfc4122(), 'contextRestored' => true], JSON_THROW_ON_ERROR);
+    $kernel->shutdown();
+} catch (Throwable) {
+    fwrite(STDERR, "Compiled listener verification failed.\n");
+    exit(1);
+}

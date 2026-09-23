@@ -650,33 +650,43 @@ final class SourceRulesTest extends TestCase
         );
     }
 
-    public function testPolicyDeclarationAndReadDependenciesPassBothSourceAndDeptrac(): void
+    public function testVoterAndHandlerCapabilityDependenciesPassBothSourceAndDeptrac(): void
     {
         $this->writeClass('App\\Platform\\Authorization\\ActorKind', 'enum ActorKind { case Anonymous; case Account; case Operator; case Authentication; }');
         $this->writeClass('App\\Platform\\Authorization\\Actor', 'final readonly class Actor { public function __construct(public ActorKind $kind) {} }');
+        $this->writeClass('App\\Platform\\Authorization\\AuthorizationToken', 'final class AuthorizationToken { public function __construct(public readonly Actor $actor) {} }');
+        $this->writeClass('App\\Platform\\Authorization\\Authorize', '#[\\Attribute] final readonly class Authorize { public function __construct(public ?string $voter = null, public ?\\BackedEnum $permission = null, public ?string $label = null, public bool $public = false) {} }');
+        $this->writeClass('App\\Module\\TaskTracking\\Domain\\TaskPermission', 'enum TaskPermission: string { case View = "task_tracking.task.view"; }');
         $this->writeClass('App\\Module\\TaskTracking\\Domain\\TaskRepository', 'interface TaskRepository { public function find(): ?Task; }');
         $this->writeClass('App\\Module\\TaskTracking\\Application\\Lookup\\LookupQuery', 'final readonly class LookupQuery {}');
-        $this->writeClass('App\\Module\\TaskTracking\\Application\\Lookup\\LookupPolicy', <<<'PHP'
-            use App\Platform\Authorization\{Actor, ActorKind as Kind, PolicyContext};
-            use App\Platform\Messaging\QueryBus;
-            use App\Module\TaskTracking\Domain\TaskRepository;
-            use App\Module\Authorizing\Application\GetGrant\GetGrantResult;
-            final readonly class LookupPolicy {
-                public function __construct(private QueryBus $queries, private TaskRepository $tasks) {}
-                public function __invoke(LookupQuery $query, PolicyContext $context): bool {
-                    $actor = $context->actor;
-                    if (!$actor instanceof Actor) { throw new \LogicException('Missing actor.'); }
-                    return Kind::Account === $actor->kind && $this->tasks->find() !== null;
-                }
-            }
-            PHP);
         $this->writeClass('App\\Module\\TaskTracking\\Application\\Lookup\\LookupHandler', <<<'PHP'
-            use App\Platform\Authorization\AuthorizeWith as Admission;
-            use App\Module\TaskTracking\Application\Lookup\{LookupPolicy as Policy};
+            use App\Platform\Authorization\Authorize;
+            use App\Module\TaskTracking\Domain\TaskPermission;
+            use App\Module\TaskTracking\Infrastructure\Framework\Symfony\Security\TaskTrackingVoter;
             use Symfony\Component\Messenger\Attribute\AsMessageHandler;
             #[AsMessageHandler(bus: 'query.bus')]
-            #[Admission(Policy::class)]
+            #[Authorize(TaskTrackingVoter::class, TaskPermission::View, 'View tasks')]
             final class LookupHandler { public function __invoke(LookupQuery $query): bool { return true; } }
+            PHP);
+        $this->writeClass('App\\Module\\TaskTracking\\Application\\Status\\StatusQuery', 'final readonly class StatusQuery {}');
+        $this->writeClass('App\\Module\\TaskTracking\\Application\\Status\\StatusHandler', <<<'PHP'
+            use App\Platform\Authorization\Authorize;
+            use Symfony\Component\Messenger\Attribute\AsMessageHandler;
+            #[AsMessageHandler(bus: 'query.bus')]
+            #[Authorize(public: true)]
+            final class StatusHandler { public function __invoke(StatusQuery $query): bool { return true; } }
+            PHP);
+        $this->writeClass('App\\Module\\TaskTracking\\Infrastructure\\Framework\\Symfony\\Security\\TaskTrackingVoter', <<<'PHP'
+            use App\Platform\Authorization\AuthorizationToken;
+            use App\Platform\Messaging\QueryBus;
+            use App\Module\TaskTracking\Application\Lookup\LookupQuery;
+            use App\Module\TaskTracking\Domain\TaskRepository;
+            use Symfony\Component\Security\Core\Authorization\Voter\Voter;
+            final class TaskTrackingVoter extends Voter {
+                public function __construct(private QueryBus $queries, private TaskRepository $tasks) {}
+                protected function supports(string $attribute, mixed $subject): bool { return $subject instanceof LookupQuery; }
+                protected function voteOnAttribute(string $attribute, mixed $subject, \Symfony\Component\Security\Core\Authentication\Token\TokenInterface $token, ?\Symfony\Component\Security\Core\Authorization\Voter\Vote $vote = null): bool { return $token instanceof AuthorizationToken; }
+            }
             PHP);
         self::assertSame([], (new SourceRules())->violations($this->root));
         $process = $this->deptrac();
@@ -700,19 +710,14 @@ final class SourceRulesTest extends TestCase
             $name = substr($source, (int) strrpos($source, '\\') + 1);
             yield 'handler bypass from '.$source => [$source, 'use App\\Module\\TaskTracking\\Application\\Other\\OtherHandler as Other; final class '.$name.' { public function __construct(private Other $other) {} }', 'source.handler_dependency'];
         }
-        foreach ([
-            'new LookupPolicy()',
-            'LookupPolicy::decide()',
-            '$factory = LookupPolicy::class',
-        ] as $operation) {
-            yield 'attribute does not permit '.$operation => ['Application\\Lookup\\LookupHandler', '#[\\App\\Platform\\Authorization\\AuthorizeWith(LookupPolicy::class)] final class LookupHandler { public function call(): void { '.$operation.'; } }', 'authorization.policy_reference'];
-        }
-        yield 'policy instance with valid metadata' => ['Application\\Lookup\\LookupHandler', '#[\\App\\Platform\\Authorization\\AuthorizeWith(LookupPolicy::class)] final class LookupHandler { public function __construct(private LookupPolicy $policy) {} }', 'authorization.policy_reference'];
-        yield 'policy in unrelated attribute' => ['Application\\Lookup\\LookupHandler', '#[\\Other(LookupPolicy::class)] final class LookupHandler {}', 'authorization.policy_reference'];
-        yield 'declaration on helper' => ['Application\\Lookup\\Helper', '#[\\App\\Platform\\Authorization\\AuthorizeWith(LookupPolicy::class)] final class Helper {}', 'authorization.declaration'];
-        yield 'declaration as handler runtime data' => ['Application\\Lookup\\LookupHandler', 'final class LookupHandler { public function __construct(private \\App\\Platform\\Authorization\\AuthorizeWith $attribute) {} }', 'authorization.declaration'];
-        yield 'nested policy path' => ['Application\\Lookup\\Nested\\LookupPolicy', 'final class LookupPolicy {}', 'authorization.policy_path'];
-        foreach (['Actor', 'ActorKind', 'PolicyContext'] as $type) {
+        yield 'declaration on helper' => ['Application\\Lookup\\Helper', '#[\\App\\Platform\\Authorization\\Authorize] final class Helper {}', 'authorization.declaration'];
+        yield 'declaration as handler runtime data' => ['Application\\Lookup\\LookupHandler', 'final class LookupHandler { public function __construct(private \\App\\Platform\\Authorization\\Authorize $attribute) {} }', 'authorization.declaration'];
+        $voter = '\\App\\Module\\TaskTracking\\Infrastructure\\Framework\\Symfony\\Security\\TaskTrackingVoter';
+        yield 'voter injection into handler' => ['Application\\Lookup\\LookupHandler', 'final class LookupHandler { public function __construct(private '.$voter.' $voter) {} }', 'authorization.voter_reference'];
+        yield 'voter call from helper' => ['Application\\Lookup\\Helper', 'final class Helper { public function run(): string { return '.$voter.'::class; } }', 'authorization.voter_reference'];
+        yield 'foreign voter metadata' => ['Application\\Lookup\\LookupHandler', '#[\\App\\Platform\\Authorization\\Authorize(\\App\\Module\\Authorizing\\Infrastructure\\Framework\\Symfony\\Security\\AuthorizingVoter::class)] final class LookupHandler {}', 'authorization.voter_reference'];
+        yield 'direct public voter metadata' => ['Application\\Lookup\\LookupHandler', '#[\\App\\Platform\\Authorization\\Authorize(\\App\\Platform\\Authorization\\PublicAccessVoter::class)] final class LookupHandler {}', 'authorization.voter_reference'];
+        foreach (['Actor', 'ActorKind', 'AuthorizationToken'] as $type) {
             yield 'context in DTO '.$type => ['Application\\Lookup\\LookupQuery', 'final readonly class LookupQuery { public function __construct(public \\App\\Platform\\Authorization\\'.$type.' $actor) {} }', 'authorization.context'];
             yield 'context in handler '.$type => ['Application\\Lookup\\LookupHandler', 'use App\\Platform\\Authorization\\'.$type.'; final class LookupHandler {}', 'authorization.context'];
         }
@@ -721,14 +726,12 @@ final class SourceRulesTest extends TestCase
             yield 'actor kind case in '.$source => [$source, 'use App\\Platform\\Authorization\\{ActorKind as Kind}; final class '.$name.' { public function run(): void { $kind = Kind::Operator; } }', 'authorization.context'];
         }
         yield 'actor kind case variation' => ['Application\\Helper', 'final class Helper { public function run(): void { $kind = \\app\\platform\\authorization\\actorkind::Account; } }', 'authorization.context'];
-        foreach (['CommandBus', 'EventBus', 'InvocationContext'] as $type) {
-            yield 'policy messaging '.$type => ['Application\\Lookup\\LookupPolicy', 'use App\\Platform\\Messaging\\'.$type.'; final class LookupPolicy {}', 'authorization.policy_dependency'];
-        }
-        foreach (['\\App\\Module\\TaskTracking\\Application\\Helper', '\\App\\Module\\TaskTracking\\Application\\Other\\OtherPolicy', '\\Doctrine\\ORM\\EntityManagerInterface', '\\Symfony\\Component\\HttpFoundation\\RequestStack', '\\Psr\\Container\\ContainerInterface', '\\Psr\\Log\\LoggerInterface', '\\App\\Module\\Authorizing\\Domain\\Grant'] as $target) {
-            yield 'policy dependency '.$target => ['Application\\Lookup\\LookupPolicy', 'use '.$target.' as Proxy; final class LookupPolicy { public function __construct(private Proxy $proxy) {} }', 'authorization.policy_dependency'];
-        }
         foreach (['OperatorExecution', 'AuthenticationExecution', 'ExecutionContext'] as $type) {
             yield 'untrusted facade '.$type => ['UI\\Console\\OtherCommand', 'use App\\Platform\\Authorization\\'.$type.'; final class OtherCommand {}', 'authorization.runtime'];
+        }
+        foreach (['ListTasksConsoleCommand', 'CompleteTaskConsoleCommand'] as $name) {
+            yield 'no derived operator adapter '.$name => ['UI\\Console\\'.$name.'Child', 'use App\\Platform\\Authorization\\OperatorExecution; final class '.$name.'Child {}', 'authorization.runtime'];
+            yield 'no authentication scope '.$name => ['UI\\Console\\'.$name, 'use App\\Platform\\Authorization\\AuthenticationExecution; final class '.$name.' {}', 'authorization.runtime'];
         }
         yield 'denial construction' => ['UI\\Http\\Controller', 'final class Controller { public function run(): void { throw new \\App\\Platform\\Authorization\\AuthorizationDenied(true); } }', 'authorization.denied'];
         yield 'handler catch denial' => ['Application\\Lookup\\LookupHandler', 'final class LookupHandler { public function run(): void { try {} catch (\\App\\Platform\\Authorization\\AuthorizationDenied $error) {} } }', 'authorization.denied'];
@@ -759,7 +762,7 @@ final class SourceRulesTest extends TestCase
     /** @return iterable<string, array{string, string, string}> */
     public static function forbiddenAuthorizationDependencies(): iterable
     {
-        $policy = 'App\\Module\\TaskTracking\\Application\\Lookup\\LookupPolicy';
+        $voter = 'App\\Module\\TaskTracking\\Infrastructure\\Framework\\Symfony\\Security\\TaskTrackingVoter';
         foreach ([
             'App\\Platform\\Messaging\\CommandBus' => 'MessagingFacades',
             'App\\Platform\\Messaging\\EventBus' => 'EventBus',
@@ -776,18 +779,23 @@ final class SourceRulesTest extends TestCase
             'Psr\\Container\\ContainerInterface' => 'Vendor',
             'Symfony\\Component\\HttpFoundation\\RequestStack' => 'Vendor',
         ] as $target => $layer) {
-            yield $target => [$policy, $target, 'TaskTracking.Policy on '.$layer];
+            yield $target => [$voter, $target, 'TaskTracking.AuthorizationVoter on '.$layer];
         }
         yield 'module handler bypass' => ['App\\Module\\TaskTracking\\UI\\Http\\Controller', 'App\\Module\\TaskTracking\\Application\\Lookup\\LookupHandler', 'TaskTracking.UI on TaskTracking.Handler'];
-        yield 'Platform cannot inject policies' => ['App\\Platform\\Technical', $policy, 'Platform on TaskTracking.Policy'];
-        yield 'context is not public DTO data' => ['App\\Module\\TaskTracking\\Application\\Lookup\\LookupQuery', 'App\\Platform\\Authorization\\Actor', 'TaskTracking.ApplicationData on PolicyContext'];
+        yield 'Platform cannot inject voters' => ['App\\Platform\\Technical', $voter, 'Platform on TaskTracking.AuthorizationVoter'];
+        yield 'handler cannot reference public voter' => ['App\\Module\\TaskTracking\\Application\\Lookup\\LookupHandler', 'App\\Platform\\Authorization\\PublicAccessVoter', 'TaskTracking.Handler on PublicAccessVoter'];
+        yield 'context is not public DTO data' => ['App\\Module\\TaskTracking\\Application\\Lookup\\LookupQuery', 'App\\Platform\\Authorization\\Actor', 'TaskTracking.ApplicationData on AuthorizationFacts'];
         foreach (['Application\\Lookup\\LookupQuery' => 'ApplicationData', 'Application\\Lookup\\LookupHandler' => 'Handler', 'Application\\Helper' => 'Application', 'Domain\\Service' => 'Domain', 'Infrastructure\\Adapter' => 'Internal', 'UI\\Http\\Controller' => 'UI'] as $source => $layer) {
-            yield 'actor kind in '.$source => ['App\\Module\\TaskTracking\\'.$source, 'App\\Platform\\Authorization\\ActorKind', 'TaskTracking.'.$layer.' on PolicyContext'];
+            yield 'actor kind in '.$source => ['App\\Module\\TaskTracking\\'.$source, 'App\\Platform\\Authorization\\ActorKind', 'TaskTracking.'.$layer.' on AuthorizationFacts'];
         }
         yield 'facade is exact adapter only' => ['App\\Module\\TaskTracking\\UI\\Console\\OtherCommand', 'App\\Platform\\Authorization\\OperatorExecution', 'TaskTracking.UI on OperatorExecution'];
         yield 'operator cannot claim authentication scope' => ['App\\Module\\TaskTracking\\UI\\Console\\CreateTaskConsoleCommand', 'App\\Platform\\Authorization\\AuthenticationExecution', 'TaskTracking.OperatorAdapter on AuthenticationExecution'];
-        yield 'handler has no context' => ['App\\Module\\TaskTracking\\Application\\Lookup\\LookupHandler', 'App\\Platform\\Authorization\\PolicyContext', 'TaskTracking.Handler on PolicyContext'];
-        yield 'helper cannot declare admission' => ['App\\Module\\TaskTracking\\Application\\Lookup\\Helper', 'App\\Platform\\Authorization\\AuthorizeWith', 'TaskTracking.Application on AuthorizeWith'];
+        foreach (['ListTasksConsoleCommand', 'CompleteTaskConsoleCommand'] as $name) {
+            yield 'new operator cannot claim authentication scope '.$name => ['App\\Module\\TaskTracking\\UI\\Console\\'.$name, 'App\\Platform\\Authorization\\AuthenticationExecution', 'TaskTracking.OperatorAdapter on AuthenticationExecution'];
+        }
+        yield 'handler has no context' => ['App\\Module\\TaskTracking\\Application\\Lookup\\LookupHandler', 'App\\Platform\\Authorization\\AuthorizationToken', 'TaskTracking.Handler on AuthorizationFacts'];
+        yield 'ordinary Application cannot reference voter' => ['App\\Module\\TaskTracking\\Application\\Helper', $voter, 'TaskTracking.Application on TaskTracking.AuthorizationVoter'];
+        yield 'helper cannot declare admission' => ['App\\Module\\TaskTracking\\Application\\Lookup\\Helper', 'App\\Platform\\Authorization\\Authorize', 'TaskTracking.Application on Authorize'];
     }
 
     #[DataProvider('forbiddenAuthorizationDependencies')]

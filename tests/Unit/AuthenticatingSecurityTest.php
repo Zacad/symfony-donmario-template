@@ -126,7 +126,7 @@ final class AuthenticatingSecurityTest extends TestCase
         $execution = new ExecutionContext(new InvocationContext(), new RequestStack(), new TokenStorage(), new AuthenticationTrustResolver());
         $bus = new MessageBus([new HandleMessageMiddleware(new HandlersLocator([
             UpgradePasswordHashCommand::class => [static function (UpgradePasswordHashCommand $command) use ($user, $result, $databaseFailure, $execution, &$called): bool {
-                $context = $execution->enter($command::class);
+                $context = $execution->enter();
                 try {
                     self::assertSame(ActorKind::Authentication, $context->actor->kind);
                     self::assertEquals($command->accountId, $context->actor->accountId);

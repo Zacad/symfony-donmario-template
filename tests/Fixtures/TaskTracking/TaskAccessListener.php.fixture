@@ -1,0 +1,55 @@
+<?php
+
+declare(strict_types=1);
+
+namespace App\Module\NativeObserving\Infrastructure\EventListener;
+
+use App\Module\TaskTracking\Application\CompleteTask\CompleteTaskCommand;
+use App\Module\TaskTracking\Application\CompleteTask\CompleteTaskResult;
+use App\Module\TaskTracking\Application\CreateTask\CreateTaskCommand;
+use App\Module\TaskTracking\Application\CreateTask\TaskCreatedEvent;
+use App\Module\TaskTracking\Application\GetTask\GetTaskQuery;
+use App\Module\TaskTracking\Application\GetTask\GetTaskResult;
+use App\Platform\Messaging\CommandBus;
+use App\Platform\Messaging\QueryBus;
+use Symfony\Component\Messenger\Attribute\AsMessageHandler;
+use Symfony\Component\Uid\Uuid;
+
+#[AsMessageHandler(bus: 'application.event.bus')]
+final class TaskAccessListener
+{
+    public static ?Uuid $account = null;
+    public static ?Uuid $task = null;
+    public static bool $attack = true;
+    public static bool $caught = false;
+    public static bool $completed = false;
+
+    public function __construct(private readonly CommandBus $commands, private readonly QueryBus $queries)
+    {
+    }
+
+    public function __invoke(TaskCreatedEvent $event): void
+    {
+        self::$task = $event->taskId;
+        $account = self::$account ?? throw new \LogicException('Missing fixture account.');
+        $task = $this->queries->ask(new GetTaskQuery($event->taskId->toRfc4122()));
+        if (!$task instanceof GetTaskResult || !$account->equals($task->ownerAccountId)) {
+            throw new \LogicException('Listener did not retain account identity, global access and ownership.');
+        }
+        if (self::$attack) {
+            try {
+                $this->commands->dispatch(new CreateTaskCommand('task10-listener-forged-unowned'));
+            } catch (\Throwable) {
+                self::$caught = true;
+            }
+
+            return;
+        }
+        $first = $this->commands->dispatch(new CompleteTaskCommand($event->taskId->toRfc4122()));
+        $again = $this->commands->dispatch(new CompleteTaskCommand($event->taskId->toRfc4122()));
+        if (!$first instanceof CompleteTaskResult || !$again instanceof CompleteTaskResult || !$first->changed || $again->changed || $first->completedAt != $again->completedAt) {
+            throw new \LogicException('Listener completion did not preserve the pending completion.');
+        }
+        self::$completed = true;
+    }
+}
